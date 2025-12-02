@@ -13,7 +13,7 @@ import { registerVps, listVps, deleteVps, ingestMetrics, getVpsStats } from './c
 import { logger } from './utils/logger';
 
 if (!process.env.MONGO_URI) {
-  dotenv.config({ path: ".env" });
+  dotenv.config({ path: "src/config/.env" });
 }
 
 // --- Configuration ---
