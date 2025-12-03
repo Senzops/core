@@ -26,9 +26,12 @@ const MONGO_URI: string = process.env.MONGO_URI!;
 if (!admin.apps.length) {
   try {
     const serviceAccountString = EnvUtils.getEnvValue('FIREBASE_SERVICE_ACCOUNT');
-    console.log({ serviceAccountString });
+    const serviceAccount = EnvUtils.parseAsObject(serviceAccountString!);
+    if (serviceAccount.private_key) {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
     admin.initializeApp({
-      credential: admin.credential.cert(JSON.parse(serviceAccountString!))
+      credential: admin.credential.cert(serviceAccount)
     });
     logger.info("Firebase Admin Initialized");
   } catch (e) {

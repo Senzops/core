@@ -22,9 +22,6 @@ const run = () => {
   Object.entries(chunks).forEach(([key, val]) => {
     console.log(`${key}= ${val}`);
   });
-
-  console.log('\n✅ JSON Output (Copy this object to use in scripts if needed):');
-  // console.log(JSON.stringify(chunks, null, 2));
 };
 
 run();

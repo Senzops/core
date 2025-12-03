@@ -131,7 +131,9 @@ node ./test/db.js
 ```
 
 ## Coolify Deployment fix
+1. Make the env of coolify shift from VARCHAR(255) to TEXT
 ```
 docker exec -it coolify-db psql -U coolify -d coolify
 ALTER TABLE environment_variables ALTER COLUMN value TYPE text;
 ```
+2. Use chunked env as being done in this repo
