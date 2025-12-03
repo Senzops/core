@@ -26,6 +26,7 @@ const MONGO_URI: string = process.env.MONGO_URI!;
 if (!admin.apps.length) {
   try {
     const serviceAccountString = EnvUtils.getEnvValue('FIREBASE_SERVICE_ACCOUNT');
+    console.log({ serviceAccountString });
     admin.initializeApp({
       credential: admin.credential.cert(JSON.parse(serviceAccountString!))
     });
