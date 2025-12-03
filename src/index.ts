@@ -69,7 +69,7 @@ ingestRouter.post('/stats', authenticateAgent, ingestMetrics);
 
 // 2. Management API (Frontend User)
 const apiRouter = express.Router();
-apiRouter.use(authenticateUser); // This strictly enforces Firebase Token
+// apiRouter.use(authenticateUser);
 apiRouter.post('/vps/register', apiLimiter, registerVps);
 apiRouter.get('/vps/list', listVps);
 apiRouter.delete('/vps/:id', deleteVps);
