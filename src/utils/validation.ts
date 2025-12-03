@@ -28,7 +28,14 @@ export const TelemetrySchema = z.object({
   network: z.object({
     bytesRecvSec: z.number(),
     bytesSentSec: z.number(),
+    latencyMs: z.number().optional(),
   }),
+  processes: z.object({
+    total: z.number(),
+    running: z.number(),
+    blocked: z.number(),
+    sleeping: z.number(),
+  }).optional(),
   docker: z.array(z.object({
     name: z.string(),
     state: z.string(),
