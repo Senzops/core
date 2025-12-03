@@ -16,6 +16,7 @@ export const authenticateUser = async (req: Request, res: Response, next: NextFu
     (req as any).user = decodedToken; // Attach user to request
     next();
   } catch (error) {
+    logger.info(error);
     return res.status(403).json({ error: 'Unauthorized: Invalid token' });
   }
 };

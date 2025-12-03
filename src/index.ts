@@ -58,27 +58,34 @@ const ingestLimiter = rateLimit({
   max: 60, // Allow 1 request per second per IP (generous for agents)
 });
 
-// --- Routes ---
+// --- Routes Definition ---
 
-// 1. Management API (For Next.js Frontend)
+// 1. Ingestion API (Agent) 
+// Defined FIRST so it doesn't get caught by the generic /api middleware
+const ingestRouter = express.Router();
+ingestRouter.use(ingestLimiter);
+ingestRouter.post('/stats', authenticateAgent, ingestMetrics);
+
+// 2. Management API (Frontend User)
 const apiRouter = express.Router();
-apiRouter.use(authenticateUser); // All routes below require Firebase Auth
+apiRouter.use(authenticateUser); // This strictly enforces Firebase Token
 apiRouter.post('/vps/register', apiLimiter, registerVps);
 apiRouter.get('/vps/list', listVps);
 apiRouter.delete('/vps/:id', deleteVps);
-apiRouter.get('/vps/:id/stats', getVpsStats); // For Dashboard Graphs
+apiRouter.get('/vps/:id/stats', getVpsStats);
 
-// 2. Ingestion API (For Agents)
-const ingestRouter = express.Router();
-ingestRouter.use(ingestLimiter);
-// We don't use User Auth here; we use Agent Auth
-ingestRouter.post('/stats', authenticateAgent, ingestMetrics);
+// --- Mounting Routes (CRITICAL ORDER) ---
 
-// Mount Routes
-app.use('/api', apiRouter);
+// Mount Ingest FIRST. 
+// Matches /api/ingest/stats strictly.
 app.use('/api/ingest', ingestRouter);
 
-// Health Check
+// Mount Dashboard API SECOND.
+// This catches everything else starting with /api (like /api/vps/...)
+// and applies the authenticateUser middleware.
+app.use('/api', apiRouter);
+
+// Health Check (Public)
 app.get('/health', (req, res) => res.send('SysSentinel Core: Online'));
 
 // Error Handling
