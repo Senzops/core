@@ -21,8 +21,10 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const MONGO_URI: string = process.env.MONGO_URI!;
 
+console.log({ FIREBASE_SERVICE_ACCOUNT: process.env.FIREBASE_SERVICE_ACCOUNT });
+console.log({ FIREBASE_SERVICE_ACCOUNT: JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT!) });
+
 // --- Firebase Init ---
-// In production, use GOOGLE_APPLICATION_CREDENTIALS env var
 if (!admin.apps.length) {
   try {
     admin.initializeApp({
