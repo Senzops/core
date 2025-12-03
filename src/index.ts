@@ -11,6 +11,7 @@ import admin from 'firebase-admin';
 import { authenticateUser, authenticateAgent, errorHandler } from './middlewares';
 import { registerVps, listVps, deleteVps, ingestMetrics, getVpsStats } from './controllers';
 import { logger } from './utils/logger';
+import { EnvUtils } from './utils/EnvUtils';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -21,14 +22,12 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const MONGO_URI: string = process.env.MONGO_URI!;
 
-console.log({ FIREBASE_SERVICE_ACCOUNT: process.env.FIREBASE_SERVICE_ACCOUNT });
-console.log({ FIREBASE_SERVICE_ACCOUNT: JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT!) });
-
 // --- Firebase Init ---
 if (!admin.apps.length) {
   try {
+    const serviceAccountString = EnvUtils.getEnvValue('FIREBASE_SERVICE_ACCOUNT');
     admin.initializeApp({
-      credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT!))
+      credential: admin.credential.cert(JSON.parse(serviceAccountString!))
     });
     logger.info("Firebase Admin Initialized");
   } catch (e) {

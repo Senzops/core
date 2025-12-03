@@ -129,3 +129,9 @@ If you encounter AuthenticationFailed errors, use the provided test script:
 # Edit the URI inside test-db.js first  
 node ./test/db.js
 ```
+
+## Coolify Deployment fix
+```
+docker exec -it coolify-db psql -U coolify -d coolify
+ALTER TABLE environment_variables ALTER COLUMN value TYPE text;
+```
