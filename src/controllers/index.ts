@@ -106,13 +106,19 @@ export const getVpsStats = async (req: Request, res: Response, next: NextFunctio
     const { id } = req.params;
     const { uid } = (req as any).user;
 
+    // Parse optional limit, fallback to 60, enforce min/max bounds
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit as string) || 60, 1),
+      1500
+    );
+
     // Verify ownership
     const vps = await Vps.findOne({ _id: id, ownerId: uid });
     if (!vps) return res.status(404).json({ error: "VPS not found" });
 
     // Get last 60 runs (approx last hour of data)
     const runs = await Run.find({ vpsId: id })
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 }).limit(limit);
 
     res.json({ vps, history: runs.reverse() });
   } catch (error) {
