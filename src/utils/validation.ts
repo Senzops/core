@@ -39,9 +39,9 @@ export const TelemetrySchema = z.object({
   docker: z.array(z.object({
     name: z.string(),
     state: z.string(),
-    cpuPercent: z.number(),
-    memoryUsage: z.number(),
-  })).optional().default([]),
+    cpuPercent: z.number().optional(),
+    memoryUsage: z.number().optional(),
+  }).passthrough()).optional().default([]),
   uptimeSeconds: z.number(),
   timestamp: z.string(),
 });
