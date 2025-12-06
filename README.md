@@ -1,6 +1,6 @@
-# **SysSentinel Core**
+# **Senzor Core**
 
-The robust, secure, and high-performance API core for the **SysSentinel** VPS Monitoring platform. Built with **Node.js, Express, and TypeScript**, it handles user authentication, agent telemetry ingestion, and data persistence with **MongoDB**.
+The robust, secure, and high-performance API core for the **Senzor** VPS Monitoring platform. Built with **Node.js, Express, and TypeScript**, it handles user authentication, agent telemetry ingestion, and data persistence with **MongoDB**.
 
 ## **🚀 Key Features**
 
@@ -34,7 +34,7 @@ Before starting, ensure you have:
 
 1. **Clone the repository:**  
   ```
-    git clone https://github.com/SysSentinel/core
+    git clone https://github.com/Senzops/core
     cd core
   ```
 

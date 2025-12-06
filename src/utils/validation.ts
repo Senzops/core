@@ -45,3 +45,16 @@ export const TelemetrySchema = z.object({
   uptimeSeconds: z.number(),
   timestamp: z.string(),
 });
+
+//  Web Analytics Schemas 
+export const RegisterWebsiteSchema = z.object({
+  name: z.string().min(1).max(50),
+  domain: z.string().min(3).max(100).regex(
+    /^[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}$/,
+    "Invalid domain format"
+  ),
+});
+
+export const WebStatsQuerySchema = z.object({
+  range: z.enum(['24h', '7d', '30d']).default('24h'),
+});

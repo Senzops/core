@@ -12,6 +12,9 @@ import { authenticateUser, authenticateAgent, errorHandler } from './middlewares
 import { registerVps, listVps, deleteVps, ingestMetrics, getVpsStats } from './controllers';
 import { logger } from './utils/logger';
 import { EnvUtils } from './utils/EnvUtils';
+import { ingestWebMetrics } from './controllers/webIngest';
+import { deleteWebsite, listWebsites, registerWebsite } from './controllers/web';
+import { getWebStats } from './controllers/webStats';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -66,6 +69,7 @@ const ingestLimiter = rateLimit({
 const ingestRouter = express.Router();
 ingestRouter.use(ingestLimiter);
 ingestRouter.post('/stats', authenticateAgent, ingestMetrics);
+ingestRouter.post('/web', ingestWebMetrics);
 
 // 2. Management API (Frontend User)
 const apiRouter = express.Router();
@@ -75,9 +79,15 @@ apiRouter.get('/vps/list', listVps);
 apiRouter.delete('/vps/:id', deleteVps);
 apiRouter.get('/vps/:id/stats', getVpsStats);
 
+// 2. Web Analytics API
+apiRouter.post('/web/register', registerWebsite);
+apiRouter.get('/web/list', listWebsites);
+apiRouter.delete('/web/:id', deleteWebsite);
+apiRouter.get('/web/:id/stats', getWebStats);
+
 // --- Mounting Routes (CRITICAL ORDER) ---
 
-// Mount Ingest FIRST. 
+// Mount Ingest FIRST.
 // Matches /api/ingest/stats strictly.
 app.use('/api/ingest', ingestRouter);
 
