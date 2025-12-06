@@ -49,10 +49,10 @@ export const TelemetrySchema = z.object({
 //  Web Analytics Schemas 
 export const RegisterWebsiteSchema = z.object({
   name: z.string().min(1).max(50),
-  domain: z.string().min(3).max(100).regex(
-    /^[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]\.[a-zA-Z]{2,}$/,
-    "Invalid domain format"
-  ),
+  domain: z.string().min(3).max(253).regex(
+    /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/,
+    "Invalid domain or subdomain format"
+  )
 });
 
 export const WebStatsQuerySchema = z.object({
