@@ -44,8 +44,18 @@ if (!admin.apps.length) {
 }
 
 // --- Middlewares ---
-app.use(helmet()); // Secure Headers
-app.use(cors()); // CORS
+// Security Headers (Helmet)
+// CRITICAL: We must allow Cross-Origin Resource Policy for the Web Agent to POST data
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
+
+// CORS (Cross-Origin Resource Sharing)
+// CRITICAL: Allow any origin (since the agent runs on user websites)
+app.use(cors({
+  origin: true, // Reflects the request origin (Allows all)
+  credentials: true
+}));
 app.use(express.json({ limit: '1mb' })); // Body parser
 app.use(morgan('tiny')); // Logging
 
