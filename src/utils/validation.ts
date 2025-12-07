@@ -58,3 +58,10 @@ export const RegisterWebsiteSchema = z.object({
 export const WebStatsQuerySchema = z.object({
   range: z.enum(['24h', '7d', '30d']).default('24h'),
 });
+
+// --- Uptime Schemas ---
+export const RegisterMonitorSchema = z.object({
+  name: z.string().min(1).max(50),
+  url: z.string().url(),
+  interval: z.enum(['15', '30', '60']).transform(Number), // accept strings, convert to number
+});

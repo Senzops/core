@@ -15,6 +15,7 @@ import { EnvUtils } from './utils/EnvUtils';
 import { ingestWebMetrics } from './controllers/webIngest';
 import { deleteWebsite, listWebsites, registerWebsite } from './controllers/web';
 import { getWebStats } from './controllers/webStats';
+import { deleteMonitor, getMonitorStats, listMonitors, registerMonitor } from './controllers/uptime';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -89,11 +90,17 @@ apiRouter.get('/vps/list', listVps);
 apiRouter.delete('/vps/:id', deleteVps);
 apiRouter.get('/vps/:id/stats', getVpsStats);
 
-// 2. Web Analytics API
+// 3. Web Analytics API
 apiRouter.post('/web/register', registerWebsite);
 apiRouter.get('/web/list', listWebsites);
 apiRouter.delete('/web/:id', deleteWebsite);
 apiRouter.get('/web/:id/stats', getWebStats);
+
+// 4. Uptime Monitor
+apiRouter.post('/uptime/register', registerMonitor);
+apiRouter.get('/uptime/list', listMonitors);
+apiRouter.delete('/uptime/:id', deleteMonitor);
+apiRouter.get('/uptime/:id/stats', getMonitorStats);
 
 // --- Mounting Routes (CRITICAL ORDER) ---
 
