@@ -62,7 +62,7 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
 
     const [
       liveCount,
-      overview,
+      sessionStats,
       pages,
       referrers,
       countries,
@@ -71,8 +71,8 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
       browsers,
       os,
       graphDataRaw,
-      busyDaysRaw, 
-      busyHoursRaw 
+      busyDaysRaw,
+      busyHoursRaw
     ] = await Promise.all([
 
       WebEvent.distinct('visitorId', { webId: cleanId, createdAt: { $gte: fiveMinutesAgo } }),
@@ -80,15 +80,34 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
       WebEvent.aggregate([
         { $match: { webId: webIdObj, createdAt: { $gte: startDate } } },
         {
+          // Group by Session first to get per-session metrics
           $group: {
-            _id: null,
-            totalViews: { $sum: { $cond: [{ $eq: ["$type", "pageview"] }, 1, 0] } },
-            visitors: { $addToSet: "$visitorId" },
-            sessions: { $addToSet: "$sessionId" },
-            totalDuration: { $sum: "$duration" },
+            _id: "$sessionId",
+            pageViews: { $sum: { $cond: [{ $eq: ["$type", "pageview"] }, 1, 0] } },
+            duration: { $sum: "$duration" }
           }
         },
-        { $project: { totalViews: 1, uniqueVisitors: { $size: "$visitors" }, avgDuration: { $cond: [{ $eq: ["$totalViews", 0] }, 0, { $divide: ["$totalDuration", "$totalViews"] }] } } }
+        {
+          // Then Group all sessions to get averages
+          $group: {
+            _id: null,
+            totalSessions: { $sum: 1 },
+            // A bounce is a session with exactly 1 pageview
+            bounces: { $sum: { $cond: [{ $eq: ["$pageViews", 1] }, 1, 0] } },
+            totalDuration: { $sum: "$duration" },
+            totalPageViews: { $sum: "$pageViews" } // Sum of all pageviews in all sessions
+          }
+        },
+        {
+          $project: {
+            totalSessions: 1,
+            // (Bounces / Sessions) * 100
+            bounceRate: { $cond: [{ $eq: ["$totalSessions", 0] }, 0, { $multiply: [{ $divide: ["$bounces", "$totalSessions"] }, 100] }] },
+            // Avg Duration per Session
+            avgDuration: { $cond: [{ $eq: ["$totalSessions", 0] }, 0, { $divide: ["$totalDuration", "$totalSessions"] }] },
+            totalPageViews: 1
+          }
+        }
       ]),
 
       WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$path", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
@@ -149,12 +168,19 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
       return { name: `${i}:00`, count: found ? found.count : 0 };
     });
 
-    const safeOverview = overview[0] || { totalViews: 0, uniqueVisitors: 0, avgDuration: 0 };
+    const uniqueVisitors = await WebEvent.distinct('visitorId', { webId: cleanId, createdAt: { $gte: startDate } });
+
+    const stats = sessionStats[0] || { totalPageViews: 0, bounceRate: 0, avgDuration: 0 };
 
     res.json({
       meta: site,
       liveVisitors: liveCount.length,
-      overview: safeOverview,
+      overview: {
+        totalViews: stats.totalPageViews,
+        uniqueVisitors: uniqueVisitors.length,
+        avgDuration: stats.avgDuration,
+        bounceRate: stats.bounceRate
+      },
       pages,
       referrers,
       geo: { countries, cities },
