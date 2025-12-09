@@ -4,7 +4,28 @@ import { Vps } from '../models';
 import { logger } from '../utils/logger';
 
 // --- 1. User Auth (Firebase) ---
+const DEMO_USER_ID = process.env.DEMO_USER_ID || 'senzor-demo-account';
 export const authenticateUser = async (req: Request, res: Response, next: NextFunction) => {
+  const demoHeader = req.headers['x-demo-mode'];
+
+  // A. Demo Mode
+  if (demoHeader === 'true') {
+    // SECURITY CRITICAL: Demo users can ONLY read data.
+    if (req.method !== 'GET') {
+      return res.status(403).json({ error: 'Demo mode is Read-Only.' });
+    }
+
+    // Impersonate the Demo User
+    (req as any).user = {
+      uid: DEMO_USER_ID,
+      email: 'demo@senzor.dev',
+      isDemo: true
+    };
+    return next();
+  }
+
+
+  // B. Standard Firebase Auth
   const token = req.headers.authorization?.split(' ')[1];
 
   if (!token) {
