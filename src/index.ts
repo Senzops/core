@@ -68,9 +68,14 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-const ingestLimiter = rateLimit({
+const agentIngestLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
   max: 60, // Allow 1 request per second per IP (generous for agents)
+});
+
+const webIngestLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 200,
 });
 
 // --- Routes Definition ---
@@ -78,9 +83,8 @@ const ingestLimiter = rateLimit({
 // 1. Ingestion API (Agent) 
 // Defined FIRST so it doesn't get caught by the generic /api middleware
 const ingestRouter = express.Router();
-ingestRouter.use(ingestLimiter);
-ingestRouter.post('/stats', authenticateAgent, ingestMetrics);
-ingestRouter.post('/web', ingestWebMetrics);
+ingestRouter.post('/stats', agentIngestLimiter, authenticateAgent, ingestMetrics);
+ingestRouter.post('/web', webIngestLimiter, ingestWebMetrics);
 
 // 2. Management API (Frontend User)
 const apiRouter = express.Router();
