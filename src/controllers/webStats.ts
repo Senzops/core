@@ -110,13 +110,13 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
         }
       ]),
 
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$path", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$referrer", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$country", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$city", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$device", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 5 }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$browser", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 5 }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$os", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 5 }]),
+      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$path", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$referrer", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$country", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$city", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$device", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$browser", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$os", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
 
       // Graph
       WebEvent.aggregate([
