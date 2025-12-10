@@ -1,12 +1,19 @@
 import { Request, Response, NextFunction } from 'express';
-import { Monitor, MonitorRun } from '../models';
+import { Monitor, MonitorRun, User } from '../models';
 import { RegisterMonitorSchema } from '../utils/validation';
 
 // --- Register ---
 export const registerMonitor = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const { uid, email } = (req as any).user;
     const { name, url, interval } = RegisterMonitorSchema.parse(req.body);
+
+    // Ensure user exists in our DB (Syncing with Firebase)
+    await User.findOneAndUpdate(
+      { firebaseUid: uid },
+      { firebaseUid: uid, email },
+      { upsert: true, new: true }
+    );
 
     const newMonitor = await Monitor.create({
       ownerId: uid,

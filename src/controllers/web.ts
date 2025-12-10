@@ -1,12 +1,19 @@
 import { Request, Response, NextFunction } from 'express';
-import { Website, WebEvent } from '../models';
+import { Website, WebEvent, User } from '../models';
 import { RegisterWebsiteSchema } from '../utils/validation';
 
 // --- Register a new Website ---
 export const registerWebsite = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const { uid, email } = (req as any).user;
     const { name, domain } = RegisterWebsiteSchema.parse(req.body);
+
+    // Ensure user exists in our DB (Syncing with Firebase)
+    await User.findOneAndUpdate(
+      { firebaseUid: uid },
+      { firebaseUid: uid, email },
+      { upsert: true, new: true }
+    );
 
     const newSite = await Website.create({
       ownerId: uid,
