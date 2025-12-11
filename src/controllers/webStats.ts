@@ -116,11 +116,11 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
 
       // pages
       WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$path", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$title", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate }, title: { $exists: true, $ne: null } } }, { $group: { _id: "$title", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
 
       // sources/refs
       WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$referrer", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$channel", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate }, channel: { $exists: true, $ne: null } } }, { $group: { _id: "$channel", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
 
       // goe
       WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$country", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
@@ -195,7 +195,7 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
         bounceRate: stats.bounceRate
       },
       pages: { path: pagePaths, title: pageTitles },
-      sources:{ referrers, channels},
+      sources: { referrers, channels },
       geo: { countries, cities },
       system: { devices, browsers, os },
       graph: graphData,
