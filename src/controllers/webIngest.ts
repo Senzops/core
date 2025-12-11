@@ -3,14 +3,28 @@ import geoip from 'geoip-lite';
 import { UAParser } from 'ua-parser-js';
 import { WebEvent } from '../models';
 import { logger } from '../utils/logger';
+import { EMAIL_HOST_HINTS, PAID_MEDIUM_HINTS, SEARCH_HOSTS, SOCIAL_HOSTS } from '../utils/CategorizeReferrers';
 
 // Helper to determine traffic channel
-const getChannel = (referrer: string) => {
+const getChannel = (referrer: string, url: string) => {
   if (!referrer || referrer === 'Direct') return 'Direct';
-  const r = referrer.toLowerCase();
+  const ref = referrer.toLowerCase();
 
-  if (r.includes('google') || r.includes('bing') || r.includes('yahoo') || r.includes('duckduckgo') || r.includes('baidu')) return 'Search';
-  if (r.includes('facebook') || r.includes('twitter') || r.includes('t.co') || r.includes('instagram') || r.includes('linkedin') || r.includes('reddit') || r.includes('pinterest') || r.includes('tiktok')) return 'Social';
+  if (url) {
+    const r = new URL(url);
+    const params = r.searchParams;
+    const utmMedium = params.get('utm_medium');
+    if (utmMedium) {
+      const mediumLower = utmMedium.toLowerCase();
+      if (PAID_MEDIUM_HINTS.some(h => mediumLower.includes(h))) return "Paid";
+      if (mediumLower.includes('email')) return "Email";
+      if (mediumLower.includes('social')) return "Social";
+    }
+  }
+
+  if (SEARCH_HOSTS.some(h => ref.includes(h))) return 'Search';
+  if (SOCIAL_HOSTS.some(h => ref.includes(h))) return 'Social';
+  if (EMAIL_HOST_HINTS.some(h => ref.includes(h))) return 'Email';
 
   return 'Referral';
 }
@@ -37,7 +51,7 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
     if (device === 'desktop' && width < 768) device = 'mobile';
 
     // 3. Channel Logic
-    const channel = getChannel(referrer);
+    const channel = getChannel(referrer, url);
 
     if (type === 'ping') {
       await WebEvent.findOneAndUpdate(
