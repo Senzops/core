@@ -80,7 +80,9 @@ export interface IWebEvent extends Document {
   type: 'pageview' | 'ping';
   url: string;
   path: string;
+  title: string;
   referrer: string;
+  channel: string;
   duration: number; // In seconds
 
   // Enriched Data
@@ -101,7 +103,9 @@ const WebEventSchema = new Schema<IWebEvent>({
 
   url: String,
   path: { type: String, index: true }, // Index for Top Pages query
-  referrer: String,
+  title: { type: String, index: true },
+  referrer: { type: String, index: true },
+  channel: { type: String, index: true },
   duration: { type: Number, default: 0 },
 
   // Metadata
@@ -127,7 +131,7 @@ export interface IMonitor extends Document {
   status: 'up' | 'down' | 'timeout' | 'pending';
   lastCheck: Date;
   nextCheck: Date;
-  
+
   // Locking for Concurrency
   isLocked: boolean;
   lockTime: Date; // To auto-expire locks if worker crashes
@@ -139,10 +143,10 @@ const MonitorSchema = new Schema<IMonitor>({
   url: { type: String, required: true },
   interval: { type: Number, enum: [15, 30, 60], default: 15 },
   status: { type: String, enum: ['up', 'down', 'timeout', 'pending'], default: 'pending' },
-  
+
   lastCheck: { type: Date, default: null },
   nextCheck: { type: Date, default: Date.now, index: true }, // Index for fast worker queries
-  
+
   isLocked: { type: Boolean, default: false },
   lockTime: { type: Date, default: null }
 }, { timestamps: true });

@@ -4,42 +4,50 @@ import { UAParser } from 'ua-parser-js';
 import { WebEvent } from '../models';
 import { logger } from '../utils/logger';
 
+// Helper to determine traffic channel
+const getChannel = (referrer: string) => {
+  if (!referrer || referrer === 'Direct') return 'Direct';
+  const r = referrer.toLowerCase();
+
+  if (r.includes('google') || r.includes('bing') || r.includes('yahoo') || r.includes('duckduckgo') || r.includes('baidu')) return 'Search';
+  if (r.includes('facebook') || r.includes('twitter') || r.includes('t.co') || r.includes('instagram') || r.includes('linkedin') || r.includes('reddit') || r.includes('pinterest') || r.includes('tiktok')) return 'Social';
+
+  return 'Referral';
+}
+
 export const ingestWebMetrics = async (req: Request, res: Response) => {
   try {
-    const { webId, visitorId, sessionId, type, url, path, referrer, width, duration } = req.body;
+    const { webId, visitorId, sessionId, type, url, path, title, referrer, width, duration } = req.body;
 
-    // 1. Get IP for GeoLookup
+    // 1. Geo
     let ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
     if (Array.isArray(ip)) ip = ip[0];
+    if (typeof ip === 'string' && ip.includes('::ffff:')) ip = ip.replace('::ffff:', '');
 
-    // 2. Geo Lookup
     const geo = geoip.lookup(ip as string);
     const country = geo?.country || 'Unknown';
     const city = geo?.city || 'Unknown';
 
-    // 3. UA Parsing
+    // 2. UA
     const uaString = req.headers['user-agent'] || '';
     const parser = new UAParser(uaString);
     const browser = parser.getBrowser().name || 'Unknown';
     const os = parser.getOS().name || 'Unknown';
-
-    // Determine Device Type based on Screen Width + UA
     let device = parser.getDevice().type || 'desktop';
-    if (device === 'desktop' && width < 768) device = 'mobile'; // Fallback logic
+    if (device === 'desktop' && width < 768) device = 'mobile';
 
-    // 4. Handle "Ping" (Duration Updates) vs "Pageview"
+    // 3. Channel Logic
+    const channel = getChannel(referrer);
+
     if (type === 'ping') {
-      // For pings, we want to update the duration of the LAST pageview for this session/path
-      // Optimistic "Fire and Forget" update
       await WebEvent.findOneAndUpdate(
         { sessionId, path, type: 'pageview' },
         { $inc: { duration: duration || 0 } },
-        { sort: { createdAt: -1 } } // Update the most recent one
+        { sort: { createdAt: -1 } }
       );
       return res.status(200).send('ok');
     }
 
-    // 5. Store Pageview
     await WebEvent.create({
       webId,
       visitorId,
@@ -47,8 +55,10 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
       type,
       url,
       path,
+      title: title || 'Unknown',
       referrer: referrer || 'Direct',
-      duration: 0, // Initial duration
+      channel,
+      duration: 0,
       browser,
       os,
       device,
@@ -59,8 +69,7 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
     return res.status(200).send('ok');
 
   } catch (error) {
-    logger.error('Web Ingest Error', error);
-    // Always return 200 to agent to prevent console errors on client
+    logger.error('Senzor Web Ingest Error', error);
     return res.status(200).send('error');
   }
 };
