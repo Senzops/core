@@ -118,7 +118,7 @@ app.use('/api/ingest', ingestRouter);
 app.use('/api', apiRouter);
 
 // Health Check (Public)
-app.get('/health', (req, res) => res.send('SysSentinel Core: Online'));
+app.get('/health', (req, res) => res.send('Senzor Core: Online'));
 
 // Error Handling
 app.use(errorHandler);
