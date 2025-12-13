@@ -1,5 +1,5 @@
 import dotenv from 'dotenv';
-import { EnvUtils } from '../utils/EnvUtils';
+import { EnvUtils } from '../utils/envUtils';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });

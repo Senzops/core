@@ -1,6 +1,7 @@
-import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
-import { Vps, Run, User } from '../models';
+import { Request, Response, NextFunction } from 'express';
+import { Vps, Run } from '../models/Vps';
+import { User } from '../models/User';
 import { RegisterVpsSchema, TelemetrySchema } from '../utils/validation';
 
 // --- VPS Controller ---

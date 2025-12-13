@@ -1,9 +1,9 @@
 import { Request, Response } from 'express';
 import geoip from 'geoip-lite';
 import { UAParser } from 'ua-parser-js';
-import { WebEvent } from '../models';
-import { logger } from '../utils/logger';
-import { EMAIL_HOST_HINTS, PAID_MEDIUM_HINTS, SEARCH_HOSTS, SOCIAL_HOSTS } from '../utils/CategorizeReferrers';
+import { WebEvent } from '../../models/Web';
+import { logger } from '../../utils/logger';
+import { EMAIL_HOST_HINTS, PAID_MEDIUM_HINTS, SEARCH_HOSTS, SOCIAL_HOSTS } from '../../utils/categorizeReferrers';
 
 // Helper to determine traffic channel
 const getChannel = (referrer: string, url: string) => {

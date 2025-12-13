@@ -104,16 +104,6 @@ _Headers:_ x-vps-id: \<id\>, x-api-key: \<key\>
 | :----- | :---------------- | :-------------------------------------- |
 | POST   | /api/ingest/stats | Receives telemetry JSON from the Agent. |
 
-## **🏗 Project Structure**
-
-src/  
-├── config/ # Environment setup  
-├── controllers/ # Request logic (User & Agent actions)  
-├── middlewares/ # Auth verification, Error handling, Rate limits  
-├── models/ # Mongoose Schemas (User, VPS, Run)  
-├── services/ # Business logic abstraction  
-├── utils/ # Logger, Zod Validators  
-├── index.ts # Entry point
 
 ## **🛡 Security Notes**
 

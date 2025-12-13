@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import admin from 'firebase-admin';
-import { Vps } from '../models';
+import { Vps } from '../models/Vps';
 import { logger } from '../utils/logger';
 
 // --- 1. User Auth (Firebase) ---

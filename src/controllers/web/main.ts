@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
-import { Website, WebEvent, User } from '../models';
-import { RegisterWebsiteSchema } from '../utils/validation';
+import { Website, WebEvent } from '../../models/Web';
+import { User } from '../../models/User';
+import { RegisterWebsiteSchema } from '../../utils/validation';
 
 // --- Register a new Website ---
 export const registerWebsite = async (req: Request, res: Response, next: NextFunction) => {

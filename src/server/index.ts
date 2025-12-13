@@ -8,14 +8,14 @@ import rateLimit from 'express-rate-limit';
 import admin from 'firebase-admin';
 
 // Imports
-import { authenticateUser, authenticateAgent, errorHandler } from './middlewares';
-import { registerVps, listVps, deleteVps, ingestMetrics, getVpsStats } from './controllers';
-import { logger } from './utils/logger';
-import { EnvUtils } from './utils/EnvUtils';
-import { ingestWebMetrics } from './controllers/webIngest';
-import { deleteWebsite, listWebsites, registerWebsite } from './controllers/web';
-import { getWebStats } from './controllers/webStats';
-import { deleteMonitor, getMonitorStats, listMonitors, registerMonitor } from './controllers/uptime';
+import { authenticateUser, authenticateAgent, errorHandler } from '../middlewares';
+import { registerVps, listVps, deleteVps, ingestMetrics, getVpsStats } from '../controllers/vps';
+import { logger } from '../utils/logger';
+import { EnvUtils } from '../utils/envUtils';
+import { ingestWebMetrics } from '../controllers/web/webIngest';
+import { deleteWebsite, listWebsites, registerWebsite } from '../controllers/web/main';
+import { getWebStats } from '../controllers/web/webStats';
+import { deleteMonitor, getMonitorStats, listMonitors, registerMonitor } from '../controllers/monitor';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -55,7 +55,7 @@ app.use(helmet({
 // CRITICAL: Allow any origin (since the agent runs on user websites)
 app.use(cors({
   origin: true, // Reflects the request origin (Allows all)
-  credentials: true
+  credentials: true,
 }));
 app.use(express.json({ limit: '1mb' })); // Body parser
 app.use(morgan('tiny')); // Logging
@@ -80,13 +80,13 @@ const webIngestLimiter = rateLimit({
 
 // --- Routes Definition ---
 
-// 1. Ingestion API (Agent) 
+// 1. Ingestion API
 // Defined FIRST so it doesn't get caught by the generic /api middleware
 const ingestRouter = express.Router();
 ingestRouter.post('/stats', agentIngestLimiter, authenticateAgent, ingestMetrics);
 ingestRouter.post('/web', webIngestLimiter, ingestWebMetrics);
 
-// 2. Management API (Frontend User)
+// 2. VPS API (Frontend User)
 const apiRouter = express.Router();
 apiRouter.use(authenticateUser);
 apiRouter.post('/vps/register', apiLimiter, registerVps);
@@ -100,7 +100,7 @@ apiRouter.get('/web/list', listWebsites);
 apiRouter.delete('/web/:id', deleteWebsite);
 apiRouter.get('/web/:id/stats', getWebStats);
 
-// 4. Uptime Monitor
+// 4. Uptime Monitor API
 apiRouter.post('/uptime/register', registerMonitor);
 apiRouter.get('/uptime/list', listMonitors);
 apiRouter.delete('/uptime/:id', deleteMonitor);
@@ -109,7 +109,7 @@ apiRouter.get('/uptime/:id/stats', getMonitorStats);
 // --- Mounting Routes (CRITICAL ORDER) ---
 
 // Mount Ingest FIRST.
-// Matches /api/ingest/stats strictly.
+// Matches /api/ingest/* strictly.
 app.use('/api/ingest', ingestRouter);
 
 // Mount Dashboard API SECOND.

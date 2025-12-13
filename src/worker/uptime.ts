@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import axios from 'axios';
-import { Monitor, MonitorRun } from '../models';
+import { Monitor, MonitorRun } from '../models/Monitor';
 import { logger } from '../utils/logger';
 
 const BATCH_SIZE = 50;

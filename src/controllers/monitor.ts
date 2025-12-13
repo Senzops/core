@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
-import { Monitor, MonitorRun, User } from '../models';
+import { Monitor, MonitorRun } from '../models/Monitor';
+import { User } from '../models/User';
 import { RegisterMonitorSchema } from '../utils/validation';
 
 // --- Register ---
