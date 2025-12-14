@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import geoip from 'geoip-lite';
 import { UAParser } from 'ua-parser-js';
-import { WebEvent } from '../../models/Web';
+import { WebEvent, Website } from '../../models/Web';
 import { logger } from '../../utils/logger';
 import { EMAIL_HOST_HINTS, PAID_MEDIUM_HINTS, SEARCH_HOSTS, SOCIAL_HOSTS } from '../../utils/categorizeReferrers';
 
@@ -32,6 +32,10 @@ const getChannel = (referrer: string, url: string) => {
 export const ingestWebMetrics = async (req: Request, res: Response) => {
   try {
     const { webId, visitorId, sessionId, type, url, path, title, referrer, width, duration } = req.body;
+
+    // Check if Website exists in DB
+    const site = await Website.findOne({ _id: webId });
+    if (!site) return res.status(404).json({ error: "Website not found" });
 
     // 1. Geo
     let ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '';
