@@ -7,7 +7,7 @@ if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
 }
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/sys-sentinel';
+const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/senzor';
 
 // --- Standalone Worker Process ---
 const initWorker = async () => {

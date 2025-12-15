@@ -4,7 +4,7 @@ The robust, secure, and high-performance API core for the **Senzor** VPS Monitor
 
 ## **🚀 Key Features**
 
-- **Secure Authentication:** 
+- **Secure Authentication:**
   - **Users:** Firebase Admin SDK (JWT verification).
   - **Agents:** Custom API Key & VPS ID headers.
 - **High-Performance Ingestion:** "Fire-and-forget" telemetry endpoint optimized for high throughput.
@@ -32,19 +32,21 @@ Before starting, ensure you have:
 
 ## **📦 Installation**
 
-1. **Clone the repository:**  
-  ```
-    git clone https://github.com/Senzops/core
-    cd core
-  ```
+1. **Clone the repository:**
 
-2. **Install dependencies:**  
-  ```
-   npm install
-   ```
+```
+  git clone https://github.com/Senzops/core
+  cd core
+```
+
+2. **Install dependencies:**
+
+```
+ npm install
+```
 
 3. Configure Environment:  
-   Create a `.env` file in the `src/config` directory:  
+   Create a `.env` file in the `src/config` directory:
    ```
    cp src/config/.env.example src/config/.env
    ```
@@ -52,17 +54,22 @@ Before starting, ensure you have:
 ## **🔐 Environment Variables**
 
 You must configure the following variables in your `/src/config/.env` file:
+
 ```.env
-# Server Config  
-PORT=5000  
+# Server Config
+PORT=5000
 NODE_ENV=development
 
-# Database Connection  
-# IMPORTANT: Append ?authSource=admin if using root auth  
-MONGO_URI=mongodb://root:password@localhost:27017/sys-sentinel?authSource=admin
+# Database Connection
+# IMPORTANT: Append ?authSource=admin if using root auth
+MONGO_URI=mongodb://root:password@localhost:27017/senzor?authSource=admin
 
-# Firebase Service Account (JSON String)  
-# Copy the entire content of your service-account.json into this single line  
+# Demo User (firebaseUid)
+# OPTIONAL: Add when demo access required
+DEMO_USER_ID=senzor-demo-account
+
+# Firebase Service Account (JSON String)
+# Copy the entire content of your service-account.json into this single line
 FIREBASE_SERVICE_ACCOUNT='{"type":"service_account","project_id":"...","private_key":"..."}'
 ```
 
@@ -71,6 +78,7 @@ FIREBASE_SERVICE_ACCOUNT='{"type":"service_account","project_id":"...","private_
 ### **Development Mode**
 
 Runs with `ts-node-dev` for hot-reloading and direct TypeScript execution.
+
 ```
 npm run dev
 ```
@@ -78,8 +86,9 @@ npm run dev
 ### **Production Mode**
 
 Compiles TypeScript to JavaScript (dist/) and runs the optimized build.
+
 ```
-npm run build  
+npm run build
 npm start
 ```
 
@@ -104,7 +113,6 @@ _Headers:_ x-vps-id: \<id\>, x-api-key: \<key\>
 | :----- | :---------------- | :-------------------------------------- |
 | POST   | /api/ingest/stats | Receives telemetry JSON from the Agent. |
 
-
 ## **🛡 Security Notes**
 
 1. **API Keys:** Generated using crypto-secure random bytes. In strict compliance environments, these should be hashed in the DB (like passwords). Currently stored as plain text to allow user viewing (optional).
@@ -115,15 +123,19 @@ _Headers:_ x-vps-id: \<id\>, x-api-key: \<key\>
 ## **🧪 Testing Database Connection**
 
 If you encounter AuthenticationFailed errors, use the provided test script:
+
 ```
-# Edit the URI inside test-db.js first  
+# Edit the URI inside test-db.js first
 node ./test/db.js
 ```
 
 ## Coolify Deployment fix
+
 1. Make the env of coolify shift from VARCHAR(255) to TEXT
+
 ```
 docker exec -it coolify-db psql -U coolify -d coolify
 ALTER TABLE environment_variables ALTER COLUMN value TYPE text;
 ```
+
 2. Use chunked env as being done in this repo
