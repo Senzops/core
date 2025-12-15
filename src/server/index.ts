@@ -16,6 +16,7 @@ import { ingestWebMetrics } from '../controllers/web/webIngest';
 import { deleteWebsite, listWebsites, registerWebsite } from '../controllers/web/main';
 import { getWebStats } from '../controllers/web/webStats';
 import { deleteMonitor, getMonitorStats, listMonitors, registerMonitor } from '../controllers/monitor';
+import { getRandomStatus } from '../controllers/demo';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -119,6 +120,7 @@ app.use('/api', apiRouter);
 
 // Health Check (Public)
 app.get('/health', (req, res) => res.send('Senzor Core: Online'));
+app.get('/status', getRandomStatus);
 
 // Error Handling
 app.use(errorHandler);
