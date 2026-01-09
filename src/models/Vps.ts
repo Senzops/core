@@ -12,6 +12,11 @@ export interface IVps extends Document {
     hostname: string;
     ip?: string;
   };
+  // Track which integrations are sending data
+  activeIntegrations?: {
+    nginx: boolean;
+    traefik: boolean;
+  };
 }
 
 const VpsSchema = new Schema<IVps>({
@@ -20,7 +25,12 @@ const VpsSchema = new Schema<IVps>({
   apiKey: { type: String, required: true, select: false }, // Hidden by default
   status: { type: String, enum: ['online', 'offline'], default: 'offline' },
   lastSeen: { type: Date, default: null },
-  metadata: { type: Object, default: {} }
+  metadata: { type: Object, default: {} },
+  // Default to false
+  activeIntegrations: {
+    nginx: { type: Boolean, default: false },
+    traefik: { type: Boolean, default: false },
+  },
 }, { timestamps: true });
 
 export const Vps = mongoose.model<IVps>('Vps', VpsSchema);

@@ -4,6 +4,32 @@ export const RegisterVpsSchema = z.object({
   name: z.string().min(1).max(50),
 });
 
+// Integration Sub-Schemas
+
+const NginxStatsSchema = z.object({
+  activeConnections: z.number(),
+  accepts: z.number(),
+  handled: z.number(),
+  requests: z.number(),
+  reading: z.number(),
+  writing: z.number(),
+  waiting: z.number(),
+  reqPerSec: z.number(),
+}).nullable().optional();
+
+const TraefikComponentSchema = z.object({
+  total: z.number(),
+  active: z.number(),
+  failed: z.number(),
+});
+
+const TraefikStatsSchema = z.object({
+  routers: TraefikComponentSchema,
+  services: TraefikComponentSchema,
+  middlewares: TraefikComponentSchema,
+}).nullable().optional();
+
+
 // Matches the Agent's TelemetryPayload interface
 export const TelemetrySchema = z.object({
   os: z.object({
@@ -42,6 +68,12 @@ export const TelemetrySchema = z.object({
     cpuPercent: z.number().optional(),
     memoryUsage: z.number().optional(),
   }).passthrough()).optional().default([]),
+
+
+  // Integrations
+  nginx: NginxStatsSchema,
+  traefik: TraefikStatsSchema,
+
   uptimeSeconds: z.number(),
   timestamp: z.string(),
 });

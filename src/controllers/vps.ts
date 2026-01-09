@@ -84,8 +84,15 @@ export const ingestMetrics = async (req: Request, res: Response, next: NextFunct
       vps.metadata = {
         os: `${metrics.os.distro} ${metrics.os.release}`,
         hostname: metrics.os.hostname,
+        arch: metrics.os.arch,
       };
     }
+
+    // If data is present (not null), mark as active
+    vps.activeIntegrations = {
+      nginx: !!metrics.nginx,
+      traefik: !!metrics.traefik,
+    };
 
     await vps.save();
 
