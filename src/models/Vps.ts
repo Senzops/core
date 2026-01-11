@@ -16,6 +16,7 @@ export interface IVps extends Document {
   activeIntegrations?: {
     nginx: boolean;
     traefik: boolean;
+    terminal: boolean;
   };
 }
 
@@ -30,6 +31,7 @@ const VpsSchema = new Schema<IVps>({
   activeIntegrations: {
     nginx: { type: Boolean, default: false },
     traefik: { type: Boolean, default: false },
+    terminal: { type: Boolean, default: false },
   },
 }, { timestamps: true });
 

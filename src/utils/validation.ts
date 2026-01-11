@@ -73,6 +73,7 @@ export const TelemetrySchema = z.object({
   // Integrations
   nginx: NginxStatsSchema,
   traefik: TraefikStatsSchema,
+  terminalEnabled: z.boolean().optional().default(false),
 
   uptimeSeconds: z.number(),
   timestamp: z.string(),

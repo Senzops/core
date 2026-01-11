@@ -92,6 +92,7 @@ export const ingestMetrics = async (req: Request, res: Response, next: NextFunct
     vps.activeIntegrations = {
       nginx: !!metrics.nginx,
       traefik: !!metrics.traefik,
+      terminal: metrics.terminalEnabled || false,
     };
 
     await vps.save();
