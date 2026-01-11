@@ -17,6 +17,8 @@ import { deleteWebsite, listWebsites, registerWebsite } from '../controllers/web
 import { getWebStats } from '../controllers/web/webStats';
 import { deleteMonitor, getMonitorStats, listMonitors, registerMonitor } from '../controllers/monitor';
 import { getRandomStatus } from '../controllers/demo';
+import { createServer } from 'http';
+import { initSocketServer } from '../services/socket';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -24,6 +26,7 @@ if (!process.env.MONGO_URI) {
 
 // --- Configuration ---
 const app = express();
+const httpServer = createServer(app);
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 const MONGO_URI: string = process.env.MONGO_URI!;
@@ -125,11 +128,15 @@ app.get('/status', getRandomStatus);
 // Error Handling
 app.use(errorHandler);
 
+// Initialize Socket.io
+initSocketServer(httpServer);
+
+
 // --- Database & Start ---
 mongoose.connect(MONGO_URI)
   .then(() => {
     logger.info('Connected to MongoDB');
-    app.listen(PORT, () => {
+    httpServer.listen(PORT, () => {
       logger.info(`Server running on port ${PORT}`);
     });
   })
