@@ -1,6 +1,6 @@
 # **Senzor Core**
 
-The robust, secure, and high-performance API core for the **Senzor** VPS Monitoring platform. Built with **Node.js, Express, and TypeScript**, it handles user authentication, agent telemetry ingestion, and data persistence with **MongoDB**.
+The robust, secure, and high-performance API core for the **Senzor** VPS Monitoring platform. Built with **Node.js, Express, and TypeScript**, it handles user authentication, agent telemetry ingestion, real-time WebSockets, background workers, and data persistence with **MongoDB**.
 
 ## **🚀 Key Features**
 
@@ -8,6 +8,9 @@ The robust, secure, and high-performance API core for the **Senzor** VPS Monitor
   - **Users:** Firebase Admin SDK (JWT verification).
   - **Agents:** Custom API Key & VPS ID headers.
 - **High-Performance Ingestion:** "Fire-and-forget" telemetry endpoint optimized for high throughput.
+- **Global Uptime:** Integrated background workers for distributed heartbeat checks (HTTP/TCP).
+- **Web Terminal:** Secure SSH-over-WebSocket relay for browser-based server management.
+- **Secure Auth:** Firebase Admin SDK integration (JWT) with Role-Based Access Control (RBAC).
 - **Auto-Pruning:** Automatic deletion of telemetry data older than 24 hours via MongoDB TTL indexes to manage storage costs.
 - **Validation:** Strict runtime payload validation using **Zod**.
 - **Security Hardening:** Implements helmet, cors, and aggressive rate-limiting to prevent abuse.
@@ -17,6 +20,7 @@ The robust, secure, and high-performance API core for the **Senzor** VPS Monitor
 - **Runtime:** Node.js (v18+)
 - **Language:** TypeScript
 - **Framework:** Express.js
+- **Real-time:** Socket.io
 - **Database:** MongoDB (Mongoose ODM)
 - **Auth:** Firebase Admin SDK
 - **Validation:** Zod
@@ -94,24 +98,46 @@ npm start
 
 ## **📚 API Endpoints**
 
-### **1. Management API (Requires Firebase User Token)**
+### **1. Server Management**
 
 _Headers:_ Authorization: Bearer \<firebase_id_token\>
 
-| Method | Endpoint           | Description                                                 |
-| :----- | :----------------- | :---------------------------------------------------------- |
-| POST   | /api/vps/register  | Link a new VPS to your account. Returns the secret API Key. |
-| GET    | /api/vps/list      | List all your registered VPS instances.                     |
-| GET    | /api/vps/:id/stats | Get metadata and historical stats for a specific VPS.       |
-| DELETE | /api/vps/:id       | Remove a VPS and its data.                                  |
+| Method | Endpoint           | Description                                               |
+| :----- | :----------------- | :-------------------------------------------------------- |
+| POST   | /api/vps/register  | Register a new VPS. Returns SERVER_ID & API_KEY.          |
+| GET    | /api/vps/list      | List all servers with status summaries.                   |
+| GET    | /api/vps/:id/stats | Get historical telemetry, docker stats, and integrations. |
+| DELETE | /api/vps/:id       | Irreversibly delete a server and its data.                |
 
-### **2. Ingestion API (Requires Agent Credentials)**
+### **2. Web Analytics**
 
-_Headers:_ x-vps-id: \<id\>, x-api-key: \<key\>
+_Headers:_ Authorization: Bearer \<firebase_id_token\>
 
-| Method | Endpoint          | Description                             |
-| :----- | :---------------- | :-------------------------------------- |
-| POST   | /api/ingest/stats | Receives telemetry JSON from the Agent. |
+| Method | Endpoint           | Description                                      |
+| :----- | :----------------- | :----------------------------------------------- |
+| POST   | /api/web/register  | Register a website for tracking. Returns WEB_ID. |
+| GET    | /api/web/list      | List tracked websites.                           |
+| GET    | /api/web/:id/stats | Get views, visitors, heatmaps, and geo-data.     |
+
+### **3. Uptime Monitor**
+
+_Headers:_ Authorization: Bearer \<firebase_id_token\>
+
+| Method | Endpoint              | Description                           |
+| :----- | :-------------------- | :------------------------------------ |
+| POST   | /api/uptime/register  | Create a new HTTP/TCP monitor.        |
+| GET    | /api/uptime/list      | List all monitors.                    |
+| GET    | /api/uptime/:id/stats | Get latency graphs and check history. |
+
+### **4. Ingestion API (Public/Agent)**
+
+_Rate Limited: 60-200 req/min_
+
+| Method | Endpoint          | Auth Header | Description                             |
+| :----- | :---------------- | :---------- | :-------------------------------------- |
+| POST   | /api/ingest/stats | x-api-key   | Ingest Server Telemetry.                |
+| POST   | /api/ingest/web   | Body webId  | Ingest Web Analytics (Pageviews/Pings). |
+| WS     | /api/socket       | x-api-key   | Secure WebSocket for Web Terminal.      |
 
 ## **🛡 Security Notes**
 
@@ -119,6 +145,7 @@ _Headers:_ x-vps-id: \<id\>, x-api-key: \<key\>
 2. **Rate Limiting:**
    - **Management:** 100 req / 15 min.
    - **Ingestion:** 60 req / 1 min per IP (Allows 1 update/sec).
+3. **Terminal:** Access is protected by Firebase Auth on the client side and API Key validation on the agent side.
 
 ## **🧪 Testing Database Connection**
 
@@ -129,13 +156,14 @@ If you encounter AuthenticationFailed errors, use the provided test script:
 node ./test/db.js
 ```
 
-## Coolify Deployment fix
+### **Coolify / Dokploy Fixes**
 
-1. Make the env of coolify shift from VARCHAR(255) to TEXT
+If deploying to PaaS platforms like Coolify that use PostgreSQL for their internal env storage, you might hit character limits for the Firebase JSON key.
 
-```
-docker exec -it coolify-db psql -U coolify -d coolify
-ALTER TABLE environment_variables ALTER COLUMN value TYPE text;
-```
+1. Fix Env Var Limit:  
+   Access your Coolify database container and run:  
+   docker exec -it coolify-db psql -U coolify -d coolify  
+   ALTER TABLE environment_variables ALTER COLUMN value TYPE text;
 
-2. Use chunked env as being done in this repo
+2. Use Base64:  
+   Always prefer FIREBASE_SERVICE_ACCOUNT_BASE64 for Docker deployments to avoid JSON parsing issues with newlines.
