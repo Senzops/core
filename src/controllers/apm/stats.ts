@@ -23,7 +23,6 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
 
   while (current < end) {
     let key;
-    // Match MongoDB $dateToString output
     if (range === '1h') key = current.toISOString().slice(0, 16) + ":00.000Z";
     else if (range === '24h') key = current.toISOString().slice(0, 13) + ":00:00.000Z";
     else key = current.toISOString().slice(0, 10);
@@ -37,7 +36,13 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
         errors: 0,
         avgLatency: 0,
         maxLatency: 0,
-        minLatency: 0
+        minLatency: 0,
+        // Default Status Codes
+        codes2xx: 0,
+        codes3xx: 0,
+        codes4xx: 0,
+        codes5xx: 0,
+        statusBreakdown: [] // Empty breakdown for zero-fill
       });
     }
 
@@ -65,11 +70,9 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
     if (range === '7d') startDate.setDate(now.getDate() - 7);
     else if (range === '30d') startDate.setDate(now.getDate() - 30);
     else if (range === '1h') startDate.setHours(now.getHours() - 1);
-    else startDate.setHours(now.getHours() - 24); // Default 24h
+    else startDate.setHours(now.getHours() - 24);
 
     const serviceIdObj = new mongoose.Types.ObjectId(id as string);
-
-    // Build Match Query
     const matchQuery: any = { serviceId: serviceIdObj, timestamp: { $gte: startDate } };
     if (route) {
       matchQuery.route = decodeURIComponent(route as string);
@@ -79,8 +82,8 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
     const [
       overview,
       routes,
-      referrers, // NEW
-      channels,  // NEW
+      referrers,
+      channels,
       statusCodes,
       graphDataRaw,
       geo,
@@ -136,64 +139,96 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
           }
         },
         { $sort: { count: -1 } },
-        { $limit: 100 } // Get more for expandable table
+        { $limit: 100 }
       ]) : Promise.resolve([]),
 
-      // NEW C1. Referrers
+      // C. Context Tables
       ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$referrer", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
-
-      // NEW C2. Channels (Using custom channel logic in model if saved, or just referrer grouping here is fine)
-      // Since we ingest 'channel', we group by it
       ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$channel", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
+      ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$status", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
 
-      // D. Status Codes
-      ApmTrace.aggregate([
-        { $match: matchQuery },
-        { $group: { _id: "$status", count: { $sum: 1 } } },
-        { $sort: { count: -1 } }
-      ]),
-
-      // E. Time Series Graph
+      // D. Time Series Graph (2-Stage Grouping for Explicit Status Codes)
       ApmTrace.aggregate([
         { $match: matchQuery },
         {
+          // Stage 1: Group by Time AND Status
           $group: {
             _id: {
-              $dateToString: {
-                format: range === '1h' ? "%Y-%m-%dT%H:%M:00.000Z"
-                  : (range === '30d' || range === '7d' ? "%Y-%m-%d" : "%Y-%m-%dT%H:00:00.000Z"),
-                date: "$timestamp"
-              }
+              time: {
+                $dateToString: {
+                  format: range === '1h' ? "%Y-%m-%dT%H:%M:00.000Z"
+                    : (range === '30d' || range === '7d' ? "%Y-%m-%d" : "%Y-%m-%dT%H:00:00.000Z"),
+                  date: "$timestamp"
+                }
+              },
+              status: "$status"
             },
-            requests: { $sum: 1 },
-            errors: { $sum: { $cond: [{ $gte: ["$status", 400] }, 1, 0] } },
-            avgLatency: { $avg: "$duration" },
-            maxLatency: { $max: "$duration" },
-            minLatency: { $min: "$duration" }
+            count: { $sum: 1 },
+            durationSum: { $sum: "$duration" },
+            maxLat: { $max: "$duration" },
+            minLat: { $min: "$duration" }
           }
         },
-        { $sort: { "_id": 1 } },
-        { $project: { time: "$_id", requests: 1, errors: 1, avgLatency: 1, maxLatency: 1, minLatency: 1 } }
+        {
+          // Stage 2: Group by Time only
+          $group: {
+            _id: "$_id.time",
+            requests: { $sum: "$count" },
+            totalDuration: { $sum: "$durationSum" },
+            maxLatency: { $max: "$maxLat" },
+            minLatency: { $min: "$minLat" },
+            // Collect the detailed breakdown
+            statusBreakdown: { $push: { code: "$_id.status", count: "$count" } }
+          }
+        },
+        {
+          $project: {
+            time: "$_id",
+            requests: 1,
+            avgLatency: { $cond: [{ $eq: ["$requests", 0] }, 0, { $divide: ["$totalDuration", "$requests"] }] },
+            maxLatency: 1,
+            minLatency: 1,
+            statusBreakdown: 1
+          }
+        },
+        { $sort: { time: 1 } }
       ]),
 
-      // F. Geo
+      // E. Geo/System/Clients
       Promise.all([
         ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$country", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
         ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$city", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }])
       ]),
-
-      // G. System
       Promise.all([
         ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$device", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 5 }]),
         ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$browser", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 5 }]),
         ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$os", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 5 }]),
       ]),
-
-      // H. Clients
       ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$userAgent", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }])
     ]);
 
-    const graph = fillTimeGaps(graphDataRaw, range as string || '24h', startDate);
+    // Process Graph Data to add legacy 2xx/3xx/etc fields from breakdown
+    const processedGraphData = graphDataRaw.map((point: any) => {
+      let codes2xx = 0, codes3xx = 0, codes4xx = 0, codes5xx = 0;
+      let errors = 0;
+
+      point.statusBreakdown?.forEach((item: any) => {
+        const code = item.code;
+        const count = item.count;
+
+        if (code >= 200 && code < 300) codes2xx += count;
+        else if (code >= 300 && code < 400) codes3xx += count;
+        else if (code >= 400 && code < 500) { codes4xx += count; errors += count; }
+        else if (code >= 500) { codes5xx += count; errors += count; }
+      });
+
+      return {
+        ...point,
+        codes2xx, codes3xx, codes4xx, codes5xx, errors
+      };
+    });
+
+    const graph = fillTimeGaps(processedGraphData, range as string || '24h', startDate);
     const safeOverview = overview[0] || { totalRequests: 0, totalErrors: 0, errorRate: 0, avgLatency: 0, maxLatency: 0, minLatency: 0 };
 
     res.json({
