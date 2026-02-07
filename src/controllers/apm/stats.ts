@@ -10,9 +10,9 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
 
   let current = new Date(startDate);
   // Align to boundaries
-  if (range === '1h') current.setSeconds(0, 0); // Minute precision
-  else if (range === '24h') current.setMinutes(0, 0, 0); // Hour precision
-  else current.setHours(0, 0, 0, 0); // Day precision
+  if (range === '1h') current.setSeconds(0, 0);
+  else if (range === '24h') current.setMinutes(0, 0, 0);
+  else current.setHours(0, 0, 0, 0);
 
   const end = new Date(now);
   if (range === '1h') end.setMinutes(end.getMinutes() + 1);
@@ -23,9 +23,10 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
 
   while (current < end) {
     let key;
-    if (range === '1h') key = current.toISOString().slice(0, 16) + ":00.000Z"; // YYYY-MM-DDTHH:mm
-    else if (range === '24h') key = current.toISOString().slice(0, 13) + ":00:00.000Z"; // YYYY-MM-DDTHH
-    else key = current.toISOString().slice(0, 10); // YYYY-MM-DD
+    // Match MongoDB $dateToString output
+    if (range === '1h') key = current.toISOString().slice(0, 16) + ":00.000Z";
+    else if (range === '24h') key = current.toISOString().slice(0, 13) + ":00:00.000Z";
+    else key = current.toISOString().slice(0, 10);
 
     if (dataMap.has(key)) {
       filled.push(dataMap.get(key));
@@ -51,7 +52,7 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
   try {
     const { id } = req.params;
     const { uid } = (req as any).user;
-    const { range, route } = req.query; // Added route filter
+    const { range, route } = req.query;
 
     // 1. Verify Ownership
     const service = await ApmService.findOne({ _id: id, ownerId: uid });
@@ -71,7 +72,6 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
     // Build Match Query
     const matchQuery: any = { serviceId: serviceIdObj, timestamp: { $gte: startDate } };
     if (route) {
-      // Decode in case it's passed as URL param
       matchQuery.route = decodeURIComponent(route as string);
     }
 
@@ -79,14 +79,16 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
     const [
       overview,
       routes,
+      referrers, // NEW
+      channels,  // NEW
       statusCodes,
       graphDataRaw,
-      geo,     // NEW
-      system,  // NEW
-      clients  // NEW
+      geo,
+      system,
+      clients
     ] = await Promise.all([
 
-      // A. Overview (Golden Signals)
+      // A. Overview
       ApmTrace.aggregate([
         { $match: matchQuery },
         {
@@ -96,7 +98,6 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
             totalErrors: { $sum: { $cond: [{ $gte: ["$status", 400] }, 1, 0] } },
             totalDuration: { $sum: "$duration" },
             maxLatency: { $max: "$duration" },
-            // Approximation for "Low" latency (best case)
             minLatency: { $min: "$duration" }
           }
         },
@@ -112,8 +113,7 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
         }
       ]),
 
-      // B. Top Routes (Endpoints)
-      // Only fetch this if we are NOT in route drill-down mode (otherwise it's redundant)
+      // B. Top Routes
       !route ? ApmTrace.aggregate([
         { $match: matchQuery },
         {
@@ -121,7 +121,7 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
             _id: { route: "$route", method: "$method" },
             count: { $sum: 1 },
             avgLatency: { $avg: "$duration" },
-            p99Latency: { $max: "$duration" }, // Using Max as proxy for P99 in simple mongo
+            p99Latency: { $max: "$duration" },
             errorCount: { $sum: { $cond: [{ $gte: ["$status", 400] }, 1, 0] } }
           }
         },
@@ -136,17 +136,24 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
           }
         },
         { $sort: { count: -1 } },
-        { $limit: 50 } // Increased limit
+        { $limit: 100 } // Get more for expandable table
       ]) : Promise.resolve([]),
 
-      // C. Status Codes
+      // NEW C1. Referrers
+      ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$referrer", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
+
+      // NEW C2. Channels (Using custom channel logic in model if saved, or just referrer grouping here is fine)
+      // Since we ingest 'channel', we group by it
+      ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$channel", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
+
+      // D. Status Codes
       ApmTrace.aggregate([
         { $match: matchQuery },
         { $group: { _id: "$status", count: { $sum: 1 } } },
         { $sort: { count: -1 } }
       ]),
 
-      // D. Time Series Graph (Requests & Latency Distribution)
+      // E. Time Series Graph
       ApmTrace.aggregate([
         { $match: matchQuery },
         {
@@ -169,27 +176,21 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
         { $project: { time: "$_id", requests: 1, errors: 1, avgLatency: 1, maxLatency: 1, minLatency: 1 } }
       ]),
 
-      // E. Geo Distribution (Web Analytics parity)
+      // F. Geo
       Promise.all([
         ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$country", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
         ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$city", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }])
       ]),
 
-      // F. System Distribution
+      // G. System
       Promise.all([
         ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$device", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 5 }]),
         ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$browser", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 5 }]),
         ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$os", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 5 }]),
       ]),
 
-      // G. Top Clients (Sources/UserAgents)
-      ApmTrace.aggregate([
-        { $match: matchQuery },
-        { $group: { _id: "$userAgent", count: { $sum: 1 } } },
-        { $sort: { count: -1 } },
-        { $limit: 10 }
-      ])
-
+      // H. Clients
+      ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$userAgent", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }])
     ]);
 
     const graph = fillTimeGaps(graphDataRaw, range as string || '24h', startDate);
@@ -199,6 +200,8 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
       meta: service,
       overview: safeOverview,
       routes: routes || [],
+      referrers,
+      channels,
       statusCodes: statusCodes.map((s: any) => ({ status: s._id, count: s.count })),
       graph,
       geo: { countries: geo[0], cities: geo[1] },
