@@ -19,6 +19,9 @@ import { deleteMonitor, getMonitorStats, listMonitors, registerMonitor } from '.
 import { getRandomStatus } from '../controllers/demo';
 import { createServer } from 'http';
 import { initSocketServer } from '../services/socket';
+import { ingestApmBatch } from '../controllers/apm/ingest';
+import { deleteService, listServices, registerService } from '../controllers/apm/main';
+import { getApmStats } from '../controllers/apm/stats';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -82,6 +85,13 @@ const webIngestLimiter = rateLimit({
   max: 200,
 });
 
+const apmLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, 
+  max: 1000, 
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // --- Routes Definition ---
 
 // 1. Ingestion API
@@ -89,6 +99,7 @@ const webIngestLimiter = rateLimit({
 const ingestRouter = express.Router();
 ingestRouter.post('/stats', agentIngestLimiter, authenticateAgent, ingestMetrics);
 ingestRouter.post('/web', webIngestLimiter, ingestWebMetrics);
+ingestRouter.post('/apm', apmLimiter, ingestApmBatch);
 
 // 2. VPS API (Frontend User)
 const apiRouter = express.Router();
@@ -109,6 +120,12 @@ apiRouter.post('/uptime/register', registerMonitor);
 apiRouter.get('/uptime/list', listMonitors);
 apiRouter.delete('/uptime/:id', deleteMonitor);
 apiRouter.get('/uptime/:id/stats', getMonitorStats);
+
+// --- APM (Dashboard) ---
+apiRouter.post('/apm/register', registerService);
+apiRouter.get('/apm/list', listServices);
+apiRouter.delete('/apm/:id', deleteService);
+apiRouter.get('/apm/:id/stats', getApmStats); 
 
 // --- Mounting Routes (CRITICAL ORDER) ---
 

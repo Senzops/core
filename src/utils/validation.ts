@@ -98,3 +98,23 @@ export const RegisterMonitorSchema = z.object({
   url: z.string().url(),
   interval: z.enum(['15', '30', '60']).transform(Number), // accept strings, convert to number
 });
+
+export const RegisterApmSchema = z.object({
+  name: z.string().min(1).max(50),
+  framework: z.string().optional(),
+});
+
+// Single Trace Item from SDK
+const ApmTraceItem = z.object({
+  method: z.string(),
+  route: z.string(), // The SDK must normalize this (e.g. /users/:id)
+  path: z.string(),  // The raw path
+  status: z.number().int(),
+  duration: z.number().nonnegative(),
+  ip: z.string().optional(),
+  userAgent: z.string().optional(),
+  timestamp: z.string().datetime(), // ISO String
+});
+
+// Batch Payload from SDK
+export const ApmBatchSchema = z.array(ApmTraceItem);
