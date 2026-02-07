@@ -6,6 +6,7 @@ import morgan from 'morgan';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import admin from 'firebase-admin';
+import senzor from '@senzops/apm-node';
 
 // Imports
 import { authenticateUser, authenticateAgent, errorHandler } from '../middlewares';
@@ -33,6 +34,10 @@ const httpServer = createServer(app);
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 const MONGO_URI: string = process.env.MONGO_URI!;
+const SENZOR_APM_API_KEY: string = process.env.SENZOR_APM_API_KEY!;
+senzor.init({
+  apiKey: SENZOR_APM_API_KEY,
+});
 
 // --- Firebase Init ---
 if (!admin.apps.length) {
@@ -66,6 +71,7 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '1mb' })); // Body parser
 app.use(morgan('tiny')); // Logging
+app.use(senzor.requestHandler());  // senzor apm
 
 // --- Rate Limiters ---
 const apiLimiter = rateLimit({
@@ -86,8 +92,8 @@ const webIngestLimiter = rateLimit({
 });
 
 const apmLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000, 
-  max: 1000, 
+  windowMs: 1 * 60 * 1000,
+  max: 1000,
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -125,7 +131,7 @@ apiRouter.get('/uptime/:id/stats', getMonitorStats);
 apiRouter.post('/apm/register', registerService);
 apiRouter.get('/apm/list', listServices);
 apiRouter.delete('/apm/:id', deleteService);
-apiRouter.get('/apm/:id/stats', getApmStats); 
+apiRouter.get('/apm/:id/stats', getApmStats);
 
 // --- Mounting Routes (CRITICAL ORDER) ---
 
