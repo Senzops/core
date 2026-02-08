@@ -58,6 +58,7 @@ if (!admin.apps.length) {
 }
 
 // --- Middlewares ---
+app.use(senzor.requestHandler());  // senzor apm
 // Security Headers (Helmet)
 // CRITICAL: We must allow Cross-Origin Resource Policy for the Web Agent to POST data
 app.use(helmet({
@@ -72,7 +73,6 @@ app.use(cors({
 }));
 app.use(express.json({ limit: '1mb' })); // Body parser
 app.use(morgan('tiny')); // Logging
-app.use(senzor.requestHandler());  // senzor apm
 
 // --- Rate Limiters ---
 const apiLimiter = rateLimit({

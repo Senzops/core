@@ -1,8 +1,10 @@
 import { Request, Response } from 'express';
 
-export const getRandomStatus = (req: Request, res: Response) => {
+export const getRandomStatus = async (req: Request, res: Response) => {
   // Simulate Random Latency (50ms - 800ms)
   const delay = Math.floor(Math.random() * 750) + 50;
+  const request = await fetch("https://google.com");
+  const response = await request.json();
 
   setTimeout(() => {
     const rand = Math.random();
