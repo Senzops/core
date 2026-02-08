@@ -104,17 +104,26 @@ export const RegisterApmSchema = z.object({
   framework: z.string().optional(),
 });
 
-// Single Trace Item from SDK
+const ApmSpanSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  startTime: z.number().min(0),
+  duration: z.number().min(0),
+  status: z.number().optional(),
+  meta: z.record(z.any()).optional(),
+});
+
 const ApmTraceItem = z.object({
+  traceId: z.string().optional(), // SDK should generate this
   method: z.string(),
-  route: z.string(), // The SDK must normalize this (e.g. /users/:id)
-  path: z.string(),  // The raw path
+  route: z.string(),
+  path: z.string(),
   status: z.number().int(),
   duration: z.number().nonnegative(),
   ip: z.string().optional(),
   userAgent: z.string().optional(),
-  timestamp: z.string().datetime(), // ISO String
+  spans: z.array(ApmSpanSchema).optional().default([]), // NEW
+  timestamp: z.string().datetime(),
 });
 
-// Batch Payload from SDK
 export const ApmBatchSchema = z.array(ApmTraceItem);

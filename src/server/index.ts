@@ -23,6 +23,7 @@ import { initSocketServer } from '../services/socket';
 import { ingestApmBatch } from '../controllers/apm/ingest';
 import { deleteService, listServices, registerService } from '../controllers/apm/main';
 import { getApmStats } from '../controllers/apm/stats';
+import { getInvocations, getTraceDetail } from '../controllers/apm/traces';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -132,6 +133,8 @@ apiRouter.post('/apm/register', registerService);
 apiRouter.get('/apm/list', listServices);
 apiRouter.delete('/apm/:id', deleteService);
 apiRouter.get('/apm/:id/stats', getApmStats);
+apiRouter.get('/apm/:id/invocations', getInvocations);
+apiRouter.get('/apm/:id/trace/:traceId', getTraceDetail);
 
 // --- Mounting Routes (CRITICAL ORDER) ---
 
