@@ -11,14 +11,13 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
     const apiKey = req.headers['x-service-api-key'] as string;
     if (!apiKey) return res.status(401).json({ error: 'Missing API Key' });
 
-    // Note: In high scale, cache this lookup in Redis
     const service = await ApmService.findOne({ apiKey });
     if (!service) return res.status(403).json({ error: 'Invalid API Key' });
 
     // 2. Validate Batch
     const batch = ApmBatchSchema.safeParse(req.body);
     if (!batch.success) {
-      return res.status(400).json({ error: 'Invalid payload format' });
+      return res.status(400).json({ error: 'Invalid payload format', details: batch.error });
     }
 
     // 3. Update Last Seen
@@ -28,7 +27,6 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
     const traceDocs = batch.data.map(item => {
       // Geo Lookup
       let ip = item.ip || '';
-      // Handle proxies or ::ffff: prefix
       if (ip.includes('::ffff:')) ip = ip.replace('::ffff:', '');
       const geo = ip ? geoip.lookup(ip) : null;
 
@@ -41,8 +39,8 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
       return {
         serviceId: service._id,
         method: item.method,
-        route: item.route, // The SDK sends normalized route
-        path: item.path,   // The raw path
+        route: item.route,
+        path: item.path,
         status: item.status,
         duration: item.duration,
         ip: ip,
@@ -53,6 +51,7 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
         os,
         device,
         timestamp: new Date(item.timestamp),
+        spans: item.spans || []
       };
     });
 
@@ -65,7 +64,6 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
 
   } catch (error) {
     logger.error('[APM] Ingest Error', error);
-    // Return 500 but log it. The SDK should handle retries if needed.
     return res.status(500).json({ error: 'Internal Server Error' });
   }
 };
