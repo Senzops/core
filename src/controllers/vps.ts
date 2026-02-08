@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
-import { Vps, Run } from '../models/Vps';
+import { Vps, VpsRun } from '../models/Vps';
 import { User } from '../models/User';
 import { RegisterVpsSchema, TelemetrySchema } from '../utils/validation';
 
@@ -57,7 +57,7 @@ export const deleteVps = async (req: Request, res: Response, next: NextFunction)
     if (!result) return res.status(404).json({ error: 'VPS not found' });
 
     // Cascade delete runs (Optional, or let TTL handle it)
-    await Run.deleteMany({ vpsId: id });
+    await VpsRun.deleteMany({ vpsId: id });
 
     res.json({ message: 'VPS Deleted' });
   } catch (error) {
@@ -98,7 +98,7 @@ export const ingestMetrics = async (req: Request, res: Response, next: NextFunct
     await vps.save();
 
     // 3. Store the Run
-    await Run.create({
+    await VpsRun.create({
       vpsId: vps._id,
       metrics: metrics,
     });
@@ -126,7 +126,7 @@ export const getVpsStats = async (req: Request, res: Response, next: NextFunctio
     if (!vps) return res.status(404).json({ error: "VPS not found" });
 
     // Get last 60 runs (approx last hour of data)
-    const runs = await Run.find({ vpsId: id })
+    const runs = await VpsRun.find({ vpsId: id })
       .sort({ createdAt: -1 }).limit(limit);
 
     res.json({ vps, history: runs.reverse() });

@@ -52,4 +52,4 @@ const RunSchema = new Schema<IRun>({
 // CRITICAL: Auto-delete documents after 24 hours (86400 seconds)
 RunSchema.index({ createdAt: 1 }, { expireAfterSeconds: 86400 });
 
-export const Run = mongoose.model<IRun>('Run', RunSchema);
+export const VpsRun = mongoose.model<IRun>('VpsRun', RunSchema);
