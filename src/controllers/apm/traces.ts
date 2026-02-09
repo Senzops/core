@@ -21,10 +21,10 @@ export const getInvocations = async (req: Request, res: Response, next: NextFunc
     if (status === 'error') query.status = { $gte: 400 };
     if (minDuration) query.duration = { $gte: Number(minDuration) };
 
-    // Fetch last 100 traces (Project only necessary fields for table)
+    // Fetch last 500 traces (Project only necessary fields for table)
     const traces = await ApmTrace.find(query)
       .sort({ timestamp: -1 })
-      .limit(50)
+      .limit(500)
       .select('method route path status duration timestamp ip country os');
 
     res.json(traces);
