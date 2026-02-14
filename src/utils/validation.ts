@@ -113,6 +113,12 @@ const ApmSpanSchema = z.object({
   meta: z.record(z.any()).optional(),
 });
 
+const ApmErrorSchema = z.object({
+  name: z.string(),
+  message: z.string(),
+  stack: z.string().optional()
+}).optional();
+
 const ApmTraceItem = z.object({
   traceId: z.string().optional(), // SDK should generate this
   method: z.string(),
@@ -123,6 +129,7 @@ const ApmTraceItem = z.object({
   ip: z.string().optional(),
   userAgent: z.string().optional(),
   spans: z.array(ApmSpanSchema).optional().default([]), // NEW
+  error: ApmErrorSchema, // NEW
   timestamp: z.string().datetime(),
 });
 

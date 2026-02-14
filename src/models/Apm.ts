@@ -27,6 +27,12 @@ export interface ISpan {
   meta?: any;         // Arbitrary metadata (sql query, headers)
 }
 
+export interface IError {
+  name: String,
+  message: String,
+  stack: String
+}
+
 // --- 3. Raw Trace Data ---
 export interface IApmTrace extends Document {
   serviceId: mongoose.Types.ObjectId;
@@ -47,6 +53,7 @@ export interface IApmTrace extends Document {
   device: string;
 
   spans: ISpan[]; // NEW: Detailed breakdown
+  error: IError,
 
   timestamp: Date;
 }
@@ -58,6 +65,12 @@ const SpanSchema = new Schema({
   duration: Number,
   status: Number,
   meta: Object
+}, { _id: false });
+
+const TraceErrorSchema = new Schema({
+  name: String,
+  message: String,
+  stack: String
 }, { _id: false });
 
 const ApmTraceSchema = new Schema<IApmTrace>({
@@ -79,6 +92,7 @@ const ApmTraceSchema = new Schema<IApmTrace>({
   device: String,
 
   spans: [SpanSchema], // Embedded array for read performance
+  error: TraceErrorSchema,
 
   timestamp: { type: Date, default: Date.now, index: true }
 }, { timestamps: true });

@@ -51,7 +51,8 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
         os,
         device,
         timestamp: new Date(item.timestamp),
-        spans: item.spans || []
+        spans: item.spans || [],
+        error: item.error, // NEW
       };
     });
 
