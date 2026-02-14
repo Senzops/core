@@ -152,6 +152,7 @@ app.use('/api', apiRouter);
 app.get('/health', (req, res) => res.send('Senzor Core: Online'));
 app.get('/status', getRandomStatus);
 
+app.use(senzor.errorHandler());
 // Error Handling
 app.use(errorHandler);
 
