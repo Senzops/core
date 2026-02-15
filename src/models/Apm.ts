@@ -28,9 +28,9 @@ export interface ISpan {
 }
 
 export interface IError {
-  name: String,
-  message: String,
-  stack: String
+  name?: String,
+  message?: String,
+  stack?: String
 }
 
 // --- 3. Raw Trace Data ---
@@ -53,7 +53,7 @@ export interface IApmTrace extends Document {
   device: string;
 
   spans: ISpan[]; // NEW: Detailed breakdown
-  error: IError,
+  error?: IError,
 
   timestamp: Date;
 }
@@ -78,7 +78,7 @@ const ApmTraceSchema = new Schema<IApmTrace>({
   traceId: { type: String, index: true }, // Helpful for lookup
 
   method: { type: String, required: true },
-  route: { type: String, required: true, index: true },
+  route: { type: String, required: true },
   path: String,
   status: { type: Number, required: true },
   duration: { type: Number, required: true },
@@ -94,8 +94,18 @@ const ApmTraceSchema = new Schema<IApmTrace>({
   spans: [SpanSchema], // Embedded array for read performance
   error: TraceErrorSchema,
 
-  timestamp: { type: Date, default: Date.now, index: true }
+  timestamp: { type: Date, default: Date.now }
 }, { timestamps: true });
+
+// --- OPTIMIZATION: Compound Indexes ---
+
+// 1. Main Dashboard Query: Find by Service, Filter by Date, Sort by Date
+// Covers: { serviceId: 1, timestamp: 1 }
+ApmTraceSchema.index({ serviceId: 1, timestamp: -1 });
+
+// 2. Drill-down Query: Find by Service AND Route, Filter by Date
+// Covers: { serviceId: 1, route: 1, timestamp: 1 }
+ApmTraceSchema.index({ serviceId: 1, route: 1, timestamp: -1 });
 
 // 7 Days Retention
 ApmTraceSchema.index({ createdAt: 1 }, { expireAfterSeconds: 604800 });
