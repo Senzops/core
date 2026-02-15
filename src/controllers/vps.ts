@@ -3,6 +3,7 @@ import { Request, Response, NextFunction } from 'express';
 import { Vps, VpsRun } from '../models/Vps';
 import { User } from '../models/User';
 import { RegisterVpsSchema, TelemetrySchema } from '../utils/validation';
+import { logger } from '../utils/logger';
 
 // --- VPS Controller ---
 
@@ -71,40 +72,54 @@ export const ingestMetrics = async (req: Request, res: Response, next: NextFunct
   try {
     const vps = (req as any).vps;
 
-    // 1. Validate Payload
+    // 1. Synchronous Validation
+    // Fail fast if payload is malformed
     const metrics = TelemetrySchema.parse(req.body.metrics);
 
-    // 2. Fire and Forget Storage (Optimistic response)
-    // We update the "Heartbeat" (Last Seen) immediately
-    vps.lastSeen = new Date();
-    vps.status = 'online';
+    // 2. Fire and Forget Response
+    // Unblock the agent immediately
+    res.status(200).json({ status: 'ok' });
 
-    // Update metadata if it changed (OS info)
-    if (metrics.os) {
-      vps.metadata = {
-        os: `${metrics.os.distro} ${metrics.os.release}`,
-        hostname: metrics.os.hostname,
-        arch: metrics.os.arch,
-      };
-    }
+    // 3. Background Processing
+    setImmediate(async () => {
+      try {
+        // Update Heartbeat & Status
+        vps.lastSeen = new Date();
+        vps.status = 'online';
 
-    // If data is present (not null), mark as active
-    vps.activeIntegrations = {
-      nginx: !!metrics.nginx,
-      traefik: !!metrics.traefik,
-      terminal: metrics.terminalEnabled || false,
-    };
+        // Update metadata
+        if (metrics.os) {
+          vps.metadata = {
+            os: `${metrics.os.distro} ${metrics.os.release}`,
+            hostname: metrics.os.hostname,
+            arch: metrics.os.arch
+          };
+        }
 
-    await vps.save();
+        // Update Active Integrations Status
+        vps.activeIntegrations = {
+          nginx: !!metrics.nginx,
+          traefik: !!metrics.traefik,
+          terminal: metrics.terminalEnabled || false,
+        };
 
-    // 3. Store the Run
-    await VpsRun.create({
-      vpsId: vps._id,
-      metrics: metrics,
+        // Parallel Writes
+        await Promise.all([
+          vps.save(), // Update Registry
+          VpsRun.create({ // Insert Telemetry
+            vpsId: vps._id,
+            metrics: metrics,
+          })
+        ]);
+
+      } catch (bgError) {
+        // Log background failures since we can't respond to client anymore
+        logger.error(`[VPS Ingest] Background Error for ${vps._id}:`, bgError);
+      }
     });
 
-    res.status(200).json({ status: 'ok' });
   } catch (error) {
+    // If Zod validation fails, this catches it and sends 400
     next(error);
   }
 };
