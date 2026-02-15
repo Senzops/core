@@ -65,3 +65,53 @@ const WebEventSchema = new Schema<IWebEvent>({
 WebEventSchema.index({ createdAt: 1 }, { expireAfterSeconds: 2592000 });
 
 export const WebEvent = mongoose.model<IWebEvent>('WebEvent', WebEventSchema);
+
+/**
+ * Metrics
+ */
+export interface IWebMetric extends Document {
+  webId: mongoose.Types.ObjectId;
+  timestamp: Date; // Minute bucket
+  
+  // Counters
+  views: number;
+  durationSum: number; // For Avg Duration calculation
+  
+  // Dimensions (Maps for High Cardinality)
+  paths: Map<string, number>;
+  referrers: Map<string, number>;
+  channels: Map<string, number>; // Search, Direct, Social
+  
+  // Context
+  countries: Map<string, number>;
+  cities: Map<string, number>;
+  browsers: Map<string, number>;
+  os: Map<string, number>;
+  devices: Map<string, number>;
+}
+
+const WebMetricSchema = new Schema<IWebMetric>({
+  webId: { type: Schema.Types.ObjectId, ref: 'Website', required: true },
+  timestamp: { type: Date, required: true },
+  
+  views: { type: Number, default: 0 },
+  durationSum: { type: Number, default: 0 },
+  
+  paths: { type: Map, of: Number, default: {} },
+  referrers: { type: Map, of: Number, default: {} },
+  channels: { type: Map, of: Number, default: {} },
+  
+  countries: { type: Map, of: Number, default: {} },
+  cities: { type: Map, of: Number, default: {} },
+  browsers: { type: Map, of: Number, default: {} },
+  os: { type: Map, of: Number, default: {} },
+  devices: { type: Map, of: Number, default: {} },
+});
+
+// Compound Index for fast range queries
+WebMetricSchema.index({ webId: 1, timestamp: 1 });
+
+// TTL: Keep aggregated stats for 32 days
+WebMetricSchema.index({ timestamp: 1 }, { expireAfterSeconds: 2764800 });
+
+export const WebMetric = mongoose.model<IWebMetric>('WebMetric', WebMetricSchema);

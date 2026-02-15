@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
-import { Website, WebEvent } from '../../models/Web';
+import { Website, WebEvent, WebMetric } from '../../models/Web';
 import { logger } from '../../utils/logger';
 
 // --- Helper: Zero-Fill Time Series ---
@@ -8,22 +8,24 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
   const filled = [];
   const now = new Date();
 
-  // Align start to the beginning of the interval
   let current = new Date(startDate);
-  if (range === '24h') current.setMinutes(0, 0, 0);
+  // Align to boundaries
+  if (range === '1h') current.setSeconds(0, 0);
+  else if (range === '24h') current.setMinutes(0, 0, 0);
   else current.setHours(0, 0, 0, 0);
 
-  // Align end to the NEXT hour/day to ensure we cover the current partial bucket
   const end = new Date(now);
-  if (range === '24h') end.setHours(end.getHours() + 1);
+  if (range === '1h') end.setMinutes(end.getMinutes() + 1);
+  else if (range === '24h') end.setHours(end.getHours() + 1);
   else end.setDate(end.getDate() + 1);
 
   const dataMap = new Map(data.map(item => [item.time, item]));
 
   while (current < end) {
-    const key = range === '24h'
-      ? current.toISOString().slice(0, 13) + ":00:00.000Z"
-      : current.toISOString().slice(0, 10);
+    let key;
+    if (range === '1h') key = current.toISOString().slice(0, 16) + ":00.000Z";
+    else if (range === '24h') key = current.toISOString().slice(0, 13) + ":00:00.000Z";
+    else key = current.toISOString().slice(0, 10);
 
     if (dataMap.has(key)) {
       filled.push(dataMap.get(key));
@@ -31,7 +33,8 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
       filled.push({ time: key, views: 0, visitors: 0 });
     }
 
-    if (range === '24h') current.setHours(current.getHours() + 1);
+    if (range === '1h') current.setMinutes(current.getMinutes() + 1);
+    else if (range === '24h') current.setHours(current.getHours() + 1);
     else current.setDate(current.getDate() + 1);
   }
   return filled;
@@ -54,36 +57,48 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
 
     if (range === '7d') startDate.setDate(now.getDate() - 7);
     else if (range === '30d') startDate.setDate(now.getDate() - 30);
+    else if (range === '1h') startDate.setHours(now.getHours() - 1);
     else startDate.setHours(now.getHours() - 24);
 
     const fiveMinutesAgo = new Date();
     fiveMinutesAgo.setMinutes(now.getMinutes() - 5);
 
+    const matchQuery = { webId: webIdObj, timestamp: { $gte: startDate } };
+    const rawMatchQuery = { webId: webIdObj, createdAt: { $gte: startDate } };
+
     const [
+      // 1. Live & Uniques (Must use Raw for accuracy)
       liveCount,
+      uniqueVisitors,
+
+      // 2. Session Stats (Bounce Rate needs Raw session tracking)
       sessionStats,
-      pagePaths,
+
+      // 3. Dimensions (Optimized: Use WebMetric Aggregates)
+      pagesResult,
+      referrersResult,
+      channelsResult,
+      geoResult,
+      systemResult,
+
+      // 4. Raw Fallbacks (Data not in Metric or need distincts)
       pageTitles,
-      referrers,
-      channels,
-      countries,
-      cities,
-      devices,
-      browsers,
-      os,
       graphDataRaw,
-      busyDaysRaw,
-      busyHoursRaw
+
+      // 5. Traffic Heatmap (Optimized: Use Metric)
+      heatmapResult
     ] = await Promise.all([
 
-      // liveCount
+      // A. Live
       WebEvent.distinct('visitorId', { webId: cleanId, createdAt: { $gte: fiveMinutesAgo } }),
 
-      // sessionStats
+      // B. Uniques
+      WebEvent.distinct('visitorId', rawMatchQuery),
+
+      // C. Session Stats
       WebEvent.aggregate([
-        { $match: { webId: webIdObj, createdAt: { $gte: startDate } } },
+        { $match: rawMatchQuery },
         {
-          // Group by Session first to get per-session metrics
           $group: {
             _id: "$sessionId",
             pageViews: { $sum: { $cond: [{ $eq: ["$type", "pageview"] }, 1, 0] } },
@@ -91,53 +106,61 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
           }
         },
         {
-          // Then Group all sessions to get averages
           $group: {
             _id: null,
             totalSessions: { $sum: 1 },
-            // A bounce is a session with exactly 1 pageview
             bounces: { $sum: { $cond: [{ $eq: ["$pageViews", 1] }, 1, 0] } },
             totalDuration: { $sum: "$duration" },
-            totalPageViews: { $sum: "$pageViews" } // Sum of all pageviews in all sessions
+            totalPageViews: { $sum: "$pageViews" }
           }
         },
         {
           $project: {
             totalSessions: 1,
-            // (Bounces / Sessions) * 100
             bounceRate: { $cond: [{ $eq: ["$totalSessions", 0] }, 0, { $multiply: [{ $divide: ["$bounces", "$totalSessions"] }, 100] }] },
-            // Avg Duration per Session
             avgDuration: { $cond: [{ $eq: ["$totalSessions", 0] }, 0, { $divide: ["$totalDuration", "$totalSessions"] }] },
             totalPageViews: 1
           }
         }
       ]),
 
-      // pages
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$path", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate }, title: { $exists: true, $ne: null } } }, { $group: { _id: "$title", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+      // D. Dimensions via WebMetric (Fast)
+      WebMetric.aggregate([{ $match: matchQuery }, { $project: { d: { $objectToArray: "$paths" } } }, { $unwind: "$d" }, { $group: { _id: "$d.k", count: { $sum: "$d.v" } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
+      WebMetric.aggregate([{ $match: matchQuery }, { $project: { d: { $objectToArray: "$referrers" } } }, { $unwind: "$d" }, { $group: { _id: "$d.k", count: { $sum: "$d.v" } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
+      WebMetric.aggregate([{ $match: matchQuery }, { $project: { d: { $objectToArray: "$channels" } } }, { $unwind: "$d" }, { $group: { _id: "$d.k", count: { $sum: "$d.v" } } }, { $sort: { count: -1 } }, { $limit: 10 }]),
 
-      // sources/refs
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$referrer", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate }, channel: { $exists: true, $ne: null } } }, { $group: { _id: "$channel", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+      WebMetric.aggregate([{ $match: matchQuery }, {
+        $facet: {
+          countries: [{ $project: { d: { $objectToArray: "$countries" } } }, { $unwind: "$d" }, { $group: { _id: "$d.k", count: { $sum: "$d.v" } } }, { $sort: { count: -1 } }, { $limit: 10 }],
+          cities: [{ $project: { d: { $objectToArray: "$cities" } } }, { $unwind: "$d" }, { $group: { _id: "$d.k", count: { $sum: "$d.v" } } }, { $sort: { count: -1 } }, { $limit: 10 }]
+        }
+      }]),
 
-      // goe
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$country", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$city", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+      WebMetric.aggregate([{ $match: matchQuery }, {
+        $facet: {
+          os: [{ $project: { d: { $objectToArray: "$os" } } }, { $unwind: "$d" }, { $group: { _id: "$d.k", count: { $sum: "$d.v" } } }, { $sort: { count: -1 } }, { $limit: 5 }],
+          browsers: [{ $project: { d: { $objectToArray: "$browsers" } } }, { $unwind: "$d" }, { $group: { _id: "$d.k", count: { $sum: "$d.v" } } }, { $sort: { count: -1 } }, { $limit: 5 }],
+          devices: [{ $project: { d: { $objectToArray: "$devices" } } }, { $unwind: "$d" }, { $group: { _id: "$d.k", count: { $sum: "$d.v" } } }, { $sort: { count: -1 } }, { $limit: 5 }]
+        }
+      }]),
 
-      // system
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$device", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$browser", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
-      WebEvent.aggregate([{ $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } }, { $group: { _id: "$os", count: { $sum: 1 } } }, { $sort: { count: -1 } }]),
+      // E. Page Titles (Raw - Not in Metric)
+      WebEvent.aggregate([
+        { $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate }, title: { $exists: true, $ne: null } } },
+        { $group: { _id: "$title", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+        { $limit: 10 }
+      ]),
 
-      // Graph
+      // F. Graph (Raw required for Unique Visitor count per bucket)
       WebEvent.aggregate([
         { $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } },
         {
           $group: {
             _id: {
               $dateToString: {
-                format: range === '30d' || range === '7d' ? "%Y-%m-%d" : "%Y-%m-%dT%H:00:00.000Z",
+                format: range === '1h' ? "%Y-%m-%dT%H:%M:00.000Z"
+                  : (range === '30d' || range === '7d' ? "%Y-%m-%d" : "%Y-%m-%dT%H:00:00.000Z"),
                 date: "$createdAt"
               }
             },
@@ -149,38 +172,45 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
         { $project: { time: "$_id", views: 1, visitors: { $size: "$visitors" } } }
       ]),
 
-      // Busy Days (1=Sun, 7=Sat)
-      WebEvent.aggregate([
-        { $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } },
-        { $group: { _id: { $dayOfWeek: "$createdAt" }, count: { $sum: 1 } } },
-        { $sort: { "_id": 1 } }
-      ]),
-
-      // Busy Hours (0-23)
-      WebEvent.aggregate([
-        { $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } },
-        { $group: { _id: { $hour: "$createdAt" }, count: { $sum: 1 } } },
-        { $sort: { "_id": 1 } }
+      // G. Traffic Heatmap (Optimized via Metric)
+      WebMetric.aggregate([
+        { $match: matchQuery },
+        {
+          $group: {
+            _id: { day: { $dayOfWeek: "$timestamp" }, hour: { $hour: "$timestamp" } },
+            count: { $sum: "$views" }
+          }
+        },
+        { $sort: { "_id.day": 1, "_id.hour": 1 } }
       ]),
     ]);
 
     const graphData = fillTimeGaps(graphDataRaw, range as string || '24h', startDate);
 
-    // Format Days (1-7 -> Sun-Sat)
+    // Format Heatmap/Traffic
     const dayMap = ["", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-    // Fill missing days with 0
-    const busyDays = Array.from({ length: 7 }, (_, i) => {
-      const found = busyDaysRaw.find((d: any) => d._id === (i + 1));
-      return { name: dayMap[i + 1], count: found ? found.count : 0 };
-    });
 
-    // Format Hours (0-23)
-    const busyHours = Array.from({ length: 24 }, (_, i) => {
-      const found = busyHoursRaw.find((h: any) => h._id === i);
-      return { name: `${i}:00`, count: found ? found.count : 0 };
+    // Busy Days
+    const busyDaysMap = new Map();
+    heatmapResult.forEach((h: any) => {
+      const d = h._id.day;
+      busyDaysMap.set(d, (busyDaysMap.get(d) || 0) + h.count);
     });
+    const busyDays = Array.from({ length: 7 }, (_, i) => ({
+      name: dayMap[i + 1],
+      count: busyDaysMap.get(i + 1) || 0
+    }));
 
-    const uniqueVisitors = await WebEvent.distinct('visitorId', { webId: cleanId, createdAt: { $gte: startDate } });
+    // Busy Hours
+    const busyHoursMap = new Map();
+    heatmapResult.forEach((h: any) => {
+      const hr = h._id.hour;
+      busyHoursMap.set(hr, (busyHoursMap.get(hr) || 0) + h.count);
+    });
+    const busyHours = Array.from({ length: 24 }, (_, i) => ({
+      name: `${i}:00`,
+      count: busyHoursMap.get(i) || 0
+    }));
 
     const stats = sessionStats[0] || { totalPageViews: 0, bounceRate: 0, avgDuration: 0 };
 
@@ -193,12 +223,12 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
         avgDuration: stats.avgDuration,
         bounceRate: stats.bounceRate
       },
-      pages: { path: pagePaths, title: pageTitles },
-      sources: { referrers, channels },
-      geo: { countries, cities },
-      system: { devices, browsers, os },
+      pages: { path: pagesResult, title: pageTitles },
+      sources: { referrers: referrersResult, channels: channelsResult },
+      geo: { countries: geoResult[0]?.countries || [], cities: geoResult[0]?.cities || [] },
+      system: { devices: systemResult[0]?.devices || [], browsers: systemResult[0]?.browsers || [], os: systemResult[0]?.os || [] },
       graph: graphData,
-      traffic: { days: busyDays, hours: busyHours } // New structure
+      traffic: { days: busyDays, hours: busyHours }
     });
 
   } catch (error) {
