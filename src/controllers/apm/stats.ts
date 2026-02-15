@@ -1,7 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
-import { ApmService, ApmTrace } from '../../models/Apm';
-import { ApmMetric } from '../../models/ApmMetric';
+import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
 
 // --- Helper: Zero-Fill Time Series ---
 const fillTimeGaps = (data: any[], range: string, startDate: Date) => {

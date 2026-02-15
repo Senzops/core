@@ -1,10 +1,9 @@
 import { Request, Response } from 'express';
 import geoip from 'geoip-lite';
 import { UAParser } from 'ua-parser-js';
-import { ApmService, ApmTrace } from '../../models/Apm';
+import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
 import { logger } from '../../utils/logger';
 import { ApmBatchSchema } from '../../utils/validation';
-import { ApmMetric } from '../../models/ApmMetric';
 
 export const ingestApmBatch = async (req: Request, res: Response) => {
   try {
