@@ -41,6 +41,8 @@ export interface IError {
 export interface IApmTrace extends Document {
   serviceId: mongoose.Types.ObjectId;
   traceId: string;    // Client-generated UUID for correlation
+  parentTraceId?: string; // NEW
+  parentSpanId?: string;  // NEW
 
   method: string;
   route: string;
@@ -63,6 +65,7 @@ export interface IApmTrace extends Document {
 }
 
 const SpanSchema = new Schema({
+  spanId: String,
   name: String,
   type: String,
   startTime: Number,
@@ -80,6 +83,10 @@ const TraceErrorSchema = new Schema({
 const ApmTraceSchema = new Schema<IApmTrace>({
   serviceId: { type: Schema.Types.ObjectId, ref: 'ApmService', required: true, index: true },
   traceId: { type: String, index: true }, // Helpful for lookup
+
+  // Linkage
+  parentTraceId: { type: String, index: true }, // Index for fast "Find Child" queries
+  parentSpanId: { type: String, index: true },
 
   method: { type: String, required: true },
   route: { type: String, required: true },

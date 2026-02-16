@@ -66,6 +66,9 @@ const processBatchBackground = async (data: any[], service: any) => {
     // Raw Trace
     traceDocs.push({
       serviceId: service._id,
+      traceId: item.traceId, // SDK generated
+      parentTraceId: item.parentTraceId, // Map parent
+      parentSpanId: item.parentSpanId,   // Map parent
       method: item.method,
       route: item.route,
       path: item.path,
