@@ -105,6 +105,7 @@ export const RegisterApmSchema = z.object({
 });
 
 const ApmSpanSchema = z.object({
+  spanId: z.string().optional(),
   name: z.string(),
   type: z.string(),
   startTime: z.number().min(0),
@@ -121,6 +122,8 @@ const ApmErrorSchema = z.object({
 
 const ApmTraceItem = z.object({
   traceId: z.string().optional(), // SDK should generate this
+  parentTraceId: z.string().optional().nullable(),
+  parentSpanId: z.string().optional().nullable(),
   method: z.string(),
   route: z.string(),
   path: z.string(),
