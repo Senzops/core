@@ -38,7 +38,8 @@ export const getInvocations = async (req: Request, res: Response, next: NextFunc
     const traces = await ApmTrace.find(query)
       .sort({ timestamp: -1 })
       .limit(2000)
-      .select('method route path status duration timestamp ip country city os browser device');
+      .select('method route path status duration timestamp ip country city os browser device')
+      .lean();
 
     res.json(traces);
   } catch (error) {
@@ -52,42 +53,44 @@ export const getTraceDetail = async (req: Request, res: Response, next: NextFunc
     const { id, traceId } = req.params;
     const { uid } = (req as any).user;
 
-    // 1. Verify Service Access
     const service = await ApmService.findOne({ _id: id, ownerId: uid });
     if (!service) return res.status(404).json({ error: "Service not found" });
 
-    // 2. Fetch The Trace
-    // Note: We search by traceId (UUID), not _id, as it's cleaner for linking
+    // 1. Fetch Main Trace
     const trace = await ApmTrace.findOne({ serviceId: id, _id: traceId }).lean();
     if (!trace) return res.status(404).json({ error: "Trace not found" });
 
-    // 3. Find Downstream Traces (Children)
-    // "Find traces where parentTraceId == currentTrace.traceId"
-    // We restrict this to services owned by the same user to ensure security/privacy
-    // First, find all service IDs owned by user
-    const userServices = await ApmService.find({ ownerId: uid }).select('_id name');
+    // 2. Find Related Services (Owned by same user)
+    const userServices = await ApmService.find({ ownerId: uid }).select('_id name').lean();
     const serviceIds = userServices.map(s => s._id);
 
-    const childTraces = await ApmTrace.find({
-      parentTraceId: trace.traceId,
-      serviceId: { $in: serviceIds }
-    }).select('serviceId traceId parentSpanId status duration method route timestamp');
-
-    // 4. Find Upstream Trace (Parent)
-    let parentTrace = null;
-    if (trace.parentTraceId) {
-      parentTrace = await ApmTrace.findOne({
-        traceId: trace.parentTraceId,
-        serviceId: { $in: serviceIds }
-      }).select('serviceId traceId status duration method route');
-    }
-
-    // Map Service Names for UI
+    // Helper Map: ServiceID -> ServiceName
     const serviceMap = userServices.reduce((acc: any, curr) => {
       acc[curr._id.toString()] = curr.name;
       return acc;
     }, {});
 
+    // 3. Find Children (Downstream Calls)
+    // We look for traces that list THIS trace as their parent
+    const childTraces = await ApmTrace.find({
+      parentTraceId: trace.traceId,
+      serviceId: { $in: serviceIds }
+    })
+      .select('serviceId traceId parentSpanId status duration method route timestamp')
+      .lean();
+
+    // 4. Find Parent (Upstream Call)
+    let parentTrace = null;
+    if (trace.parentTraceId) {
+      parentTrace = await ApmTrace.findOne({
+        traceId: trace.parentTraceId,
+        serviceId: { $in: serviceIds }
+      })
+        .select('serviceId traceId status duration method route')
+        .lean();
+    }
+
+    // 5. Construct Response
     res.json({
       ...trace,
       children: childTraces.map(c => ({
