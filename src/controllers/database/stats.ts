@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import { DatabaseService, DbMetric } from '../../models/Database';
 
-// --- Helper: Zero-Fill Time Series ---
+// --- Helper: Robust Zero-Fill Time Series ---
 const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
   const filled = [];
   const now = new Date();
@@ -28,12 +28,18 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
     if (dataMap.has(key)) {
       filled.push(dataMap.get(key));
     } else {
+      // PRO FIX: We use `null` instead of `0`. 
+      // This tells Recharts "No Data" so it can connect lines cleanly instead of nose-diving to 0.
       filled.push({
         time: key,
-        throughputRead: 0, throughputWrite: 0,
-        latencyRead: 0, latencyWrite: 0,
-        memoryUsed: 0, connections: 0,
-        netIn: 0, netOut: 0
+        throughputRead: null, throughputWrite: null,
+        latencyReadAvg: null, latencyReadMax: null,
+        latencyWriteAvg: null, latencyWriteMax: null,
+        memResident: null, memVirtual: null, memMapped: null,
+        scansCollection: null, scansIndex: null,
+        storageData: null, storageIndex: null, storageTotal: null,
+        locksAR: null, locksAW: null, locksQR: null, locksQW: null,
+        connections: null, netIn: null, netOut: null, netRequests: null
       });
     }
 
@@ -50,11 +56,9 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
     const { uid } = (req as any).user;
     const { range } = req.query;
 
-    // 1. Verify Ownership (DO NOT return encryptedUri)
     const db = await DatabaseService.findOne({ _id: id, ownerId: uid }).select('-encryptedUri');
     if (!db) return res.status(404).json({ error: "Database not found" });
 
-    // 2. Calculate Range
     const now = new Date();
     const startDate = new Date();
 
@@ -69,12 +73,9 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
 
     const matchQuery = { dbId: new mongoose.Types.ObjectId(id), timestamp: { $gte: startDate } };
 
-    // 3. Fetch Data Concurrently
     const [latestMetric, historyRaw] = await Promise.all([
-      // Get the absolute latest precise ping for top cards
       DbMetric.findOne({ dbId: id }).sort({ timestamp: -1 }).lean(),
 
-      // Aggregate Time Series for Graphs
       DbMetric.aggregate([
         { $match: matchQuery },
         {
@@ -86,14 +87,35 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
                 date: "$timestamp"
               }
             },
+            // Throughput
             throughputRead: { $avg: "$throughput.read" },
             throughputWrite: { $avg: "$throughput.write" },
-            latencyRead: { $avg: "$latency.read.avg" },
-            latencyWrite: { $avg: "$latency.write.avg" },
-            memoryUsed: { $avg: "$memory.resident" },
+            // Latency
+            latencyReadAvg: { $avg: "$latency.read.avg" },
+            latencyReadMax: { $max: "$latency.read.max" },
+            latencyWriteAvg: { $avg: "$latency.write.avg" },
+            latencyWriteMax: { $max: "$latency.write.max" },
+            // Memory
+            memResident: { $avg: "$memory.resident" },
+            memVirtual: { $avg: "$memory.virtual" },
+            memMapped: { $avg: "$memory.mapped" },
+            // Scans
+            scansCollection: { $avg: "$scans.collectionScans" },
+            scansIndex: { $avg: "$scans.indexScans" },
+            // Storage
+            storageData: { $avg: "$storage.dataSize" },
+            storageIndex: { $avg: "$storage.indexSize" },
+            storageTotal: { $avg: "$storage.storageSize" },
+            // Locks
+            locksAR: { $max: "$locks.activeReaders" },
+            locksAW: { $max: "$locks.activeWriters" },
+            locksQR: { $max: "$locks.queuedReaders" },
+            locksQW: { $max: "$locks.queuedWriters" },
+            // Network & Connections
             connections: { $max: "$connections.current" },
             netIn: { $avg: "$network.bytesIn" },
-            netOut: { $avg: "$network.bytesOut" }
+            netOut: { $avg: "$network.bytesOut" },
+            netRequests: { $avg: "$network.numRequests" }
           }
         },
         { $sort: { "_id": 1 } },
@@ -101,9 +123,12 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
           $project: {
             time: "$_id",
             throughputRead: 1, throughputWrite: 1,
-            latencyRead: 1, latencyWrite: 1,
-            memoryUsed: 1, connections: 1,
-            netIn: 1, netOut: 1
+            latencyReadAvg: 1, latencyReadMax: 1, latencyWriteAvg: 1, latencyWriteMax: 1,
+            memResident: 1, memVirtual: 1, memMapped: 1,
+            scansCollection: 1, scansIndex: 1,
+            storageData: 1, storageIndex: 1, storageTotal: 1,
+            locksAR: 1, locksAW: 1, locksQR: 1, locksQW: 1,
+            connections: 1, netIn: 1, netOut: 1, netRequests: 1
           }
         }
       ])
@@ -111,12 +136,7 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
 
     const history = fillTimeGaps(historyRaw, range as string || '24h', startDate);
 
-    res.json({
-      database: db,
-      latest: latestMetric || {},
-      history: history
-    });
-
+    res.json({ database: db, latest: latestMetric || {}, history });
   } catch (error) {
     next(error);
   }
