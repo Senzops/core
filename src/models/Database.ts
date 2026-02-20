@@ -1,0 +1,138 @@
+import mongoose, { Schema, Document } from 'mongoose';
+
+// --- 1. Database Service (Configuration) ---
+export interface IDatabaseService extends Document {
+  ownerId: string;
+  name: string;
+  type: 'mongodb' | 'postgresql' | 'mysql';
+  encryptedUri: string; // SECURE: Never store plaintext URI
+  interval: number; // in minutes (e.g., 1, 5, 15)
+  status: 'online' | 'offline' | 'error';
+  lastCheck?: Date;
+  errorMessage?: string;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const DatabaseServiceSchema = new Schema<IDatabaseService>({
+  ownerId: { type: String, required: true, index: true },
+  name: { type: String, required: true },
+  type: { type: String, enum: ['mongodb', 'postgresql', 'mysql'], required: true },
+  encryptedUri: { type: String, required: true },
+  interval: { type: Number, default: 5 },
+  status: { type: String, enum: ['online', 'offline', 'error'], default: 'offline' },
+  lastCheck: { type: Date },
+  errorMessage: { type: String }
+}, { timestamps: true });
+
+// --- 2. Database Metrics (Time Series) ---
+export interface IDbMetric extends Document {
+  dbId: mongoose.Types.ObjectId;
+  timestamp: Date;
+  
+  // NEW: Performance Metrics
+  throughput: { read: number; write: number }; // Operations per second (ops/sec)
+  latency: {
+    read: { avg: number; max: number };
+    write: { avg: number; max: number };
+  };
+
+  // 1. Health & Uptime
+  uptimeSeconds: number;
+  
+  // 2. Connections
+  connections: { current: number; available: number; totalCreated: number };
+  
+  // 3. Memory (MB)
+  memory: { resident: number; virtual: number; mapped?: number };
+  
+  // 4. Network (Bytes)
+  network: { bytesIn: number; bytesOut: number; numRequests: number };
+  
+  // 5. Operations / Throughput (Counters)
+  ops: { insert: number; query: number; update: number; delete: number; command: number };
+  
+  // 6. Query Executor & Scans
+  scans: { collectionScans: number; indexScans: number };
+  
+  // 7. Disk & Storage (MB) - Usually from dbStats
+  storage: { dataSize: number; indexSize: number; storageSize: number; objects: number };
+  
+  // 8. Locking & Contention (Specific to Mongo's global lock or Postgres locks)
+  locks?: { activeReaders: number; activeWriters: number; queuedReaders: number; queuedWriters: number };
+}
+
+const DbMetricSchema = new Schema<IDbMetric>({
+  dbId: { type: Schema.Types.ObjectId, ref: 'DatabaseService', required: true },
+  timestamp: { type: Date, required: true },
+  
+  throughput: { 
+    read: { type: Number, default: 0 },
+    write: { type: Number, default: 0 }
+  },
+  latency: { 
+    read: {
+      avg: { type: Number, default: 0 },
+      max: { type: Number, default: 0 }
+    },
+    write: {
+      avg: { type: Number, default: 0 },
+      max: { type: Number, default: 0 }
+    }
+  },
+
+  uptimeSeconds: { type: Number, default: 0 },
+  
+  connections: { 
+    current: { type: Number, default: 0 }, 
+    available: { type: Number, default: 0 },
+    totalCreated: { type: Number, default: 0 }
+  },
+  
+  memory: { 
+    resident: { type: Number, default: 0 }, 
+    virtual: { type: Number, default: 0 },
+    mapped: { type: Number, default: 0 }
+  },
+  
+  network: { 
+    bytesIn: { type: Number, default: 0 }, 
+    bytesOut: { type: Number, default: 0 },
+    numRequests: { type: Number, default: 0 }
+  },
+  
+  ops: { 
+    insert: { type: Number, default: 0 }, 
+    query: { type: Number, default: 0 }, 
+    update: { type: Number, default: 0 }, 
+    delete: { type: Number, default: 0 }, 
+    command: { type: Number, default: 0 } 
+  },
+  
+  scans: {
+    collectionScans: { type: Number, default: 0 },
+    indexScans: { type: Number, default: 0 }
+  },
+  
+  storage: {
+    dataSize: { type: Number, default: 0 },
+    indexSize: { type: Number, default: 0 },
+    storageSize: { type: Number, default: 0 },
+    objects: { type: Number, default: 0 }
+  },
+  
+  locks: {
+    activeReaders: { type: Number, default: 0 },
+    activeWriters: { type: Number, default: 0 },
+    queuedReaders: { type: Number, default: 0 },
+    queuedWriters: { type: Number, default: 0 }
+  }
+});
+
+// Compound index for fast charting
+DbMetricSchema.index({ dbId: 1, timestamp: 1 });
+// TTL: Keep granular DB metrics for 7 days (60 * 60 * 24 * 7 = 604800 seconds)
+DbMetricSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 });
+
+export const DatabaseService = mongoose.model<IDatabaseService>('DatabaseService', DatabaseServiceSchema);
+export const DbMetric = mongoose.model<IDbMetric>('DbMetric', DbMetricSchema);

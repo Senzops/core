@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import dotenv from 'dotenv';
 import { startUptimeWorker } from './uptime';
 import { logger } from '../utils/logger';
+import { startDatabaseWorker } from './database';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -18,6 +19,7 @@ const initWorker = async () => {
 
     // 2. Start Logic
     startUptimeWorker();
+    startDatabaseWorker();
 
     // 3. Handle graceful shutdown
     process.on('SIGTERM', () => {

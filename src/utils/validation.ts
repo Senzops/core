@@ -137,3 +137,11 @@ const ApmTraceItem = z.object({
 });
 
 export const ApmBatchSchema = z.array(ApmTraceItem);
+
+// Database
+export const RegisterDbSchema = z.object({
+  name: z.string().min(1).max(50),
+  type: z.enum(['mongodb', 'postgresql', 'mysql']),
+  uri: z.string().url(),
+  interval: z.number().min(1).max(60).default(5)
+});

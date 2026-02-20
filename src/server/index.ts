@@ -24,6 +24,8 @@ import { ingestApmBatch } from '../controllers/apm/ingest';
 import { deleteService, listServices, registerService } from '../controllers/apm/main';
 import { getApmStats } from '../controllers/apm/stats';
 import { getInvocations, getTraceDetail } from '../controllers/apm/traces';
+import { registerDatabase, listDatabases, deleteDatabase } from '../controllers/database/main';
+import { getDatabaseStats } from '../controllers/database/stats';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -136,6 +138,12 @@ apiRouter.delete('/apm/:id', deleteService);
 apiRouter.get('/apm/:id/stats', getApmStats);
 apiRouter.get('/apm/:id/invocations', getInvocations);
 apiRouter.get('/apm/:id/trace/:traceId', getTraceDetail);
+
+// --- Database (Dashboard) ---
+apiRouter.post('/database/register', registerDatabase);
+apiRouter.get('/database/list', listDatabases);
+apiRouter.delete('/database/:id', deleteDatabase);
+apiRouter.get('/database/:id/stats', getDatabaseStats);
 
 // --- Mounting Routes (CRITICAL ORDER) ---
 
