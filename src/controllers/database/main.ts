@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { MongoClient } from 'mongodb';
-import { DatabaseService, DbMetric } from '../../models/Database';
+import { DatabaseService, DbCollectionStat, DbMetric } from '../../models/Database';
 import { encrypt } from '../../utils/crypto';
 import { RegisterDbSchema } from '../../utils/validation';
 
@@ -74,6 +74,7 @@ export const deleteDatabase = async (req: Request, res: Response, next: NextFunc
     if (!result) return res.status(404).json({ error: 'Database not found' });
 
     await DbMetric.deleteMany({ dbId: id });
+    await DbCollectionStat.deleteOne({ dbId: id });
 
     res.json({ message: 'Database and all metric history deleted' });
   } catch (error) {

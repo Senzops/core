@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
-import { DatabaseService, DbMetric } from '../../models/Database';
+import { DatabaseService, DbMetric, DbCollectionStat } from '../../models/Database';
 
 export const getDatabaseStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -25,7 +25,8 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
 
     const matchQuery = { dbId: new mongoose.Types.ObjectId(id), timestamp: { $gte: startDate } };
 
-    const [latestMetric, historyRaw] = await Promise.all([
+    // Fetch the time-series history, latest metrics, AND the decoupled collection stats
+    const [latestMetric, historyRaw, collectionStats] = await Promise.all([
       DbMetric.findOne({ dbId: id }).sort({ timestamp: -1 }).lean(),
 
       DbMetric.aggregate([
@@ -83,11 +84,17 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
             connections: 1, netIn: 1, netOut: 1, netRequests: 1
           }
         }
-      ])
+      ]),
+
+      DbCollectionStat.findOne({ dbId: id }).lean()
     ]);
 
-    // Send the raw aggregated data without zero-filling
-    res.json({ database: db, latest: latestMetric || {}, history: historyRaw });
+    res.json({
+      database: db,
+      latest: latestMetric || {},
+      history: historyRaw,
+      collections: collectionStats?.collections || [] // Sent securely alongside payload
+    });
   } catch (error) {
     next(error);
   }

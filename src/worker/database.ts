@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { MongoClient } from 'mongodb';
-import { DatabaseService, DbMetric } from '../models/Database';
+import { DatabaseService, DbCollectionStat, DbMetric } from '../models/Database';
 import { decrypt } from '../utils/crypto';
 import { logger } from '../utils/logger';
 
@@ -14,6 +14,7 @@ const previousState = new Map<string, {
   opcounters: any;
   opLatencies: any;
   network: any;
+  lastCollectionCheck?: number; // In-memory tracker
 }>();
 
 export const startDatabaseWorker = () => {
@@ -66,6 +67,7 @@ const processMongoDB = async (dbObj: any, checkTime: Date) => {
     }
 
     const admin = client.db('admin');
+    const targetDb = client.db();
 
     // 2. Execute DB Commands
     const [serverStatus, dbStatsList] = await Promise.all([
@@ -76,6 +78,52 @@ const processMongoDB = async (dbObj: any, checkTime: Date) => {
     // 3. Process Deltas (Throughput & Latency)
     const currentTs = Date.now();
     const prev = previousState.get(dbId);
+    let lastCollectionCheck = prev?.lastCollectionCheck || 0;
+
+    // --- HOURLY DECOUPLED COLLECTION STATS ---
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    if (currentTs - lastCollectionCheck > ONE_HOUR_MS) {
+      try {
+        const colls = await targetDb.listCollections({}, { nameOnly: true }).toArray();
+        const collsToProcess = colls.slice(0, 3000);
+
+        const results = [];
+        const BATCH_SIZE = 50;
+
+        for (let i = 0; i < collsToProcess.length; i += BATCH_SIZE) {
+          const batch = collsToProcess.slice(i, i + BATCH_SIZE).map(async (c: any) => {
+            try {
+              const stats = await targetDb.command({ collStats: c.name, scale: 1048576 });
+              return {
+                name: c.name,
+                count: stats.count || 0,
+                size: stats.size || 0,
+                storageSize: stats.storageSize || 0,
+                indexSize: stats.totalIndexSize || 0
+              };
+            } catch (e) { return null; }
+          });
+          const batchResults = await Promise.all(batch);
+          results.push(...batchResults.filter(Boolean));
+        }
+
+        const topCollections = results
+          .sort((a: any, b: any) => b.storageSize - a.storageSize)
+          .slice(0, 100);
+
+        // Upsert into our Decoupled Collection
+        await DbCollectionStat.findOneAndUpdate(
+          { dbId: dbObj._id },
+          { lastCheck: new Date(), collections: topCollections },
+          { upsert: true }
+        );
+
+        lastCollectionCheck = currentTs; // Update tracker
+      } catch (err: any) {
+        logger.warn(`[DB Engine] Failed to fetch collection stats for ${dbId}: ${err.message}`);
+      }
+    }
+    // ------------------------------------------
 
     let throughput = { read: 0, write: 0 };
     let latency = { read: { avg: 0, max: 0 }, write: { avg: 0, max: 0 } };
@@ -121,7 +169,8 @@ const processMongoDB = async (dbObj: any, checkTime: Date) => {
       timestamp: currentTs,
       opcounters: serverStatus.opcounters,
       opLatencies: serverStatus.opLatencies || {},
-      network: serverStatus.network
+      network: serverStatus.network,
+      lastCollectionCheck // Save tracker state
     });
 
     // 5. Save Metric Document

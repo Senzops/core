@@ -136,3 +136,30 @@ DbMetricSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 });
 
 export const DatabaseService = mongoose.model<IDatabaseService>('DatabaseService', DatabaseServiceSchema);
 export const DbMetric = mongoose.model<IDbMetric>('DbMetric', DbMetricSchema);
+
+// --- 3. Decoupled Collection Stats (1 doc per DB, Upserted) ---
+export interface IDbCollectionStat extends Document {
+  dbId: mongoose.Types.ObjectId;
+  lastCheck: Date;
+  collections: {
+    name: string;
+    count: number;
+    size: number;
+    storageSize: number;
+    indexSize: number;
+  }[];
+}
+
+const DbCollectionStatSchema = new Schema<IDbCollectionStat>({
+  dbId: { type: Schema.Types.ObjectId, ref: 'DatabaseService', required: true, unique: true },
+  lastCheck: { type: Date, required: true },
+  collections: [{
+    name: String,
+    count: Number,
+    size: Number,
+    storageSize: Number,
+    indexSize: Number
+  }]
+});
+
+export const DbCollectionStat = mongoose.model<IDbCollectionStat>('DbCollectionStat', DbCollectionStatSchema);
