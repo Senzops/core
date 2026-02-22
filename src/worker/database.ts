@@ -50,6 +50,11 @@ const parseRedisInfo = (infoString: string) => {
   return info;
 };
 
+const safeNum = (val: any, fallback = 0) => {
+  const n = Number(val);
+  return isNaN(n) ? fallback : n;
+};
+
 const processRedis = async (dbObj: any, checkTime: Date) => {
   const dbId = dbObj._id.toString();
   let client = redisPool.get(dbId);
@@ -79,27 +84,27 @@ const processRedis = async (dbObj: any, checkTime: Date) => {
     let network = { bytesIn: 0, bytesOut: 0, numRequests: 0 };
     let redisStats = {
       keyspaceHits: 0, keyspaceMisses: 0, evictedKeys: 0, expiredKeys: 0, hitRate: 0,
-      usedMemoryPeak: Number(info.used_memory_peak) / (1024 * 1024),
-      fragmentationRatio: Number(info.mem_fragmentation_ratio)
+      usedMemoryPeak: safeNum(info.used_memory_peak) / (1024*1024),
+      fragmentationRatio: safeNum(info.mem_fragmentation_ratio)
     };
 
     if (prev) {
       const timeDeltaSec = (currentTs - prev.timestamp) / 1000;
       if (timeDeltaSec > 0) {
         // Throughput
-        const opsDelta = Number(info.total_commands_processed) - prev.total_commands_processed;
+        const opsDelta = safeNum(info.total_commands_processed) - prev.total_commands_processed;
         throughputTotal = Math.max(0, opsDelta / timeDeltaSec);
 
         // Network
-        network.bytesIn = Math.max(0, (Number(info.total_net_input_bytes) - prev.total_net_input_bytes) / timeDeltaSec);
-        network.bytesOut = Math.max(0, (Number(info.total_net_output_bytes) - prev.total_net_output_bytes) / timeDeltaSec);
+        network.bytesIn = Math.max(0, (safeNum(info.total_net_input_bytes) - prev.total_net_input_bytes) / timeDeltaSec);
+        network.bytesOut = Math.max(0, (safeNum(info.total_net_output_bytes) - prev.total_net_output_bytes) / timeDeltaSec);
         network.numRequests = throughputTotal;
 
         // Redis Events
-        redisStats.keyspaceHits = Math.max(0, (Number(info.keyspace_hits) - prev.keyspace_hits) / timeDeltaSec);
-        redisStats.keyspaceMisses = Math.max(0, (Number(info.keyspace_misses) - prev.keyspace_misses) / timeDeltaSec);
-        redisStats.evictedKeys = Math.max(0, (Number(info.evicted_keys) - prev.evicted_keys) / timeDeltaSec);
-        redisStats.expiredKeys = Math.max(0, (Number(info.expired_keys) - prev.expired_keys) / timeDeltaSec);
+        redisStats.keyspaceHits = Math.max(0, (safeNum(info.keyspace_hits) - prev.keyspace_hits) / timeDeltaSec);
+        redisStats.keyspaceMisses = Math.max(0, (safeNum(info.keyspace_misses) - prev.keyspace_misses) / timeDeltaSec);
+        redisStats.evictedKeys = Math.max(0, (safeNum(info.evicted_keys) - prev.evicted_keys) / timeDeltaSec);
+        redisStats.expiredKeys = Math.max(0, (safeNum(info.expired_keys) - prev.expired_keys) / timeDeltaSec);
 
         // Hit Rate Formula
         const totalAttempts = redisStats.keyspaceHits + redisStats.keyspaceMisses;
@@ -109,13 +114,13 @@ const processRedis = async (dbObj: any, checkTime: Date) => {
 
     previousState.set(dbId, {
       timestamp: currentTs,
-      total_commands_processed: Number(info.total_commands_processed),
-      total_net_input_bytes: Number(info.total_net_input_bytes),
-      total_net_output_bytes: Number(info.total_net_output_bytes),
-      keyspace_hits: Number(info.keyspace_hits),
-      keyspace_misses: Number(info.keyspace_misses),
-      evicted_keys: Number(info.evicted_keys),
-      expired_keys: Number(info.expired_keys),
+      total_commands_processed: safeNum(info.total_commands_processed),
+      total_net_input_bytes: safeNum(info.total_net_input_bytes),
+      total_net_output_bytes: safeNum(info.total_net_output_bytes),
+      keyspace_hits: safeNum(info.keyspace_hits),
+      keyspace_misses: safeNum(info.keyspace_misses),
+      evicted_keys: safeNum(info.evicted_keys),
+      expired_keys: safeNum(info.expired_keys),
       lastCollectionCheck
     });
 
@@ -126,44 +131,47 @@ const processRedis = async (dbObj: any, checkTime: Date) => {
       const keyspaces = [];
       for (const key in info) {
         if (key.startsWith('db')) {
-          // e.g., db0:keys=1000,expires=10,avg_ttl=10000
-          const parts = info[key].split(',');
-          const keysCount = parseInt(parts[0].split('=')[1] || '0');
-          const expiresCount = parseInt(parts[1].split('=')[1] || '0');
-          keyspaces.push({
-            name: key, // 'db0'
-            count: keysCount,
-            size: 0, // Not explicitly provided without heavy scanning
-            storageSize: 0,
-            indexSize: expiresCount // We map volatile/expiring keys here for the UI
-          });
+           // e.g., db0:keys=1000,expires=10,avg_ttl=10000
+           const parts = info[key].split(',');
+           const keysCount = parseInt(parts[0]?.split('=')[1] || '0');
+           const expiresCount = parseInt(parts[1]?.split('=')[1] || '0');
+           keyspaces.push({
+              name: key, // 'db0'
+              count: keysCount,
+              size: 0, // Not explicitly provided without heavy scanning
+              storageSize: 0, 
+              indexSize: expiresCount // We map volatile/expiring keys here for the UI
+           });
         }
       }
       await DbCollectionStat.findOneAndUpdate(
-        { dbId: dbObj._id },
-        { lastCheck: new Date(), collections: keyspaces },
-        { upsert: true }
+         { dbId: dbObj._id },
+         { lastCheck: new Date(), collections: keyspaces },
+         { upsert: true }
       );
       const updatedState = previousState.get(dbId);
-      if (updatedState) updatedState.lastCollectionCheck = currentTs;
+      if(updatedState) updatedState.lastCollectionCheck = currentTs;
     }
 
     // Save DB Metric
+    const currentClients = safeNum(info.connected_clients);
+    const maxClients = safeNum(info.maxclients);
+
     await DbMetric.create({
       dbId: dbObj._id,
       timestamp: checkTime,
       throughput: { read: 0, write: 0, total: throughputTotal },
       latency: { read: { avg: 0, max: 0 }, write: { avg: 0, max: 0 }, ping: pingLatency },
-      uptimeSeconds: Number(info.uptime_in_seconds),
-      connections: {
-        current: Number(info.connected_clients),
-        available: Number(info.maxclients) - Number(info.connected_clients),
-        totalCreated: Number(info.total_connections_received)
+      uptimeSeconds: safeNum(info.uptime_in_seconds),
+      connections: { 
+         current: currentClients, 
+         available: maxClients > 0 ? Math.max(0, maxClients - currentClients) : 0, 
+         totalCreated: safeNum(info.total_connections_received) 
       },
-      memory: {
-        resident: Number(info.used_memory_rss) / (1024 * 1024),
-        virtual: Number(info.used_memory) / (1024 * 1024),
-        mapped: 0
+      memory: { 
+         resident: safeNum(info.used_memory_rss) / (1024*1024), 
+         virtual: safeNum(info.used_memory) / (1024*1024), 
+         mapped: 0 
       },
       network,
       redis: redisStats
