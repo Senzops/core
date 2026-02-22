@@ -71,9 +71,30 @@ const processRedis = async (dbObj: any, checkTime: Date) => {
     await client.ping();
     const pingLatency = performance.now() - pingStart;
 
-    // 2. Fetch O(1) Fast Info
-    const infoRaw = await client.info('all');
+    // 2. Fetch O(1) Fast Info & Configuration Safely
+    // We catch the config command because managed providers (AWS/Heroku) often block it
+    const [infoRaw, configRes] = await Promise.all([
+      client.info('all'),
+      client.config('GET', 'maxclients').catch(() => null) 
+    ]);
+    
     const info = parseRedisInfo(infoRaw);
+
+    // --- ROBUST MAX CLIENTS RESOLUTION ---
+    let maxClients = safeNum(info.maxclients, 0); 
+    if (!maxClients && configRes) {
+      // Handle ioredis array return format: ['maxclients', '10000']
+      if (Array.isArray(configRes) && configRes.length >= 2) {
+        maxClients = safeNum(configRes[1]); 
+      } 
+      // Handle ioredis object return format: { maxclients: '10000' }
+      else if (typeof configRes === 'object' && (configRes as any)?.maxclients) {
+        maxClients = safeNum((configRes as any)?.maxclients); 
+      }
+    }
+    // Universal Redis Fallback if completely blocked/missing
+    if (maxClients === 0) maxClients = 10000; 
+    // -------------------------------------
 
     // 3. Process Deltas
     const currentTs = Date.now();
@@ -155,7 +176,6 @@ const processRedis = async (dbObj: any, checkTime: Date) => {
 
     // Save DB Metric
     const currentClients = safeNum(info.connected_clients);
-    const maxClients = safeNum(info.maxclients);
 
     await DbMetric.create({
       dbId: dbObj._id,
