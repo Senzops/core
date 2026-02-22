@@ -1,40 +1,24 @@
 import cron from 'node-cron';
 import { MongoClient } from 'mongodb';
+import Redis from 'ioredis';
 import { DatabaseService, DbCollectionStat, DbMetric } from '../models/Database';
 import { decrypt } from '../utils/crypto';
 import { logger } from '../utils/logger';
 
 // --- IN-MEMORY STATE ---
-// We keep connections alive to prevent connection storming.
-const connectionPool = new Map<string, MongoClient>();
+const mongoPool = new Map<string, MongoClient>();
+const redisPool = new Map<string, Redis>();
 
-// We must store the previous state to calculate deltas (ops/sec)
-const previousState = new Map<string, {
-  timestamp: number;
-  opcounters: any;
-  opLatencies: any;
-  network: any;
-  lastCollectionCheck?: number; // In-memory tracker
-}>();
+const previousState = new Map<string, any>();
 
 export const startDatabaseWorker = () => {
   logger.info('[Worker] Database Monitoring Engine Started');
-
-  // Run every minute
-  cron.schedule('* * * * *', async () => {
-    await pollDatabases();
-  });
-
-  // Cleanup stale connections every hour
-  cron.schedule('0 * * * *', async () => {
-    await cleanupPool();
-  });
+  cron.schedule('* * * * *', async () => { await pollDatabases(); });
+  cron.schedule('0 * * * *', async () => { await cleanupPool(); });
 };
 
 const pollDatabases = async () => {
   const now = new Date();
-
-  // Find databases that are due for a check based on their interval
   const dueDbs = await DatabaseService.find({
     $expr: {
       $lte: [
@@ -45,14 +29,161 @@ const pollDatabases = async () => {
   });
 
   if (dueDbs.length === 0) return;
-
-  const promises = dueDbs.map(db => processMongoDB(db, now));
+  const promises = dueDbs.map(db => {
+    if (db.type === 'mongodb') return processMongoDB(db, now);
+    if (db.type === 'redis') return processRedis(db, now);
+    return Promise.resolve();
+  });
   await Promise.allSettled(promises);
 };
 
+// --- REDIS PROCESSOR ---
+const parseRedisInfo = (infoString: string) => {
+  const lines = infoString.split('\r\n');
+  const info: any = {};
+  for (const line of lines) {
+    if (line && !line.startsWith('#')) {
+      const [key, value] = line.split(':');
+      if (key && value) info[key.trim()] = value.trim();
+    }
+  }
+  return info;
+};
+
+const processRedis = async (dbObj: any, checkTime: Date) => {
+  const dbId = dbObj._id.toString();
+  let client = redisPool.get(dbId);
+
+  try {
+    if (!client || client.status === 'end') {
+      const uri = decrypt(dbObj.encryptedUri);
+      client = new Redis(uri, { maxRetriesPerRequest: 1, commandTimeout: 5000 });
+      redisPool.set(dbId, client);
+    }
+
+    // 1. Measure Ping Latency directly
+    const pingStart = performance.now();
+    await client.ping();
+    const pingLatency = performance.now() - pingStart;
+
+    // 2. Fetch O(1) Fast Info
+    const infoRaw = await client.info('all');
+    const info = parseRedisInfo(infoRaw);
+
+    // 3. Process Deltas
+    const currentTs = Date.now();
+    const prev = previousState.get(dbId);
+    let lastCollectionCheck = prev?.lastCollectionCheck || 0;
+
+    let throughputTotal = 0;
+    let network = { bytesIn: 0, bytesOut: 0, numRequests: 0 };
+    let redisStats = {
+      keyspaceHits: 0, keyspaceMisses: 0, evictedKeys: 0, expiredKeys: 0, hitRate: 0,
+      usedMemoryPeak: Number(info.used_memory_peak) / (1024 * 1024),
+      fragmentationRatio: Number(info.mem_fragmentation_ratio)
+    };
+
+    if (prev) {
+      const timeDeltaSec = (currentTs - prev.timestamp) / 1000;
+      if (timeDeltaSec > 0) {
+        // Throughput
+        const opsDelta = Number(info.total_commands_processed) - prev.total_commands_processed;
+        throughputTotal = Math.max(0, opsDelta / timeDeltaSec);
+
+        // Network
+        network.bytesIn = Math.max(0, (Number(info.total_net_input_bytes) - prev.total_net_input_bytes) / timeDeltaSec);
+        network.bytesOut = Math.max(0, (Number(info.total_net_output_bytes) - prev.total_net_output_bytes) / timeDeltaSec);
+        network.numRequests = throughputTotal;
+
+        // Redis Events
+        redisStats.keyspaceHits = Math.max(0, (Number(info.keyspace_hits) - prev.keyspace_hits) / timeDeltaSec);
+        redisStats.keyspaceMisses = Math.max(0, (Number(info.keyspace_misses) - prev.keyspace_misses) / timeDeltaSec);
+        redisStats.evictedKeys = Math.max(0, (Number(info.evicted_keys) - prev.evicted_keys) / timeDeltaSec);
+        redisStats.expiredKeys = Math.max(0, (Number(info.expired_keys) - prev.expired_keys) / timeDeltaSec);
+
+        // Hit Rate Formula
+        const totalAttempts = redisStats.keyspaceHits + redisStats.keyspaceMisses;
+        redisStats.hitRate = totalAttempts > 0 ? (redisStats.keyspaceHits / totalAttempts) * 100 : 0;
+      }
+    }
+
+    previousState.set(dbId, {
+      timestamp: currentTs,
+      total_commands_processed: Number(info.total_commands_processed),
+      total_net_input_bytes: Number(info.total_net_input_bytes),
+      total_net_output_bytes: Number(info.total_net_output_bytes),
+      keyspace_hits: Number(info.keyspace_hits),
+      keyspace_misses: Number(info.keyspace_misses),
+      evicted_keys: Number(info.evicted_keys),
+      expired_keys: Number(info.expired_keys),
+      lastCollectionCheck
+    });
+
+    // --- HOURLY KEYSPACE EXTRACTION ---
+    // Redis exposes db0, db1, etc. in INFO. We map this to our collections table.
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    if (currentTs - lastCollectionCheck > ONE_HOUR_MS) {
+      const keyspaces = [];
+      for (const key in info) {
+        if (key.startsWith('db')) {
+          // e.g., db0:keys=1000,expires=10,avg_ttl=10000
+          const parts = info[key].split(',');
+          const keysCount = parseInt(parts[0].split('=')[1] || '0');
+          const expiresCount = parseInt(parts[1].split('=')[1] || '0');
+          keyspaces.push({
+            name: key, // 'db0'
+            count: keysCount,
+            size: 0, // Not explicitly provided without heavy scanning
+            storageSize: 0,
+            indexSize: expiresCount // We map volatile/expiring keys here for the UI
+          });
+        }
+      }
+      await DbCollectionStat.findOneAndUpdate(
+        { dbId: dbObj._id },
+        { lastCheck: new Date(), collections: keyspaces },
+        { upsert: true }
+      );
+      const updatedState = previousState.get(dbId);
+      if (updatedState) updatedState.lastCollectionCheck = currentTs;
+    }
+
+    // Save DB Metric
+    await DbMetric.create({
+      dbId: dbObj._id,
+      timestamp: checkTime,
+      throughput: { read: 0, write: 0, total: throughputTotal },
+      latency: { read: { avg: 0, max: 0 }, write: { avg: 0, max: 0 }, ping: pingLatency },
+      uptimeSeconds: Number(info.uptime_in_seconds),
+      connections: {
+        current: Number(info.connected_clients),
+        available: Number(info.maxclients) - Number(info.connected_clients),
+        totalCreated: Number(info.total_connections_received)
+      },
+      memory: {
+        resident: Number(info.used_memory_rss) / (1024 * 1024),
+        virtual: Number(info.used_memory) / (1024 * 1024),
+        mapped: 0
+      },
+      network,
+      redis: redisStats
+    });
+
+    await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'online', lastCheck: checkTime, errorMessage: '' });
+
+  } catch (error: any) {
+    if (client) {
+      client.disconnect();
+      redisPool.delete(dbId);
+    }
+    await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'error', lastCheck: checkTime, errorMessage: error.message });
+  }
+};
+
+// MONGO PROCESSOR 
 const processMongoDB = async (dbObj: any, checkTime: Date) => {
   const dbId = dbObj._id.toString();
-  let client = connectionPool.get(dbId);
+  let client = mongoPool.get(dbId);
 
   try {
     // 1. Manage Connection
@@ -63,7 +194,7 @@ const processMongoDB = async (dbObj: any, checkTime: Date) => {
         maxPoolSize: 1
       });
       await client.connect();
-      connectionPool.set(dbId, client);
+      mongoPool.set(dbId, client);
     }
 
     const admin = client.db('admin');
@@ -222,7 +353,7 @@ const processMongoDB = async (dbObj: any, checkTime: Date) => {
     // If it fails, close and remove from pool to force reconnect next time
     if (client) {
       await client.close(true).catch(() => { });
-      connectionPool.delete(dbId);
+      mongoPool.delete(dbId);
     }
 
     await DatabaseService.updateOne(
@@ -249,15 +380,20 @@ const getDatabaseSizes = async (adminDb: any) => {
 };
 
 const cleanupPool = async () => {
-  // Find all IDs in pool that no longer exist in DB (deleted by user)
   const activeIds = await DatabaseService.find().distinct('_id');
   const activeIdStrings = activeIds.map(id => id.toString());
 
-  for (const [dbId, client] of connectionPool.entries()) {
+  for (const [dbId, client] of mongoPool.entries()) {
     if (!activeIdStrings.includes(dbId)) {
-      logger.info(`[DB Engine] Cleaning up orphaned connection: ${dbId}`);
       await client.close(true).catch(() => { });
-      connectionPool.delete(dbId);
+      mongoPool.delete(dbId);
+      previousState.delete(dbId);
+    }
+  }
+  for (const [dbId, client] of redisPool.entries()) {
+    if (!activeIdStrings.includes(dbId)) {
+      client.disconnect();
+      redisPool.delete(dbId);
       previousState.delete(dbId);
     }
   }

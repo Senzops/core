@@ -43,11 +43,13 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
             // Throughput
             throughputRead: { $avg: "$throughput.read" },
             throughputWrite: { $avg: "$throughput.write" },
+            throughputTotal: { $avg: "$throughput.total" },
             // Latency
             latencyReadAvg: { $avg: "$latency.read.avg" },
             latencyReadMax: { $max: "$latency.read.max" },
             latencyWriteAvg: { $avg: "$latency.write.avg" },
             latencyWriteMax: { $max: "$latency.write.max" },
+            latencyPing: { $avg: "$latency.ping" }, // REDIS Ping
             // Memory
             memResident: { $avg: "$memory.resident" },
             memVirtual: { $avg: "$memory.virtual" },
@@ -68,20 +70,30 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
             connections: { $max: "$connections.current" },
             netIn: { $avg: "$network.bytesIn" },
             netOut: { $avg: "$network.bytesOut" },
-            netRequests: { $avg: "$network.numRequests" }
+            netRequests: { $avg: "$network.numRequests" },
+
+            // REDIS Specifics
+            redisHits: { $avg: "$redis.keyspaceHits" },
+            redisMisses: { $avg: "$redis.keyspaceMisses" },
+            redisHitRate: { $avg: "$redis.hitRate" },
+            redisEvicted: { $avg: "$redis.evictedKeys" },
+            redisExpired: { $avg: "$redis.expiredKeys" },
+            redisMemPeak: { $max: "$redis.usedMemoryPeak" },
+            redisFragRatio: { $avg: "$redis.fragmentationRatio" }
           }
         },
         { $sort: { "_id": 1 } },
         {
           $project: {
             time: "$_id",
-            throughputRead: 1, throughputWrite: 1,
-            latencyReadAvg: 1, latencyReadMax: 1, latencyWriteAvg: 1, latencyWriteMax: 1,
+            throughputRead: 1, throughputWrite: 1, throughputTotal: 1,
+            latencyReadAvg: 1, latencyReadMax: 1, latencyWriteAvg: 1, latencyWriteMax: 1, latencyPing: 1,
             memResident: 1, memVirtual: 1, memMapped: 1,
             scansCollection: 1, scansIndex: 1,
             storageData: 1, storageIndex: 1, storageTotal: 1,
             locksAR: 1, locksAW: 1, locksQR: 1, locksQW: 1,
-            connections: 1, netIn: 1, netOut: 1, netRequests: 1
+            connections: 1, netIn: 1, netOut: 1, netRequests: 1,
+            redisHits: 1, redisMisses: 1, redisHitRate: 1, redisEvicted: 1, redisExpired: 1, redisMemPeak: 1, redisFragRatio: 1
           }
         }
       ]),
@@ -93,7 +105,7 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
       database: db,
       latest: latestMetric || {},
       history: historyRaw,
-      collections: collectionStats?.collections || [] // Sent securely alongside payload
+      collections: collectionStats?.collections || []
     });
   } catch (error) {
     next(error);

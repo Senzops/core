@@ -1,35 +1,49 @@
 import { Request, Response, NextFunction } from 'express';
 import { MongoClient } from 'mongodb';
-import { DatabaseService, DbCollectionStat, DbMetric } from '../../models/Database';
+import Redis from 'ioredis';
+import { DatabaseService, DbMetric, DbCollectionStat } from '../../models/Database';
 import { encrypt } from '../../utils/crypto';
-import { RegisterDbSchema } from '../../utils/validation';
+import { z } from 'zod';
+
+const RegisterDbSchema = z.object({
+  name: z.string().min(1).max(50),
+  type: z.enum(['mongodb', 'postgresql', 'mysql', 'redis']),
+  uri: z.string(), // Removed strict .url() validation because redis strings can lack standard URL formatting
+  interval: z.number().min(1).max(60).default(5)
+});
 
 export const registerDatabase = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
     const { name, type, uri, interval } = RegisterDbSchema.parse(req.body);
 
-    // 1. Connection Validation (Fail Fast)
     if (type === 'mongodb') {
       try {
         const client = new MongoClient(uri, { serverSelectionTimeoutMS: 5000 });
         await client.connect();
-
-        // Verify we have admin privileges to read serverStatus
         const adminDb = client.db('admin');
         await adminDb.command({ serverStatus: 1 });
         await client.close();
       } catch (err: any) {
-        return res.status(400).json({
-          error: 'Database Connection Failed',
-          details: 'Please ensure the credentials are correct and the user has the "clusterMonitor" or "root" role.'
+        return res.status(400).json({ error: 'MongoDB Connection Failed', details: err.message });
+      }
+    } else if (type === 'redis') {
+      try {
+        const redis = new Redis(uri, {
+          maxRetriesPerRequest: 1,
+          connectTimeout: 5000,
+          lazyConnect: true // Prevent immediate connection throw
         });
+        await redis.connect();
+        await redis.ping();
+        await redis.quit();
+      } catch (err: any) {
+        return res.status(400).json({ error: 'Redis Connection Failed', details: err.message });
       }
     } else {
       return res.status(400).json({ error: `Adapter for ${type} is not yet implemented.` });
     }
 
-    // 2. Encrypt & Save
     const encryptedUri = encrypt(uri);
 
     const newDb = await DatabaseService.create({
@@ -42,12 +56,7 @@ export const registerDatabase = async (req: Request, res: Response, next: NextFu
       lastCheck: new Date()
     });
 
-    res.status(201).json({
-      message: 'Database Connected & Registered',
-      dbId: newDb._id,
-      name: newDb.name,
-      type: newDb.type
-    });
+    res.status(201).json({ message: 'Database Connected & Registered', dbId: newDb._id, name: newDb.name, type: newDb.type });
   } catch (error) {
     next(error);
   }
@@ -56,9 +65,7 @@ export const registerDatabase = async (req: Request, res: Response, next: NextFu
 export const listDatabases = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
-    const dbs = await DatabaseService.find({ ownerId: uid })
-      .select('-encryptedUri') // NEVER send encrypted URI to frontend
-      .sort({ createdAt: -1 });
+    const dbs = await DatabaseService.find({ ownerId: uid }).select('-encryptedUri').sort({ createdAt: -1 });
     res.json(dbs);
   } catch (error) {
     next(error);

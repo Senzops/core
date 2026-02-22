@@ -4,9 +4,9 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IDatabaseService extends Document {
   ownerId: string;
   name: string;
-  type: 'mongodb' | 'postgresql' | 'mysql';
-  encryptedUri: string; // SECURE: Never store plaintext URI
-  interval: number; // in minutes (e.g., 1, 5, 15)
+  type: 'mongodb' | 'postgresql' | 'mysql' | 'redis'; // Added redis
+  encryptedUri: string;
+  interval: number;
   status: 'online' | 'offline' | 'error';
   lastCheck?: Date;
   errorMessage?: string;
@@ -17,7 +17,7 @@ export interface IDatabaseService extends Document {
 const DatabaseServiceSchema = new Schema<IDatabaseService>({
   ownerId: { type: String, required: true, index: true },
   name: { type: String, required: true },
-  type: { type: String, enum: ['mongodb', 'postgresql', 'mysql'], required: true },
+  type: { type: String, enum: ['mongodb', 'postgresql', 'mysql', 'redis'], required: true },
   encryptedUri: { type: String, required: true },
   interval: { type: Number, default: 5 },
   status: { type: String, enum: ['online', 'offline', 'error'], default: 'offline' },
@@ -29,14 +29,8 @@ const DatabaseServiceSchema = new Schema<IDatabaseService>({
 export interface IDbMetric extends Document {
   dbId: mongoose.Types.ObjectId;
   timestamp: Date;
-  
-  // NEW: Performance Metrics
-  throughput: { read: number; write: number }; // Operations per second (ops/sec)
-  latency: {
-    read: { avg: number; max: number };
-    write: { avg: number; max: number };
-  };
-
+  throughput: { read: number; write: number; total?: number }; // Added total for Redis
+  latency: { read: { avg: number; max: number }; write: { avg: number; max: number }; ping?: number }; // Added ping
   // 1. Health & Uptime
   uptimeSeconds: number;
   
@@ -60,82 +54,56 @@ export interface IDbMetric extends Document {
   
   // 8. Locking & Contention (Specific to Mongo's global lock or Postgres locks)
   locks?: { activeReaders: number; activeWriters: number; queuedReaders: number; queuedWriters: number };
+
+  // Redis Specific Metrics
+  redis?: {
+    keyspaceHits: number;
+    keyspaceMisses: number;
+    hitRate: number;
+    evictedKeys: number;
+    expiredKeys: number;
+    usedMemoryPeak: number;
+    fragmentationRatio: number;
+  };
 }
 
 const DbMetricSchema = new Schema<IDbMetric>({
   dbId: { type: Schema.Types.ObjectId, ref: 'DatabaseService', required: true },
   timestamp: { type: Date, required: true },
-  
-  throughput: { 
+  throughput: {
     read: { type: Number, default: 0 },
-    write: { type: Number, default: 0 }
+    write: { type: Number, default: 0 },
+    total: { type: Number, default: 0 }
   },
-  latency: { 
-    read: {
-      avg: { type: Number, default: 0 },
-      max: { type: Number, default: 0 }
-    },
-    write: {
-      avg: { type: Number, default: 0 },
-      max: { type: Number, default: 0 }
-    }
+  latency: {
+    read: { avg: { type: Number, default: 0 }, max: { type: Number, default: 0 } },
+    write: { avg: { type: Number, default: 0 }, max: { type: Number, default: 0 } },
+    ping: { type: Number, default: 0 }
   },
-
   uptimeSeconds: { type: Number, default: 0 },
-  
-  connections: { 
-    current: { type: Number, default: 0 }, 
-    available: { type: Number, default: 0 },
-    totalCreated: { type: Number, default: 0 }
-  },
-  
-  memory: { 
-    resident: { type: Number, default: 0 }, 
-    virtual: { type: Number, default: 0 },
-    mapped: { type: Number, default: 0 }
-  },
-  
-  network: { 
-    bytesIn: { type: Number, default: 0 }, 
-    bytesOut: { type: Number, default: 0 },
-    numRequests: { type: Number, default: 0 }
-  },
-  
-  ops: { 
-    insert: { type: Number, default: 0 }, 
-    query: { type: Number, default: 0 }, 
-    update: { type: Number, default: 0 }, 
-    delete: { type: Number, default: 0 }, 
-    command: { type: Number, default: 0 } 
-  },
-  
-  scans: {
-    collectionScans: { type: Number, default: 0 },
-    indexScans: { type: Number, default: 0 }
-  },
-  
-  storage: {
-    dataSize: { type: Number, default: 0 },
-    indexSize: { type: Number, default: 0 },
-    storageSize: { type: Number, default: 0 },
-    objects: { type: Number, default: 0 }
-  },
-  
-  locks: {
-    activeReaders: { type: Number, default: 0 },
-    activeWriters: { type: Number, default: 0 },
-    queuedReaders: { type: Number, default: 0 },
-    queuedWriters: { type: Number, default: 0 }
+  connections: { current: { type: Number, default: 0 }, available: { type: Number, default: 0 }, totalCreated: { type: Number, default: 0 } },
+  memory: { resident: { type: Number, default: 0 }, virtual: { type: Number, default: 0 }, mapped: { type: Number, default: 0 } },
+  network: { bytesIn: { type: Number, default: 0 }, bytesOut: { type: Number, default: 0 }, numRequests: { type: Number, default: 0 } },
+  ops: { insert: { type: Number, default: 0 }, query: { type: Number, default: 0 }, update: { type: Number, default: 0 }, delete: { type: Number, default: 0 }, command: { type: Number, default: 0 } },
+  scans: { collectionScans: { type: Number, default: 0 }, indexScans: { type: Number, default: 0 } },
+  storage: { dataSize: { type: Number, default: 0 }, indexSize: { type: Number, default: 0 }, storageSize: { type: Number, default: 0 }, objects: { type: Number, default: 0 } },
+  locks: { activeReaders: { type: Number, default: 0 }, activeWriters: { type: Number, default: 0 }, queuedReaders: { type: Number, default: 0 }, queuedWriters: { type: Number, default: 0 } },
+
+  // Redis Specifics
+  redis: {
+    keyspaceHits: { type: Number, default: 0 },
+    keyspaceMisses: { type: Number, default: 0 },
+    hitRate: { type: Number, default: 0 },
+    evictedKeys: { type: Number, default: 0 },
+    expiredKeys: { type: Number, default: 0 },
+    usedMemoryPeak: { type: Number, default: 0 },
+    fragmentationRatio: { type: Number, default: 0 }
   }
 });
 
-// Compound index for fast charting
 DbMetricSchema.index({ dbId: 1, timestamp: 1 });
 // TTL: Keep granular DB metrics for 7 days (60 * 60 * 24 * 7 = 604800 seconds)
 DbMetricSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 });
-
-export const DatabaseService = mongoose.model<IDatabaseService>('DatabaseService', DatabaseServiceSchema);
-export const DbMetric = mongoose.model<IDbMetric>('DbMetric', DbMetricSchema);
 
 // --- 3. Decoupled Collection Stats (1 doc per DB, Upserted) ---
 export interface IDbCollectionStat extends Document {
@@ -162,4 +130,6 @@ const DbCollectionStatSchema = new Schema<IDbCollectionStat>({
   }]
 });
 
+export const DatabaseService = mongoose.model<IDatabaseService>('DatabaseService', DatabaseServiceSchema);
+export const DbMetric = mongoose.model<IDbMetric>('DbMetric', DbMetricSchema);
 export const DbCollectionStat = mongoose.model<IDbCollectionStat>('DbCollectionStat', DbCollectionStatSchema);
