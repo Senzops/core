@@ -124,27 +124,99 @@ export const ingestMetrics = async (req: Request, res: Response, next: NextFunct
   }
 };
 
+// --- Helper: Zero-Fill Time Series (Returns 0 for missing data) ---
+const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
+  const filled = [];
+  const now = new Date();
+
+  let current = new Date(startDate);
+  // High-resolution for <= 6 hours, Hourly resolution for 12h/24h
+  const isMinuteRes = ['1h', '3h', '6h'].includes(range);
+
+  if (isMinuteRes) current.setSeconds(0, 0);
+  else current.setMinutes(0, 0, 0);
+
+  const end = new Date(now);
+  if (isMinuteRes) end.setMinutes(end.getMinutes() + 1);
+  else end.setHours(end.getHours() + 1);
+
+  const dataMap = new Map();
+  for (const item of data) {
+    const d = new Date(item.createdAt);
+    if (isMinuteRes) d.setSeconds(0, 0);
+    else d.setMinutes(0, 0, 0);
+    dataMap.set(d.getTime(), item);
+  }
+
+  while (current < end) {
+    const key = current.getTime();
+    const item = dataMap.get(key);
+
+    if (item) {
+      filled.push({ ...item, isOnline: true });
+    } else {
+      // Fill with 0s matching the exact expected nested Mongoose format
+      filled.push({
+        _id: 'gap-' + key,
+        createdAt: current.toISOString(),
+        isOnline: false,
+        metrics: {
+          cpu: { usagePercent: 0, cores: 0, brand: '' },
+          memory: { used: 0, total: 0, free: 0, active: 0, usagePercent: 0 },
+          disk: { used: 0, total: 0, usagePercent: 0, name: '/' },
+          network: { bytesRecvSec: 0, bytesSentSec: 0, latencyMs: 0 },
+          processes: { running: 0, sleeping: 0, blocked: 0, total: 0 },
+          uptimeSeconds: 0,
+          docker: [],
+          nginx: null,
+          traefik: null
+        }
+      });
+    }
+
+    if (isMinuteRes) current.setMinutes(current.getMinutes() + 1);
+    else current.setHours(current.getHours() + 1);
+  }
+
+  return filled;
+};
+
 // --- Dashboard Stats Controller ---
 export const getVpsStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const { uid } = (req as any).user;
-
-    // Parse optional limit, fallback to 60, enforce min/max bounds
-    const limit = Math.min(
-      Math.max(parseInt(req.query.limit as string) || 60, 1),
-      1500
-    );
+    const { range = '1h' } = req.query;
 
     // Verify ownership
     const vps = await Vps.findOne({ _id: id, ownerId: uid });
     if (!vps) return res.status(404).json({ error: "VPS not found" });
 
-    // Get last 60 runs (approx last hour of data)
-    const runs = await VpsRun.find({ vpsId: id })
-      .sort({ createdAt: -1 }).limit(limit);
+    const now = new Date();
+    const startDate = new Date();
 
-    res.json({ vps, history: runs.reverse() });
+    switch (range) {
+      case '1h': startDate.setHours(now.getHours() - 1); break;
+      case '3h': startDate.setHours(now.getHours() - 3); break;
+      case '6h': startDate.setHours(now.getHours() - 6); break;
+      case '12h': startDate.setHours(now.getHours() - 12); break;
+      case '24h':
+      default: startDate.setHours(now.getHours() - 24); break;
+    }
+
+    // Retrieve all raw runs inside the time window (No aggregation applied)
+    const runs = await VpsRun.find({
+      vpsId: id,
+      createdAt: { $gte: startDate }
+    })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    // Map zero-filled chronological history
+    const history = fillTimeGaps(runs, range as string, startDate);
+
+    // Only return vps and history. Frontend handles the rest.
+    res.json({ vps, history });
   } catch (error) {
     next(error);
   }
