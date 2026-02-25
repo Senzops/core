@@ -137,8 +137,11 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
   else current.setMinutes(0, 0, 0);
 
   const end = new Date(now);
-  if (isMinuteRes) end.setMinutes(end.getMinutes() + 1);
-  else end.setHours(end.getHours() + 1);
+  if (isMinuteRes) {
+    end.setSeconds(0, 0);
+  } else {
+    end.setMinutes(0, 0, 0);
+  }
 
   const dataMap = new Map();
   for (const item of data) {

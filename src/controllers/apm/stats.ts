@@ -14,9 +14,9 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
   else current.setHours(0, 0, 0, 0);
 
   const end = new Date(now);
-  if (range === '1h') end.setMinutes(end.getMinutes() + 1);
-  else if (range === '24h') end.setHours(end.getHours() + 1);
-  else end.setDate(end.getDate() + 1);
+  if (range === '1h') end.setMinutes(end.getMinutes());
+  else if (range === '24h') end.setHours(end.getHours());
+  else end.setDate(end.getDate());
 
   const dataMap = new Map(data.map(item => [item.time, item]));
 
