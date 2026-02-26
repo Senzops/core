@@ -9,7 +9,7 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
 
   let current = new Date(startDate);
   // Align to boundaries
-  if (range === '1h') current.setSeconds(0, 0);
+  if (range === '1h') current.setSeconds(current.getSeconds() + 1);
   else if (range === '24h') current.setMinutes(0, 0, 0);
   else current.setHours(0, 0, 0, 0);
 
