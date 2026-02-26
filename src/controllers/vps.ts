@@ -133,7 +133,7 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
   // High-resolution for <= 6 hours, Hourly resolution for 12h/24h
   const isMinuteRes = ['1h', '3h', '6h'].includes(range);
 
-  if (isMinuteRes) current.setMinutes(current.getMinutes() + 1);
+  if (isMinuteRes) current.setSeconds(0, 0);
   else current.setMinutes(0, 0, 0);
 
   const end = new Date(now);
