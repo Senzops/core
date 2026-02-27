@@ -130,27 +130,18 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
   const now = new Date();
 
   let current = new Date(startDate);
-  // High-resolution for <= 6 hours, Hourly resolution for 12h/24h
-  const isMinuteRes = ['1h', '3h', '6h'].includes(range);
+  current.setSeconds(0, 0);
+  current.setMinutes(current.getMinutes() + 1);
 
-  if (isMinuteRes) {
-    current.setSeconds(0, 0);
-    current.setMinutes(current.getMinutes() + 1);
-  }
-  else current.setMinutes(0, 0, 0);
 
   const end = new Date(now);
-  if (isMinuteRes) {
-    end.setSeconds(0, 0);
-  } else {
-    end.setMinutes(0, 0, 0);
-  }
+  end.setSeconds(0, 0);
+  end.setMinutes(0, 0, 0);
 
   const dataMap = new Map();
   for (const item of data) {
     const d = new Date(item.createdAt);
-    if (isMinuteRes) d.setSeconds(0, 0);
-    else d.setMinutes(0, 0, 0);
+    d.setSeconds(0, 0);
     dataMap.set(d.getTime(), item);
   }
 
@@ -180,8 +171,7 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
       });
     }
 
-    if (isMinuteRes) current.setMinutes(current.getMinutes() + 1);
-    else current.setHours(current.getHours() + 1);
+    current.setMinutes(current.getMinutes() + 1);
   }
 
   return filled;
