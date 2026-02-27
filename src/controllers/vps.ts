@@ -129,11 +129,14 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
   const filled = [];
   const now = new Date();
 
+  // Start AFTER first minute
   let current = new Date(startDate);
-  current.setSeconds(0, 0); // floor to minute
+  current.setSeconds(0, 0);
+  current.setMinutes(current.getMinutes() + 1);
 
+  // End at CURRENT minute (not +1)
   const end = new Date(now);
-  end.setMinutes(end.getMinutes() + 1);
+  end.setSeconds(0, 0);
 
   const dataMap = new Map();
   for (const item of data) {
