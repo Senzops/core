@@ -130,13 +130,10 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
   const now = new Date();
 
   let current = new Date(startDate);
-  current.setSeconds(0, 0);
-  current.setMinutes(current.getMinutes() + 1);
-
+  current.setSeconds(0, 0); // floor to minute
 
   const end = new Date(now);
-  end.setSeconds(0, 0);
-  end.setMinutes(0, 0, 0);
+  end.setMinutes(end.getMinutes() + 1);
 
   const dataMap = new Map();
   for (const item of data) {
@@ -152,7 +149,7 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
     if (item) {
       filled.push({ ...item, isOnline: true });
     } else {
-      // Fill with 0s matching the exact expected nested Mongoose format
+      // Missing minute = Offline state
       filled.push({
         _id: 'gap-' + key,
         createdAt: current.toISOString(),
@@ -171,7 +168,7 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
       });
     }
 
-    current.setMinutes(current.getMinutes() + 1);
+    current.setMinutes(current.getMinutes() + 1); // Step exactly 1 minute, unconditionally
   }
 
   return filled;
