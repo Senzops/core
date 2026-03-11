@@ -20,7 +20,7 @@ const ApmErrorGroupSchema = new Schema<IApmErrorGroup>({
   errorClass: { type: String, required: true },
   message: { type: String, required: true },
   firstSeen: { type: Date, default: Date.now },
-  lastSeen: { type: Date, default: Date.now, index: true },
+  lastSeen: { type: Date, default: Date.now },
   totalCount: { type: Number, default: 1 },
   status: { type: String, enum: ['unresolved', 'resolved', 'ignored'], default: 'unresolved' }
 });
@@ -50,7 +50,7 @@ const ApmErrorEventSchema = new Schema<IApmErrorEvent>({
   traceId: { type: String, index: true },
   stackTrace: { type: String, required: true },
   context: { type: Schema.Types.Mixed },
-  timestamp: { type: Date, required: true, index: true }
+  timestamp: { type: Date, required: true}
 });
 
 // TTL: Auto-delete individual stack traces after 7 days (Matches APM Trace TTL)
