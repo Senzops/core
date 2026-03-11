@@ -26,6 +26,12 @@ import { getApmStats } from '../controllers/apm/stats';
 import { getInvocations, getTraceDetail } from '../controllers/apm/traces';
 import { registerDatabase, listDatabases, deleteDatabase } from '../controllers/database/main';
 import { getDatabaseStats } from '../controllers/database/stats';
+import {
+  getGlobalErrors,
+  getErrorGroupDetails,
+  updateErrorStatus,
+  getTraceErrors
+} from '../controllers/apm/errors';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -144,6 +150,17 @@ apiRouter.post('/database/register', registerDatabase);
 apiRouter.get('/database/list', listDatabases);
 apiRouter.delete('/database/:id', deleteDatabase);
 apiRouter.get('/database/:id/stats', getDatabaseStats);
+
+// --- GLOBAL ERROR TRACKING ---
+apiRouter.get('/errors', getGlobalErrors); // Global paginated list
+apiRouter.get('/errors/:groupId', getErrorGroupDetails); // Single error group + trend
+apiRouter.patch('/errors/:groupId/status', updateErrorStatus); // Resolve/Ignore
+
+// --- TRACE SPECIFIC ERRORS (Added to APM routes) ---
+// Gets all raw error events that occurred during a specific HTTP trace
+apiRouter.get('/apm/:id/trace/:traceId/errors', getTraceErrors);
+
+
 
 // --- Mounting Routes (CRITICAL ORDER) ---
 
