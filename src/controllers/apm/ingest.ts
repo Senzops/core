@@ -1,9 +1,25 @@
 import { Request, Response } from 'express';
+import crypto from 'crypto';
 import geoip from 'geoip-lite';
 import { UAParser } from 'ua-parser-js';
 import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
+import { ApmErrorGroup, ApmErrorEvent } from '../../models/ApmError'; // NEW
 import { logger } from '../../utils/logger';
 import { ApmBatchSchema } from '../../utils/validation';
+
+// --- Helper: Deterministic Error Fingerprinting ---
+const generateFingerprint = (errorClass: string, message: string): string => {
+  // Strip dynamic data (UUIDs, MongoIDs, Numbers) so identical errors group together
+  const normalizedMessage = message
+      .replace(/[0-9a-fA-F]{24}/g, '<id>') // Mongo IDs
+      .replace(/\b[0-9a-f]{8}\b-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-\b[0-9a-f]{12}\b/ig, '<uuid>') // UUIDs
+      .replace(/\d+/g, '<num>'); // Numbers
+
+  return crypto
+    .createHash('sha256')
+    .update(`${errorClass}:${normalizedMessage}`)
+    .digest('hex');
+};
 
 export const ingestApmBatch = async (req: Request, res: Response) => {
   try {
@@ -48,6 +64,10 @@ const processBatchBackground = async (data: any[], service: any) => {
 
   const traceDocs = [];
   const metricsMap = new Map<string, any>();
+  
+  // NEW: Error Tracking State
+  const errorEvents: any[] = [];
+  const errorGroupsMap = new Map<string, any>();
 
   for (const item of data) {
     // Enrichment
@@ -76,9 +96,51 @@ const processBatchBackground = async (data: any[], service: any) => {
       duration: item.duration,
       ip, country, city, userAgent: item.userAgent, browser, os, device,
       timestamp,
-      spans: item.spans || [],
-      error: item.error
+      spans: item.spans || []
     });
+
+    // --- NEW: ERROR EXTRACTION & FINGERPRINTING ---
+    if (item.error && item.error.name && item.error.message) {
+       const errorClass = item.error.name;
+       const message = item.error.message;
+       const stackTrace = item.error.stack || '';
+
+       const fingerprint = generateFingerprint(errorClass, message);
+
+       // 1. Queue the individual occurrence
+       errorEvents.push({
+         apmId: service._id,
+         traceId: item.traceId,
+         fingerprint, // Temporary reference to map to Group ID later
+         stackTrace,
+         context: {
+           method: item.method,
+           path: item.path,
+           route: item.route,
+           status: item.status,
+           userAgent: item.userAgent,
+           ip
+         },
+         timestamp
+       });
+
+       // 2. Aggregate the Group Trend in-memory to prevent DB hammering
+       if (!errorGroupsMap.has(fingerprint)) {
+         errorGroupsMap.set(fingerprint, {
+            fingerprint,
+            errorClass,
+            message,
+            firstSeen: timestamp,
+            lastSeen: timestamp,
+            count: 0
+         });
+       }
+       const group = errorGroupsMap.get(fingerprint);
+       group.count++;
+       if (timestamp > group.lastSeen) group.lastSeen = timestamp;
+       if (timestamp < group.firstSeen) group.firstSeen = timestamp;
+    }
+    // ----------------------------------------------
 
     // Metric Aggregation (Memory)
     const bucketTime = new Date(timestamp);
@@ -104,7 +166,6 @@ const processBatchBackground = async (data: any[], service: any) => {
 
     // Increments
     const incrementMap = (mapObj: any, key: string) => {
-      // Sanitize key for Mongo (no $ or .)
       const safeKey = key.replace(/\./g, '_').replace(/\$/g, '');
       mapObj[safeKey] = (mapObj[safeKey] || 0) + 1;
     };
@@ -121,6 +182,46 @@ const processBatchBackground = async (data: any[], service: any) => {
   if (traceDocs.length > 0) {
     await ApmTrace.insertMany(traceDocs);
   }
+
+  // --- DB Write: Errors (Upserts & Inserts) ---
+  if (errorGroupsMap.size > 0) {
+    // 1. Upsert Groups (Resolves the Trend Data securely)
+    const groupPromises = Array.from(errorGroupsMap.values()).map(async (g) => {
+      const groupDoc = await ApmErrorGroup.findOneAndUpdate(
+        { apmId: service._id, fingerprint: g.fingerprint },
+        {
+          $setOnInsert: {
+            ownerId: service.ownerId,
+            apmId: service._id,
+            fingerprint: g.fingerprint,
+            errorClass: g.errorClass,
+            message: g.message,
+            firstSeen: g.firstSeen,
+            status: 'unresolved'
+          },
+          $max: { lastSeen: g.lastSeen },
+          $inc: { totalCount: g.count }
+        },
+        { upsert: true, new: true }
+      );
+      return { fingerprint: g.fingerprint, groupId: groupDoc._id };
+    });
+
+    const resolvedGroups = await Promise.all(groupPromises);
+    const fingerprintToGroupId = new Map(resolvedGroups.map(g => [g.fingerprint, g.groupId]));
+
+    // 2. Insert Events (Link individual occurrences to the newly resolved Group IDs)
+    const finalErrorEvents = errorEvents.map(e => {
+      const { fingerprint, ...rest } = e;
+      return {
+        ...rest,
+        groupId: fingerprintToGroupId.get(fingerprint)
+      };
+    });
+
+    await ApmErrorEvent.insertMany(finalErrorEvents);
+  }
+  // ----------------------------------------------
 
   // DB Write: Metrics (Upserts)
   const bulkOps = Array.from(metricsMap.values()).map(m => {
