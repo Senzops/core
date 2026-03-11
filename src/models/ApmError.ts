@@ -1,6 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
-// --- 1. Error Group (The Aggregated Trend) ---
+// --- 1. Error Group (The Aggregated Trend & State) ---
 export interface IApmErrorGroup extends Document {
   ownerId: string;
   apmId: mongoose.Types.ObjectId;
@@ -29,6 +29,11 @@ const ApmErrorGroupSchema = new Schema<IApmErrorGroup>({
 ApmErrorGroupSchema.index({ apmId: 1, fingerprint: 1 }, { unique: true });
 ApmErrorGroupSchema.index({ ownerId: 1, status: 1, lastSeen: -1 });
 
+// TTL: If an error doesn't happen for 30 days, auto-delete the group to save DB space.
+// (30 days = 2,592,000 seconds). Relies on the `lastSeen` field.
+ApmErrorGroupSchema.index({ lastSeen: 1 }, { expireAfterSeconds: 2592000 });
+
+
 // --- 2. Error Event (The Individual Occurrence) ---
 export interface IApmErrorEvent extends Document {
   groupId: mongoose.Types.ObjectId;
@@ -48,9 +53,9 @@ const ApmErrorEventSchema = new Schema<IApmErrorEvent>({
   timestamp: { type: Date, required: true, index: true }
 });
 
-// TTL Index: Auto-delete individual stack traces after 14 days to prevent DB bloat. 
-// The Group (trend) will remain forever, but the granular events clean themselves up.
-ApmErrorEventSchema.index({ timestamp: 1 }, { expireAfterSeconds: 1209600 });
+// TTL: Auto-delete individual stack traces after 7 days (Matches APM Trace TTL)
+// (7 days = 604,800 seconds). Prevents massive DB bloat from raw traces.
+ApmErrorEventSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 });
 
 export const ApmErrorGroup = mongoose.model<IApmErrorGroup>('ApmErrorGroup', ApmErrorGroupSchema);
 export const ApmErrorEvent = mongoose.model<IApmErrorEvent>('ApmErrorEvent', ApmErrorEventSchema);
