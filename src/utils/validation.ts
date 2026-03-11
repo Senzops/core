@@ -136,7 +136,24 @@ const ApmTraceItem = z.object({
   timestamp: z.string().datetime(),
 });
 
-export const ApmBatchSchema = z.array(ApmTraceItem);
+// NEW: Standalone Error Event Schema
+const ApmErrorItemSchema = z.object({
+  errorClass: z.string(),
+  message: z.string(),
+  stackTrace: z.string().optional(),
+  traceId: z.string().optional(),
+  context: z.any().optional(),
+  timestamp: z.string().datetime().optional()
+});
+
+// Batch Payload (Upgraded to accept { traces, errors } but falls back to Array for legacy)
+export const ApmBatchSchema = z.union([
+  z.array(ApmTraceItem).transform(traces => ({ traces, errors: [] })),
+  z.object({
+    traces: z.array(ApmTraceItem).optional().default([]),
+    errors: z.array(ApmErrorItemSchema).optional().default([])
+  })
+]);
 
 // Database
 export const RegisterDbSchema = z.object({
@@ -144,4 +161,28 @@ export const RegisterDbSchema = z.object({
   type: z.enum(['mongodb', 'postgresql', 'mysql']),
   uri: z.string().url(),
   interval: z.number().min(1).max(60).default(5)
+});
+
+// --- APM Error Ingest Validation ---
+export const ApmErrorIngestSchema = z.object({
+  namespace: z.string().default('default'),
+  errorType: z.string(),
+  errorMessage: z.string(),
+  traceId: z.string().optional(), // Link to active APM trace
+  stackTrace: z.array(z.object({
+    filename: z.string().optional().default('unknown'),
+    function: z.string().optional().default('anonymous'),
+    lineno: z.number().optional().default(0),
+    colno: z.number().optional().default(0),
+    inApp: z.boolean().default(true)
+  })).default([]),
+  requestContext: z.object({
+    url: z.string().optional(),
+    method: z.string().optional(),
+    headers: z.any().optional(),
+    body: z.any().optional(),
+    ip: z.string().optional()
+  }).optional(),
+  metadata: z.any().optional(),
+  timestamp: z.string().datetime().optional()
 });
