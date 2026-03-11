@@ -9,6 +9,9 @@ const randomInt = (min: number, max: number) =>
 
 const randomBool = () => Math.random() > 0.5;
 
+const randomString = () =>
+  Math.random().toString(36).substring(2, 15);
+
 const FINAL_STATUSES = [
   200, 201, 202,
   400, 401, 403, 404,
@@ -23,12 +26,71 @@ const EXTERNAL_ENDPOINTS = [
   () => `https://api.genderize.io?name=name${randomInt(1, 1000)}`
 ];
 
+/*
+🔥 CHAOS ERROR GENERATOR
+Randomly produces:
+- uncaughtException
+- unhandledRejection
+- async thrown errors
+*/
+function randomlyThrowChaosError() {
+  const shouldThrow = Math.random() > 0.65;
+  if (!shouldThrow) return;
+  const errorTypes = [
+    'uncaught',
+    'rejection',
+    'async_throw'
+  ];
+  const type =
+    errorTypes[randomInt(0, errorTypes.length - 1)];
+
+  const errorPayload = {
+    id: randomString(),
+    value: randomInt(1, 999999),
+    flag: randomBool(),
+    timestamp: Date.now()
+  };
+
+  if (type === 'uncaught') {
+    setTimeout(() => {
+      throw new Error(
+        `CHAOS_UNCAUGHT_${JSON.stringify(errorPayload)}`
+      );
+    }, randomInt(10, 400));
+  }
+
+  if (type === 'rejection') {
+    setTimeout(() => {
+      Promise.reject(
+        new Error(
+          `CHAOS_REJECTION_${JSON.stringify(errorPayload)}`
+        )
+      );
+    }, randomInt(10, 400));
+  }
+
+  if (type === 'async_throw') {
+    setTimeout(async () => {
+      await sleep(randomInt(10, 200));
+      throw new Error(
+        `CHAOS_ASYNC_${JSON.stringify(errorPayload)}`
+      );
+    }, randomInt(10, 400));
+  }
+}
+
 async function makeRequest(url: string) {
+  randomlyThrowChaosError();
   const useAxios = randomBool();
 
   try {
+    if (randomBool()) {
+      randomlyThrowChaosError();
+    }
     if (useAxios) {
-      const res = await axios.get(url, { timeout: 3000 });
+      const res = await axios.get(url, {
+        timeout: 3000
+      });
       return {
         client: 'axios',
         url,
@@ -36,7 +98,10 @@ async function makeRequest(url: string) {
         success: true
       };
     } else {
-      const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+      const res = await fetch(
+        url,
+        { signal: AbortSignal.timeout(3000) }
+      );
       return {
         client: 'fetch',
         url,
@@ -45,6 +110,7 @@ async function makeRequest(url: string) {
       };
     }
   } catch (err: any) {
+    randomlyThrowChaosError();
     return {
       client: useAxios ? 'axios' : 'fetch',
       url,
@@ -55,28 +121,39 @@ async function makeRequest(url: string) {
   }
 }
 
-export const getRandomStatus = async (req: Request, res: Response) => {
+export const getRandomStatus = async (
+  req: Request,
+  res: Response
+) => {
+  randomlyThrowChaosError();
+
   const requestCount = randomInt(1, 6);
   const results = [];
 
   for (let i = 0; i < requestCount; i++) {
     const url =
-      EXTERNAL_ENDPOINTS[randomInt(0, EXTERNAL_ENDPOINTS.length - 1)]();
+      EXTERNAL_ENDPOINTS[
+        randomInt(0, EXTERNAL_ENDPOINTS.length - 1)
+      ]();
 
     results.push(await makeRequest(url));
+
+    randomlyThrowChaosError();
 
     if (i < requestCount - 1) {
       await sleep(randomInt(100, 1200));
     }
   }
 
-  // Random final latency (like edge buffering or aggregation delay)
   const finalDelay = randomInt(50, 800);
   await sleep(finalDelay);
 
-  // 🔥 RANDOM FINAL STATUS
+  randomlyThrowChaosError();
+
   const finalStatus =
-    FINAL_STATUSES[randomInt(0, FINAL_STATUSES.length - 1)];
+    FINAL_STATUSES[
+    randomInt(0, FINAL_STATUSES.length - 1)
+    ];
 
   return res.status(finalStatus).json({
     status:
@@ -89,6 +166,7 @@ export const getRandomStatus = async (req: Request, res: Response) => {
     external_requests_made: requestCount,
     latency_simulated: finalDelay,
     timestamp: new Date().toISOString(),
+    chaos_errors_enabled: true,
     upstream_results: results
   });
 };
