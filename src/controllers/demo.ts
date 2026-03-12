@@ -26,23 +26,40 @@ const EXTERNAL_ENDPOINTS = [
   () => `https://api.genderize.io?name=name${randomInt(1, 1000)}`
 ];
 
+// CHAOS Error Generator
+type ChaosErrorType =
+  | 'uncaught'
+  | 'rejection'
+  | 'async_throw';
+
+const errorTypes: ChaosErrorType[] = [
+  'uncaught',
+  'rejection',
+  'async_throw'
+];
+
+const staticErrors: Record<ChaosErrorType, string> = {
+  uncaught: 'CHAOS_UNCAUGHT_STATIC',
+  rejection: 'CHAOS_REJECTION_STATIC',
+  async_throw: 'CHAOS_ASYNC_STATIC'
+};
+
 /*
-🔥 CHAOS ERROR GENERATOR
+CHAOS ERROR GENERATOR
 Randomly produces:
 - uncaughtException
 - unhandledRejection
 - async thrown errors
 */
-function randomlyThrowChaosError() {
+function randomlyThrowChaosError(): void {
   const shouldThrow = Math.random() > 0.65;
   if (!shouldThrow) return;
-  const errorTypes = [
-    'uncaught',
-    'rejection',
-    'async_throw'
-  ];
+
   const type =
     errorTypes[randomInt(0, errorTypes.length - 1)];
+
+  // 85% static, 15% unique
+  const useStaticError = Math.random() > 0.15;
 
   const errorPayload = {
     id: randomString(),
@@ -51,30 +68,26 @@ function randomlyThrowChaosError() {
     timestamp: Date.now()
   };
 
+  const message = useStaticError
+    ? staticErrors[type]
+    : `${staticErrors[type]}_${JSON.stringify(errorPayload)}`;
+
   if (type === 'uncaught') {
     setTimeout(() => {
-      throw new Error(
-        `CHAOS_UNCAUGHT_${JSON.stringify(errorPayload)}`
-      );
+      throw new Error(message);
     }, randomInt(10, 400));
   }
 
   if (type === 'rejection') {
     setTimeout(() => {
-      Promise.reject(
-        new Error(
-          `CHAOS_REJECTION_${JSON.stringify(errorPayload)}`
-        )
-      );
+      Promise.reject(new Error(message));
     }, randomInt(10, 400));
   }
 
   if (type === 'async_throw') {
     setTimeout(async () => {
       await sleep(randomInt(10, 200));
-      throw new Error(
-        `CHAOS_ASYNC_${JSON.stringify(errorPayload)}`
-      );
+      throw new Error(message);
     }, randomInt(10, 400));
   }
 }
