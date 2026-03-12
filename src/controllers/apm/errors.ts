@@ -3,7 +3,24 @@ import mongoose from 'mongoose';
 import { ApmErrorGroup, ApmErrorEvent } from '../../models/ApmError';
 import { ApmService } from '../../models/Apm';
 
-// 1. Get Global Errors (For the /errors/default Dashboard)
+const getStartDate = (range: string) => {
+  const date = new Date();
+  switch (range) {
+    case '1h': date.setHours(date.getHours() - 1); break;
+    case '7d': date.setDate(date.getDate() - 7); break;
+    case '30d': date.setDate(date.getDate() - 30); break;
+    case '24h':
+    default: date.setHours(date.getHours() - 24); break;
+  }
+  return date;
+};
+
+const getTrendFormat = (range: string) => {
+  if (range === '1h') return "%Y-%m-%dT%H:%M:00.000Z";
+  if (range === '7d' || range === '30d') return "%Y-%m-%d";
+  return "%Y-%m-%dT%H:00:00.000Z"; // Default 24h is hourly
+};
+
 export const getGlobalErrors = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
@@ -12,8 +29,11 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
     const search = req.query.search as string;
     const status = req.query.status as string || 'unresolved';
     const apmId = req.query.apmId as string;
+    const range = req.query.range as string || '24h';
 
-    const query: any = { ownerId: uid };
+    const startDate = getStartDate(range);
+
+    const query: any = { ownerId: uid, lastSeen: { $gte: startDate } };
     if (status !== 'all') query.status = status;
     if (apmId) query.apmId = apmId;
 
@@ -34,7 +54,7 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
       ApmErrorGroup.countDocuments(query)
     ]);
 
-    // --- AGGREGATE GLOBAL TREND ACROSS ALL SERVICES ---
+    // --- AGGREGATE GLOBAL TREND & STATS ---
     let apmIdsMatch = [];
     if (apmId) {
       apmIdsMatch = [new mongoose.Types.ObjectId(apmId)];
@@ -43,28 +63,27 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
       apmIdsMatch = userApms.map(a => a._id);
     }
 
-    const fourteenDaysAgo = new Date();
-    fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
-
-    const trendRaw = await ApmErrorEvent.aggregate([
-      {
-        $match: {
-          apmId: { $in: apmIdsMatch },
-          timestamp: { $gte: fourteenDaysAgo }
-        }
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
-          count: { $sum: 1 }
-        }
-      },
-      { $sort: { "_id": 1 } }
+    const [trendRaw, eventStats, unresolvedCount] = await Promise.all([
+      ApmErrorEvent.aggregate([
+        { $match: { apmId: { $in: apmIdsMatch }, timestamp: { $gte: startDate } } },
+        { $group: { _id: { $dateToString: { format: getTrendFormat(range), date: "$timestamp" } }, count: { $sum: 1 } } },
+        { $sort: { "_id": 1 } }
+      ]),
+      ApmErrorEvent.aggregate([
+        { $match: { apmId: { $in: apmIdsMatch }, timestamp: { $gte: startDate } } },
+        { $group: { _id: null, count: { $sum: 1 }, uniqueServices: { $addToSet: "$apmId" } } }
+      ]),
+      ApmErrorGroup.countDocuments({ ownerId: uid, status: 'unresolved', lastSeen: { $gte: startDate } })
     ]);
 
     res.json({
       errors: groups,
       trend: trendRaw.map(t => ({ time: t._id, count: t.count })),
+      stats: {
+        totalErrors: eventStats[0]?.count || 0,
+        affectedServices: eventStats[0]?.uniqueServices?.length || 0,
+        unresolvedCount
+      },
       pagination: { total, page, limit, pages: Math.ceil(total / limit) }
     });
   } catch (error) {
@@ -72,11 +91,13 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
   }
 };
 
-// 2. Get Specific Error Details, Recent Events & Trend Graph
 export const getErrorGroupDetails = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
     const { groupId } = req.params;
+    const range = req.query.range as string || '24h';
+
+    const startDate = getStartDate(range);
 
     const group = await ApmErrorGroup.findOne({ _id: groupId, ownerId: uid })
       .populate('apmId', 'name framework')
@@ -84,31 +105,17 @@ export const getErrorGroupDetails = async (req: Request, res: Response, next: Ne
 
     if (!group) return res.status(404).json({ error: 'Error group not found' });
 
-    const eventsPromise = ApmErrorEvent.find({ groupId })
-      .sort({ timestamp: -1 })
-      .limit(50)
-      .lean();
-
-    const fourteenDaysAgo = new Date();
-    fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
-
-    const trendPromise = ApmErrorEvent.aggregate([
-      {
-        $match: {
-          groupId: new mongoose.Types.ObjectId(groupId),
-          timestamp: { $gte: fourteenDaysAgo }
-        }
-      },
-      {
-        $group: {
-          _id: { $dateToString: { format: "%Y-%m-%d", date: "$timestamp" } },
-          count: { $sum: 1 }
-        }
-      },
-      { $sort: { "_id": 1 } }
+    const [events, trendRaw] = await Promise.all([
+      ApmErrorEvent.find({ groupId, timestamp: { $gte: startDate } })
+        .sort({ timestamp: -1 })
+        .limit(100)
+        .lean(),
+      ApmErrorEvent.aggregate([
+        { $match: { groupId: new mongoose.Types.ObjectId(groupId), timestamp: { $gte: startDate } } },
+        { $group: { _id: { $dateToString: { format: getTrendFormat(range), date: "$timestamp" } }, count: { $sum: 1 } } },
+        { $sort: { "_id": 1 } }
+      ])
     ]);
-
-    const [events, trendRaw] = await Promise.all([eventsPromise, trendPromise]);
 
     res.json({
       group,
@@ -120,7 +127,6 @@ export const getErrorGroupDetails = async (req: Request, res: Response, next: Ne
   }
 };
 
-// 3. Mark Error as Resolved/Ignored
 export const updateErrorStatus = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
@@ -138,14 +144,12 @@ export const updateErrorStatus = async (req: Request, res: Response, next: NextF
     );
 
     if (!updated) return res.status(404).json({ error: 'Error group not found' });
-
     res.json({ message: 'Status updated', group: updated });
   } catch (error) {
     next(error);
   }
 };
 
-// 4. Get Errors linked to a specific APM Trace
 export const getTraceErrors = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id, traceId } = req.params;
