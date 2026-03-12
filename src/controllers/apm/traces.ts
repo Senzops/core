@@ -57,7 +57,13 @@ export const getTraceDetail = async (req: Request, res: Response, next: NextFunc
     if (!service) return res.status(404).json({ error: "Service not found" });
 
     // 1. Fetch Main Trace
-    const trace = await ApmTrace.findOne({ serviceId: id, _id: traceId }).lean();
+    const traceQuery: any = { serviceId: id };
+    if (mongoose.Types.ObjectId.isValid(traceId)) {
+      traceQuery.$or = [{ _id: traceId }, { traceId: traceId }];
+    } else {
+      traceQuery.traceId = traceId;
+    }
+    const trace = await ApmTrace.findOne(traceQuery).lean();
     if (!trace) return res.status(404).json({ error: "Trace not found" });
 
     // 2. Find Related Services (Owned by same user)
