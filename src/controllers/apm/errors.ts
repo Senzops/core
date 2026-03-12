@@ -21,6 +21,40 @@ const getTrendFormat = (range: string) => {
   return "%Y-%m-%dT%H:00:00.000Z"; // Default 24h is hourly
 };
 
+// --- Helper: Zero-Fill Time Series for Trend Graphs ---
+const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
+  if (!data || data.length === 0) return [];
+
+  const filled = [];
+  const now = new Date();
+
+  let current = new Date(startDate);
+  // Align start boundary based on the resolution
+  if (range === '1h') current.setSeconds(0, 0);
+  else if (range === '24h') current.setMinutes(0, 0, 0);
+  else current.setHours(0, 0, 0, 0);
+
+  const dataMap = new Map(data.map(item => [item._id, item.count]));
+
+  while (current <= now) {
+    let key = '';
+    if (range === '1h') key = current.toISOString().slice(0, 16) + ":00.000Z";
+    else if (range === '24h') key = current.toISOString().slice(0, 13) + ":00:00.000Z";
+    else key = current.toISOString().slice(0, 10);
+
+    filled.push({
+      time: key,
+      count: dataMap.get(key) || 0
+    });
+
+    if (range === '1h') current.setMinutes(current.getMinutes() + 1);
+    else if (range === '24h') current.setHours(current.getHours() + 1);
+    else current.setDate(current.getDate() + 1);
+  }
+
+  return filled;
+};
+
 export const getGlobalErrors = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
@@ -76,9 +110,12 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
       ApmErrorGroup.countDocuments({ ownerId: uid, status: 'unresolved', lastSeen: { $gte: startDate } })
     ]);
 
+    // Apply zero-filling only if data exists
+    const trend = trendRaw.length > 0 ? fillTimeGaps(trendRaw, range, startDate) : [];
+
     res.json({
       errors: groups,
-      trend: trendRaw.map(t => ({ time: t._id, count: t.count })),
+      trend,
       stats: {
         totalErrors: eventStats[0]?.count || 0,
         affectedServices: eventStats[0]?.uniqueServices?.length || 0,
@@ -117,10 +154,13 @@ export const getErrorGroupDetails = async (req: Request, res: Response, next: Ne
       ])
     ]);
 
+    // Apply zero-filling only if data exists
+    const trend = trendRaw.length > 0 ? fillTimeGaps(trendRaw, range, startDate) : [];
+
     res.json({
       group,
       events,
-      trend: trendRaw.map(t => ({ time: t._id, count: t.count }))
+      trend
     });
   } catch (error) {
     next(error);
