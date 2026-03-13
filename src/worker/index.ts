@@ -1,20 +1,10 @@
+import './senzor-init';
 import mongoose from 'mongoose';
-import dotenv from 'dotenv';
 import { startUptimeWorker } from './uptime';
 import { logger } from '../utils/logger';
 import { startDatabaseWorker } from './database';
-import senzor from '@senzops/apm-node';
-
-if (!process.env.MONGO_URI) {
-  dotenv.config({ path: "src/config/.env" });
-}
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/senzor';
-const SENZOR_TASK_API_KEY: string = process.env.SENZOR_TASK_API_KEY!;
-senzor.init({
-  apiKey: SENZOR_TASK_API_KEY,
-  debug: true,
-});
 
 // --- Standalone Worker Process ---
 const initWorker = async () => {
