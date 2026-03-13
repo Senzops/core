@@ -14,12 +14,12 @@ export const startUptimeWorker = () => {
   cron.schedule('* * * * *', async () => {
     logger.info('[Worker] Starting Full Sweep...');
     await runFullSweep();
-  });
+  }, {name:"uptime-monitoring-schedule"});
 
   // Self-healing: Unlock stuck jobs every 5 mins
   cron.schedule('*/5 * * * *', async () => {
     await releaseStuckLocks();
-  });
+  }, {name:"uptime-self-healing"});
 };
 
 const runFullSweep = async () => {

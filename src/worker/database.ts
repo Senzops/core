@@ -13,8 +13,8 @@ const previousState = new Map<string, any>();
 
 export const startDatabaseWorker = () => {
   logger.info('[Worker] Database Monitoring Engine Started');
-  cron.schedule('* * * * *', async () => { await pollDatabases(); });
-  cron.schedule('0 * * * *', async () => { await cleanupPool(); });
+  cron.schedule('* * * * *', async () => { await pollDatabases(); }, {name:"database-monitoring-schedule"});
+  cron.schedule('0 * * * *', async () => { await cleanupPool(); }, {name:"database-cleanup-connection-pool"});
 };
 
 const pollDatabases = async () => {
