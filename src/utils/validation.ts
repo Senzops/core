@@ -186,3 +186,42 @@ export const ApmErrorIngestSchema = z.object({
   metadata: z.any().optional(),
   timestamp: z.string().datetime().optional()
 });
+
+// --- TASK MONITORING SCHEMAS ---
+const TaskSpanSchema = z.object({
+  spanId: z.string().optional(),
+  name: z.string(),
+  type: z.string(),
+  startTime: z.number().min(0),
+  duration: z.number().min(0),
+  status: z.number().optional(),
+  meta: z.record(z.any()).optional(),
+});
+
+const TaskRunItem = z.object({
+  runId: z.string(),
+  taskName: z.string(),
+  taskType: z.enum(['cron', 'queue', 'pipeline', 'custom']).default('custom'),
+  status: z.enum(['success', 'failed']),
+  duration: z.number().nonnegative(),
+  queueDelay: z.number().nonnegative().optional().default(0),
+  attempts: z.number().positive().optional().default(1),
+  triggerTraceId: z.string().optional(), // For APM Distributed Tracing
+  metadata: z.record(z.any()).optional(),
+  spans: z.array(TaskSpanSchema).optional().default([]),
+  timestamp: z.string().datetime(),
+});
+
+const TaskErrorItemSchema = z.object({
+  errorClass: z.string(),
+  message: z.string(),
+  stackTrace: z.string().optional(),
+  runId: z.string().optional(), // Links error to the specific Task Run
+  context: z.any().optional(),
+  timestamp: z.string().datetime().optional()
+});
+
+export const TaskBatchSchema = z.object({
+  runs: z.array(TaskRunItem).optional().default([]),
+  errors: z.array(TaskErrorItemSchema).optional().default([])
+});

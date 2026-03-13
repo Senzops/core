@@ -3,7 +3,10 @@ import mongoose, { Schema, Document } from 'mongoose';
 // --- 1. Error Group (The Aggregated Trend & State) ---
 export interface IApmErrorGroup extends Document {
   ownerId: string;
+  serviceType: 'apm' | 'task';
   apmId: mongoose.Types.ObjectId;
+  taskServiceId?: mongoose.Types.ObjectId;
+
   fingerprint: string; // Hash of errorClass + message
   errorClass: string;
   message: string;
@@ -15,7 +18,10 @@ export interface IApmErrorGroup extends Document {
 
 const ApmErrorGroupSchema = new Schema<IApmErrorGroup>({
   ownerId: { type: String, required: true, index: true },
-  apmId: { type: Schema.Types.ObjectId, ref: 'ApmService', required: true, index: true },
+  serviceType: { type: String, enum: ['apm', 'task'], default: 'apm', index: true },
+  apmId: { type: Schema.Types.ObjectId, ref: 'ApmService' },
+  taskServiceId: { type: Schema.Types.ObjectId, ref: 'TaskService' },
+
   fingerprint: { type: String, required: true },
   errorClass: { type: String, required: true },
   message: { type: String, required: true },
@@ -26,7 +32,7 @@ const ApmErrorGroupSchema = new Schema<IApmErrorGroup>({
 });
 
 // Compound unique index so we can atomically upsert occurrences
-ApmErrorGroupSchema.index({ apmId: 1, fingerprint: 1 }, { unique: true });
+ApmErrorGroupSchema.index({ ownerId: 1, fingerprint: 1 }, { unique: true });
 ApmErrorGroupSchema.index({ ownerId: 1, status: 1, lastSeen: -1 });
 
 // TTL: If an error doesn't happen for 30 days, auto-delete the group to save DB space.
@@ -37,7 +43,10 @@ ApmErrorGroupSchema.index({ lastSeen: 1 }, { expireAfterSeconds: 2592000 });
 // --- 2. Error Event (The Individual Occurrence) ---
 export interface IApmErrorEvent extends Document {
   groupId: mongoose.Types.ObjectId;
+  serviceType: 'apm' | 'task';
   apmId: mongoose.Types.ObjectId;
+  taskServiceId?: mongoose.Types.ObjectId;
+
   traceId?: string; // Links to your existing APM Invocations
   stackTrace: string;
   context?: any;
@@ -46,7 +55,10 @@ export interface IApmErrorEvent extends Document {
 
 const ApmErrorEventSchema = new Schema<IApmErrorEvent>({
   groupId: { type: Schema.Types.ObjectId, ref: 'ApmErrorGroup', required: true, index: true },
-  apmId: { type: Schema.Types.ObjectId, ref: 'ApmService', required: true },
+  serviceType: { type: String, enum: ['apm', 'task'], default: 'apm' },
+  apmId: { type: Schema.Types.ObjectId, ref: 'ApmService' },
+  taskServiceId: { type: Schema.Types.ObjectId, ref: 'TaskService' },
+  
   traceId: { type: String, index: true },
   stackTrace: { type: String, required: true },
   context: { type: Schema.Types.Mixed },
