@@ -32,6 +32,9 @@ import {
   updateErrorStatus,
   getTraceErrors
 } from '../controllers/apm/errors';
+import { ingestTaskBatch } from '../controllers/task/ingest';
+import { deleteTaskService, listTaskServices, registerTaskService } from '../controllers/task/main';
+import { getTaskEntityDetail, getTaskRunDetail, getTaskServiceDashboard } from '../controllers/task/stats';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -116,6 +119,7 @@ const ingestRouter = express.Router();
 ingestRouter.post('/stats', agentIngestLimiter, authenticateAgent, ingestMetrics);
 ingestRouter.post('/web', webIngestLimiter, ingestWebMetrics);
 ingestRouter.post('/apm', apmLimiter, ingestApmBatch);
+ingestRouter.post('/task', apmLimiter, ingestTaskBatch);
 
 // 2. VPS API (Frontend User)
 const apiRouter = express.Router();
@@ -159,6 +163,16 @@ apiRouter.patch('/errors/:groupId/status', updateErrorStatus); // Resolve/Ignore
 // --- TRACE SPECIFIC ERRORS (Added to APM routes) ---
 // Gets all raw error events that occurred during a specific HTTP trace
 apiRouter.get('/apm/:id/trace/:traceId/errors', getTraceErrors);
+
+// Task Services Management
+apiRouter.post('/task/register', registerTaskService);
+apiRouter.get('/task/list', listTaskServices);
+apiRouter.delete('/task/:id', deleteTaskService);
+
+// Task Dashboards & Analytics
+apiRouter.get('/task/:id/dashboard', getTaskServiceDashboard);
+apiRouter.get('/task/:id/entity/:taskName', getTaskEntityDetail);
+apiRouter.get('/task/:id/run/:runId', getTaskRunDetail);
 
 
 
