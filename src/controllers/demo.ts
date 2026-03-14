@@ -168,7 +168,7 @@ export const getRandomStatus = async (
     randomInt(0, FINAL_STATUSES.length - 1)
     ];
 
-  return res.status(finalStatus).json({
+  return res?.status(finalStatus)?.json({
     status:
       finalStatus >= 200 && finalStatus < 300
         ? 'operational'

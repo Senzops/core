@@ -4,6 +4,7 @@ import { startUptimeWorker } from './uptime';
 import { logger } from '../utils/logger';
 import { startDatabaseWorker } from './database';
 import { startWatchdogWorker } from './watchdog';
+import { startDemoWorker } from './demo';
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/senzor';
 
@@ -18,6 +19,7 @@ const initWorker = async () => {
     startUptimeWorker();
     startDatabaseWorker();
     startWatchdogWorker();
+    startDemoWorker(); // Demo worker
 
     // 3. Handle graceful shutdown
     process.on('SIGTERM', () => {
