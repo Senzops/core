@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
-import { TaskService, TaskRun, TaskMetric } from '../../models/Task';
+import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
 import { ApmErrorEvent } from '../../models/ApmError';
 
 // --- Time Range Utilities ---
@@ -119,7 +119,7 @@ export const getTaskServiceDashboard = async (req: Request, res: Response, next:
 
 export const getTaskEntityDetail = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { id, taskName } = req.params; // id = serviceId
+    const { id, taskName } = req.params; 
     const { uid } = (req as any).user;
     const range = req.query.range as string || '24h';
     const startDate = getStartDate(range);
@@ -129,6 +129,9 @@ export const getTaskEntityDetail = async (req: Request, res: Response, next: Nex
 
     const serviceIdObj = new mongoose.Types.ObjectId(id);
     const decodedTaskName = decodeURIComponent(taskName);
+
+    // NEW: Fetch Watchdog Signature
+    const signature = await TaskSignature.findOne({ serviceId: serviceIdObj, taskName: decodedTaskName }).lean();
 
     // 1. Task Specific Trend
     const trendRaw = await TaskMetric.aggregate([
@@ -152,7 +155,7 @@ export const getTaskEntityDetail = async (req: Request, res: Response, next: Nex
           totalRuns: { $sum: "$runs" }, 
           totalFailures: { $sum: "$failures" },
           durationSum: { $sum: "$durationSum" },
-          maxAttempts: { $max: "$attemptsSum" } // Approximate max retries indicator
+          maxAttempts: { $max: "$attemptsSum" } 
       } }
     ]);
 
@@ -164,11 +167,12 @@ export const getTaskEntityDetail = async (req: Request, res: Response, next: Nex
     })
     .sort({ timestamp: -1 })
     .limit(50)
-    .select('-spans') // Exclude spans to save bandwidth, fetch on run detail
+    .select('-spans') // Exclude spans to save bandwidth
     .lean();
 
     res.json({ 
       taskName: decodedTaskName, 
+      signature, // NEW: Exporting to frontend
       stats: statsAgg[0] || { totalRuns: 0, totalFailures: 0, durationSum: 0, maxAttempts: 1 }, 
       trend, 
       recentRuns 
