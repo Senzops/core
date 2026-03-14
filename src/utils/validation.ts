@@ -131,12 +131,12 @@ const ApmTraceItem = z.object({
   duration: z.number().nonnegative(),
   ip: z.string().optional(),
   userAgent: z.string().optional(),
-  spans: z.array(ApmSpanSchema).optional().default([]), // NEW
-  error: ApmErrorSchema, // NEW
+  spans: z.array(ApmSpanSchema).optional().default([]),
+  error: ApmErrorSchema,
   timestamp: z.string().datetime(),
 });
 
-// NEW: Standalone Error Event Schema
+// Standalone Error Event Schema
 const ApmErrorItemSchema = z.object({
   errorClass: z.string(),
   message: z.string(),
@@ -198,6 +198,12 @@ const TaskSpanSchema = z.object({
   meta: z.record(z.any()).optional(),
 });
 
+const ResourceMetricsSchema = z.object({
+  memoryDeltaBytes: z.number(),
+  cpuUserUs: z.number(),
+  cpuSystemUs: z.number(),
+});
+
 const TaskRunItem = z.object({
   runId: z.string(),
   taskName: z.string(),
@@ -206,8 +212,10 @@ const TaskRunItem = z.object({
   duration: z.number().nonnegative(),
   queueDelay: z.number().nonnegative().optional().default(0),
   attempts: z.number().positive().optional().default(1),
-  triggerTraceId: z.string().optional(), // For APM Distributed Tracing
+  triggerTraceId: z.string().optional(),
   metadata: z.record(z.any()).optional(),
+  resourceMetrics: ResourceMetricsSchema.optional(),
+  isDeadLetter: z.boolean().optional().default(false),
   spans: z.array(TaskSpanSchema).optional().default([]),
   timestamp: z.string().datetime(),
 });

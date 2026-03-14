@@ -1,16 +1,16 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
-import { TaskService, TaskRun, TaskMetric } from '../../models/Task';
-import { ApmErrorGroup, ApmErrorEvent } from '../../models/ApmError'; 
+import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
+import { ApmErrorGroup, ApmErrorEvent } from '../../models/ApmError';
 import { logger } from '../../utils/logger';
 import { TaskBatchSchema } from '../../utils/validation';
 
 // Helper: Deterministic Error Fingerprinting
 const generateFingerprint = (errorClass: string, message: string): string => {
   const normalizedMessage = message
-      .replace(/[0-9a-fA-F]{24}/g, '<id>') 
-      .replace(/\b[0-9a-f]{8}\b-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-\b[0-9a-f]{12}\b/ig, '<uuid>') 
-      .replace(/\d+/g, '<num>'); 
+    .replace(/[0-9a-fA-F]{24}/g, '<id>')
+    .replace(/\b[0-9a-f]{8}\b-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-\b[0-9a-f]{12}\b/ig, '<uuid>')
+    .replace(/\d+/g, '<num>');
 
   return crypto.createHash('sha256').update(`${errorClass}:${normalizedMessage}`).digest('hex');
 };
@@ -48,6 +48,7 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
 
   const runDocs = [];
   const metricsMap = new Map<string, any>();
+  const signaturesMap = new Map<string, any>(); //State tracking
   const errorEvents: any[] = [];
   const errorGroupsMap = new Map<string, any>();
 
@@ -66,9 +67,35 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
       attempts: item.attempts,
       triggerTraceId: item.triggerTraceId,
       metadata: item.metadata,
+      resourceMetrics: item.resourceMetrics,
+      isDeadLetter: item.isDeadLetter,
       spans: item.spans,
       timestamp
     });
+    // Extract Cron Expression if provided by our SDK
+    const scheduleExpression = item.metadata?.expression;
+
+    // Signature Aggregation (Upsert Map)
+    if (!signaturesMap.has(item.taskName)) {
+      signaturesMap.set(item.taskName, {
+        taskName: item.taskName,
+        taskType: item.taskType,
+        scheduleExpression,
+        lastRunAt: timestamp,
+        lastStatus: item.status,
+        durationTotal: 0,
+        runCount: 0
+      });
+    }
+    const sig = signaturesMap.get(item.taskName);
+    if (timestamp > sig.lastRunAt) {
+      sig.lastRunAt = timestamp;
+      sig.lastStatus = item.status;
+      if (scheduleExpression) sig.scheduleExpression = scheduleExpression;
+    }
+    sig.durationTotal += item.duration;
+    sig.runCount++;
+
 
     // Metric Aggregation (Memory Map keyed by taskName + timeBucket)
     const bucketTime = new Date(timestamp);
@@ -78,7 +105,7 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
     if (!metricsMap.has(bucketKey)) {
       metricsMap.set(bucketKey, {
         taskName: item.taskName,
-        timestamp: bucketTime, 
+        timestamp: bucketTime,
         runs: 0, failures: 0, durationSum: 0, durationMax: 0, queueDelaySum: 0, attemptsSum: 0
       });
     }
@@ -101,7 +128,7 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
       serviceType: 'task',
       taskServiceId: service._id,
       traceId: err.runId, // Aligning runId to traceId for the error UI
-      fingerprint, 
+      fingerprint,
       stackTrace: err.stackTrace || '',
       context: err.context || {},
       timestamp: errTimestamp
@@ -109,8 +136,8 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
 
     if (!errorGroupsMap.has(fingerprint)) {
       errorGroupsMap.set(fingerprint, {
-         fingerprint, errorClass: err.errorClass, message: err.message,
-         firstSeen: errTimestamp, lastSeen: errTimestamp, count: 0
+        fingerprint, errorClass: err.errorClass, message: err.message,
+        firstSeen: errTimestamp, lastSeen: errTimestamp, count: 0
       });
     }
     const group = errorGroupsMap.get(fingerprint);
@@ -121,6 +148,45 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
 
   // --- 3. DB Writes ---
   if (runDocs.length > 0) await TaskRun.insertMany(runDocs);
+
+  // Write Signatures
+  if (signaturesMap.size > 0) {
+    const signatureOps = Array.from(signaturesMap.values()).map(sig => {
+      const batchAvgDuration = sig.durationTotal / sig.runCount;
+      const healthState = sig.lastStatus === 'failed' ? 'failing' : 'healthy';
+
+      return {
+        updateOne: {
+          filter: { serviceId: service._id, taskName: sig.taskName },
+          update: [
+            {
+              $set: {
+                taskType: sig.taskType,
+                lastRunAt: { $max: ["$lastRunAt", sig.lastRunAt] },
+                lastStatus: sig.lastStatus,
+                healthState: healthState,
+                ...(sig.scheduleExpression && { scheduleExpression: sig.scheduleExpression })
+              }
+            },
+            {
+              // Calculate Exponential Moving Average (EMA) entirely in Mongo!
+              // Formula: (CurrentBatchAvg * 0.1) + (PreviousEMA * 0.9)
+              $set: {
+                avgDuration: {
+                  $add: [
+                    { $multiply: [batchAvgDuration, 0.1] },
+                    { $multiply: [{ $ifNull: ["$avgDuration", batchAvgDuration] }, 0.9] }
+                  ]
+                }
+              }
+            }
+          ],
+          upsert: true
+        }
+      };
+    });
+    await TaskSignature.bulkWrite(signatureOps);
+  }
 
   if (errorGroupsMap.size > 0) {
     const groupPromises = Array.from(errorGroupsMap.values()).map(async (g) => {
@@ -158,16 +224,16 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
   }
 
   const bulkOps = Array.from(metricsMap.values()).map(m => ({
-    updateOne: { 
-      filter: { serviceId: service._id, taskName: m.taskName, timestamp: m.timestamp }, 
-      update: { 
-        $inc: { 
-          runs: m.runs, failures: m.failures, durationSum: m.durationSum, 
-          queueDelaySum: m.queueDelaySum, attemptsSum: m.attemptsSum 
-        }, 
-        $max: { durationMax: m.durationMax } 
-      }, 
-      upsert: true 
+    updateOne: {
+      filter: { serviceId: service._id, taskName: m.taskName, timestamp: m.timestamp },
+      update: {
+        $inc: {
+          runs: m.runs, failures: m.failures, durationSum: m.durationSum,
+          queueDelaySum: m.queueDelaySum, attemptsSum: m.attemptsSum
+        },
+        $max: { durationMax: m.durationMax }
+      },
+      upsert: true
     }
   }));
 
