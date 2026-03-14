@@ -42,6 +42,7 @@ const TaskSignatureSchema = new Schema<ITaskSignature>({
 });
 // Critical for fast upserts during ingestion
 TaskSignatureSchema.index({ serviceId: 1, taskName: 1 }, { unique: true });
+TaskSignatureSchema.index({ taskType: 1, scheduleExpression: 1 }); 
 TaskSignatureSchema.index({ taskType: 1, healthState: 1 }); // For Watchdog queries
 
 
@@ -123,3 +124,18 @@ export const TaskService = mongoose.model<ITaskService>('TaskService', TaskServi
 export const TaskSignature = mongoose.model<ITaskSignature>('TaskSignature', TaskSignatureSchema);
 export const TaskRun = mongoose.model<ITaskRun>('TaskRun', TaskRunSchema);
 export const TaskMetric = mongoose.model<ITaskMetric>('TaskMetric', TaskMetricSchema);
+
+// --- Distributed System Lock (For Cluster Safety) ---
+export interface ISystemLock extends Document {
+  lockName: string;
+  lockedAt: Date;
+  lockedBy: string; // Worker/Pod ID
+  expiresAt: Date;
+}
+const SystemLockSchema = new Schema<ISystemLock>({
+  lockName: { type: String, required: true, unique: true },
+  lockedAt: { type: Date, required: true },
+  lockedBy: { type: String, required: true },
+  expiresAt: { type: Date, required: true, index: { expires: 0 } } // Auto-deletes when expired!
+});
+export const SystemLock = mongoose.model<ISystemLock>('SystemLock', SystemLockSchema);

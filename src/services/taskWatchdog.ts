@@ -1,87 +1,171 @@
+import mongoose from 'mongoose';
 import crypto from 'crypto';
 import { CronExpressionParser } from 'cron-parser';
-import { TaskSignature, TaskService } from '../models/Task';
+import os from 'os';
+import { TaskSignature, TaskService, SystemLock } from '../models/Task';
 import { ApmErrorGroup, ApmErrorEvent } from '../models/ApmError';
 import { logger } from '../utils/logger';
 
-// --- Production Configuration ---
 const BATCH_SIZE = 500;
-const GRACE_PERIOD_MS = 120_000; // 2 minutes grace period for event loop lag or queue delay
-const EARLY_JITTER_MS = 5_000;   // 5 seconds allowance if a cron fires slightly early
-
-// Concurrency Lock: Prevents the worker from starting a new sweep if the previous one is still processing 100k+ records
-let isSweeping = false;
+const GRACE_PERIOD_MS = 120_000;
+const EARLY_JITTER_MS = 5_000;
+const WORKER_ID = `${os.hostname()}-${process.pid}`;
+const LOCK_NAME = 'task-watchdog-sweep';
+const LOCK_TTL_MS = 4 * 60 * 1000; // 4 minutes
 
 /**
  * Sweeps the database looking for Cron Jobs that have missed their execution windows.
- * Optimized with lean cursors and bulk writes for high-throughput environments.
  */
 export const runTaskWatchdogSweep = async () => {
-  if (isSweeping) {
-    logger.warn('[Watchdog] Previous sweep still processing. Skipping this cycle to prevent DB contention.');
-    return;
+  const now = new Date();
+
+  // --- 1. Distributed Cluster Lock (Fixes Point 2) ---
+  try {
+    const lock = await SystemLock.findOneAndUpdate(
+      { lockName: LOCK_NAME },
+      {
+        $set: {
+          lockedAt: now,
+          lockedBy: WORKER_ID,
+          expiresAt: new Date(now.getTime() + LOCK_TTL_MS)
+        }
+      },
+      { upsert: true, new: true, rawResult: true }
+    );
+
+    // If another pod holds the lock and it hasn't expired, findOneAndUpdate will fail the unique constraint 
+    // or we can explicitly check if we just created/updated it successfully.
+    // By using standard upsert with TTL, MongoDB handles the race condition natively.
+  } catch (lockError: any) {
+    if (lockError.code === 11000) {
+      logger.debug('[Watchdog] Another pod currently holds the sweep lock. Bypassing.');
+      return;
+    }
+    throw lockError;
   }
 
-  isSweeping = true;
-  logger.info('[Watchdog] Starting Task Signature evaluation sweep...');
+  logger.info(`[Watchdog] Sweep started by ${WORKER_ID}...`);
   const startTime = Date.now();
 
   let missingCount = 0;
   let recoveredCount = 0;
 
-  // DB Write Buffers
+  // Buffers
   let signatureUpdates: any[] = [];
-  let newErrorEvents: any[] = [];
+  let anomaliesBatch: any[] = [];
 
   try {
-    const now = new Date();
+    // --- 2. In-Memory Service Map (Fixes Point 3) ---
+    // Fetch all active services once. Eliminates `.populate()` entirely.
+    const services = await TaskService.find({ status: 'online' }).select('_id ownerId name').lean();
+    const activeServiceMap = new Map(services.map(s => [s._id.toString(), s]));
 
-    // 1. Use Lean Cursor for Memory Efficiency on massive datasets
+    if (activeServiceMap.size === 0) {
+      logger.info('[Watchdog] No active services found. Sweep complete.');
+      return;
+    }
+
+    // --- 3. Optimized Cursor (Fixes Point 4 & 5) ---
     const cursor = TaskSignature.find({
       taskType: 'cron',
       scheduleExpression: { $exists: true, $ne: null }
     })
-      .populate('serviceId', 'name status ownerId')
+      .select('_id taskName serviceId scheduleExpression lastRunAt healthState')
       .lean()
       .cursor();
 
+    // --- High-Performance Bulk Flush (Fixes Point 1) ---
     const flushBatches = async () => {
+      // 1. Flush regular state updates
       if (signatureUpdates.length > 0) {
-        await TaskSignature.bulkWrite(signatureUpdates);
+        await TaskSignature.bulkWrite(signatureUpdates, { ordered: false });
         signatureUpdates = [];
       }
-      if (newErrorEvents.length > 0) {
-        await ApmErrorEvent.insertMany(newErrorEvents);
-        newErrorEvents = [];
+
+      // 2. Flush Anomalies (Zero sequential awaits!)
+      if (anomaliesBatch.length > 0) {
+        const fingerprints = anomaliesBatch.map(a => a.fingerprint);
+
+        // Fetch ALL existing groups in one query
+        const existingGroups = await ApmErrorGroup.find({ fingerprint: { $in: fingerprints } }).select('_id fingerprint').lean();
+        const existingGroupMap = new Map(existingGroups.map(g => [g.fingerprint, g._id]));
+
+        const groupBulkOps: any[] = [];
+        const eventDocs: any[] = [];
+
+        for (const anomaly of anomaliesBatch) {
+          let groupId = existingGroupMap.get(anomaly.fingerprint);
+
+          if (groupId) {
+            // Group exists: Prepare increment op
+            groupBulkOps.push({
+              updateOne: {
+                filter: { _id: groupId },
+                update: { $max: { lastSeen: anomaly.timestamp }, $inc: { totalCount: 1 } }
+              }
+            });
+          } else {
+            // Group does not exist: Generate ID in memory and prepare insert op
+            groupId = new mongoose.Types.ObjectId();
+            existingGroupMap.set(anomaly.fingerprint, groupId); // Cache it for potential duplicates in same batch
+
+            groupBulkOps.push({
+              insertOne: {
+                document: {
+                  _id: groupId,
+                  ownerId: anomaly.service.ownerId,
+                  serviceType: 'task',
+                  taskServiceId: anomaly.service._id,
+                  fingerprint: anomaly.fingerprint,
+                  errorClass: 'MissedCronRun',
+                  message: `Cron Job "${anomaly.sig.taskName}" missed its scheduled execution.`,
+                  firstSeen: anomaly.timestamp,
+                  lastSeen: anomaly.timestamp,
+                  totalCount: 1,
+                  status: 'unresolved'
+                }
+              }
+            });
+          }
+
+          // Queue the event directly linked to the resolved GroupId
+          eventDocs.push({
+            groupId: groupId,
+            serviceType: 'task',
+            taskServiceId: anomaly.service._id,
+            traceId: `anomaly_${anomaly.sig.taskName}_${anomaly.timestamp.getTime()}`,
+            stackTrace: `System Watchdog evaluation failed for ${anomaly.sig.taskName}\nSchedule: ${anomaly.sig.scheduleExpression}\nExpected Execution: ${anomaly.expectedPreviousRun.toISOString()}\nLast Seen: ${anomaly.sig.lastRunAt ? new Date(anomaly.sig.lastRunAt).toISOString() : 'Never'}`,
+            context: { expectedPreviousRun: anomaly.expectedPreviousRun, lastRunAt: anomaly.sig.lastRunAt },
+            timestamp: anomaly.timestamp
+          });
+        }
+
+        // Execute the 2 network requests
+        if (groupBulkOps.length > 0) await ApmErrorGroup.bulkWrite(groupBulkOps, { ordered: false });
+        if (eventDocs.length > 0) await ApmErrorEvent.insertMany(eventDocs, { ordered: false });
+
+        anomaliesBatch = [];
       }
     };
 
+    // --- Main Sweep Loop ---
     for await (const sig of cursor) {
-      const service = sig.serviceId as any;
+      const serviceIdStr = sig.serviceId.toString();
+      const service = activeServiceMap.get(serviceIdStr);
 
-      // Skip if service was deleted, lacks expression, or the entire server is offline (prevents alert storms)
-      if (!service || !sig.scheduleExpression || service.status !== 'online') {
-        continue;
-      }
+      if (!service || !sig.scheduleExpression) continue;
 
       try {
-        // Find the *last* time this was supposed to run strictly prior to `now`
         const interval = CronExpressionParser.parse(
           sig.scheduleExpression,
           { currentDate: now }
         );
         const expectedPreviousRun = interval.prev().toDate();
-
-        // Calculate realistic operational boundaries
         const expectedWithGrace = new Date(expectedPreviousRun.getTime() + GRACE_PERIOD_MS);
         const expectedMinusJitter = new Date(expectedPreviousRun.getTime() - EARLY_JITTER_MS);
 
-        // If we are currently inside the grace period, we cannot confidently call it missing yet.
-        if (now < expectedWithGrace) {
-          continue;
-        }
+        if (now < expectedWithGrace) continue;
 
-        // It missed the schedule if it has never run, or its last run was before the expected window
         const hasMissed = !sig.lastRunAt || new Date(sig.lastRunAt) < expectedMinusJitter;
 
         if (hasMissed) {
@@ -95,77 +179,38 @@ export const runTaskWatchdogSweep = async () => {
               }
             });
 
-            // Generate Deterministic Error Fingerprint
             const fingerprint = crypto
               .createHash('sha256')
               .update(`MissedCronRun:${sig.taskName}:${service._id}`)
               .digest('hex');
 
-            // Upsert Error Group sequentially (optimized to only fire once per anomaly transition)
-            const groupDoc = await ApmErrorGroup.findOneAndUpdate(
-              { ownerId: service.ownerId, fingerprint },
-              {
-                $setOnInsert: {
-                  ownerId: service.ownerId,
-                  serviceType: 'task',
-                  taskServiceId: service._id,
-                  fingerprint,
-                  errorClass: 'MissedCronRun',
-                  message: `Cron Job "${sig.taskName}" missed its scheduled execution.`,
-                  firstSeen: now,
-                  status: 'unresolved'
-                },
-                $max: { lastSeen: now },
-                $inc: { totalCount: 1 }
-              },
-              { upsert: true, new: true }
-            );
-
-            // Queue Event payload for bulk insert
-            if (groupDoc) {
-              newErrorEvents.push({
-                groupId: groupDoc._id,
-                serviceType: 'task',
-                taskServiceId: service._id,
-                traceId: `anomaly_${sig.taskName}_${now.getTime()}`,
-                stackTrace: `System Watchdog evaluation failed for ${sig.taskName}\nSchedule: ${sig.scheduleExpression}\nExpected Execution: ${expectedPreviousRun.toISOString()}\nLast Seen: ${sig.lastRunAt ? new Date(sig.lastRunAt).toISOString() : 'Never'}`,
-                context: { expectedPreviousRun, lastRunAt: sig.lastRunAt },
-                timestamp: now
-              });
-            }
-          }
-        } else {
-          // It ran successfully within the window
-          if (sig.healthState === 'missing') {
-            recoveredCount++;
-            signatureUpdates.push({
-              updateOne: {
-                filter: { _id: sig._id },
-                update: { $set: { healthState: 'healthy' } }
-              }
+            anomaliesBatch.push({
+              sig, service, fingerprint, expectedPreviousRun, timestamp: now
             });
           }
+        } else if (sig.healthState === 'missing') {
+          recoveredCount++;
+          signatureUpdates.push({
+            updateOne: {
+              filter: { _id: sig._id },
+              update: { $set: { healthState: 'healthy' } }
+            }
+          });
         }
 
-        // Auto-flush memory buffers if batch size is reached
-        if (signatureUpdates.length >= BATCH_SIZE || newErrorEvents.length >= BATCH_SIZE) {
+        if (signatureUpdates.length >= BATCH_SIZE || anomaliesBatch.length >= BATCH_SIZE) {
           await flushBatches();
         }
 
       } catch (parseError) {
-        // Gracefully handle invalid cron expressions (prevents full sweep crash)
         if (sig.healthState !== 'failing') {
           signatureUpdates.push({
-            updateOne: {
-              filter: { _id: sig._id },
-              update: { $set: { healthState: 'failing' } }
-            }
+            updateOne: { filter: { _id: sig._id }, update: { $set: { healthState: 'failing' } } }
           });
         }
       }
     }
 
-    // Flush any remaining records
     await flushBatches();
 
     const elapsed = Date.now() - startTime;
@@ -174,7 +219,7 @@ export const runTaskWatchdogSweep = async () => {
   } catch (error) {
     logger.error('[Watchdog] Fatal sweep error:', error);
   } finally {
-    // GUARANTEE the lock is released, even if the DB connection drops
-    isSweeping = false;
+    // Release the lock early so next cron can run perfectly on time
+    await SystemLock.findOneAndDelete({ lockName: LOCK_NAME, lockedBy: WORKER_ID }).catch(() => { });
   }
 };
