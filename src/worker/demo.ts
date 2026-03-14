@@ -5,7 +5,7 @@ import { getRandomStatus } from '../controllers/demo';
 export const startDemoWorker = () => {
   logger.info('[Worker] System Demo Service Scheduled');
 
-  cron.schedule('* * * * *', async () => {
+  cron.schedule('*/15 * * * *', async () => {
     try {
       const req: any = {};
       await getRandomStatus(req, req);
