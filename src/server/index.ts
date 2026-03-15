@@ -26,15 +26,10 @@ import { getApmStats } from '../controllers/apm/stats';
 import { getInvocations, getTraceDetail } from '../controllers/apm/traces';
 import { registerDatabase, listDatabases, deleteDatabase } from '../controllers/database/main';
 import { getDatabaseStats } from '../controllers/database/stats';
-import {
-  getGlobalErrors,
-  getErrorGroupDetails,
-  updateErrorStatus,
-  getTraceErrors
-} from '../controllers/apm/errors';
 import { ingestTaskBatch } from '../controllers/task/ingest';
 import { deleteTaskService, listTaskServices, registerTaskService } from '../controllers/task/main';
 import { getTaskEntityDetail, getTaskRunDetail, getTaskServiceDashboard } from '../controllers/task/stats';
+import { getErrorGroupDetails, getGlobalErrors, getTraceErrors, updateErrorStatus } from '../controllers/error';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });

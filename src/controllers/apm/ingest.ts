@@ -1,49 +1,38 @@
 import { Request, Response } from 'express';
-import crypto from 'crypto';
 import geoip from 'geoip-lite';
 import { UAParser } from 'ua-parser-js';
 import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
-import { ApmErrorGroup, ApmErrorEvent } from '../../models/ApmError';
+import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/Error';
 import { logger } from '../../utils/logger';
 import { ApmBatchSchema } from '../../utils/validation';
 
-// --- Helper: Deterministic Error Fingerprinting ---
-const generateFingerprint = (errorClass: string, message: string): string => {
-  // Strip dynamic data (UUIDs, MongoIDs, Numbers) so identical errors group together
-  const normalizedMessage = message
+// --- Helper: Clean Dynamic Data before Fingerprinting ---
+const cleanMessageForFingerprint = (message: string): string => {
+  return message
     .replace(/[0-9a-fA-F]{24}/g, '<id>') // Mongo IDs
     .replace(/\b[0-9a-f]{8}\b-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-\b[0-9a-f]{12}\b/ig, '<uuid>') // UUIDs
     .replace(/\d+/g, '<num>'); // Numbers
-
-  return crypto
-    .createHash('sha256')
-    .update(`${errorClass}:${normalizedMessage}`)
-    .digest('hex');
 };
 
 export const ingestApmBatch = async (req: Request, res: Response) => {
   try {
-    // 1. Critical Validation (Must be synchronous)
     const apiKey = req.headers['x-service-api-key'] as string;
     if (!apiKey) return res.status(401).json({ error: 'Missing API Key' });
 
     const service = await ApmService.findOne({ apiKey });
     if (!service) return res.status(403).json({ error: 'Invalid API Key' });
 
-    // 2. Validate Payload (Now supports { traces, errors })
     const batch = ApmBatchSchema.safeParse(req.body);
     if (!batch.success) {
       return res.status(400).json({ error: 'Invalid payload format', details: batch.error });
     }
 
-    // 3. FAST EXIT: Respond to SDK immediately
     res.status(202).json({
       status: 'accepted',
       queuedTraces: batch.data.traces.length,
       queuedErrors: batch.data.errors.length
     });
 
-    // 4. Background Processing (Fire and Forget)
     setImmediate(() => {
       processBatchBackground(batch.data, service)
         .catch(err => logger.error(`[APM] Background processing failed: ${err.message}`));
@@ -57,7 +46,6 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
   }
 };
 
-// --- Background Worker Logic ---
 const processBatchBackground = async (data: { traces: any[], errors: any[] }, service: any) => {
   await ApmService.findByIdAndUpdate(service._id, { lastSeen: new Date() });
 
@@ -93,10 +81,9 @@ const processBatchBackground = async (data: { traces: any[], errors: any[] }, se
       ip, country, city, userAgent: item.userAgent, browser, os, device,
       timestamp,
       spans: item.spans || [],
-      error: item.error // Legacy fallback
+      error: item.error
     });
 
-    // Legacy Error Extraction (For older SDKs sending error inline)
     if (item.error && item.error.name && item.error.message) {
       data.errors.push({
         errorClass: item.error.name,
@@ -137,13 +124,14 @@ const processBatchBackground = async (data: { traces: any[], errors: any[] }, se
     incrementMap(m.devices, device);
   }
 
-  // --- 2. Process Errors (AppSignal Style) ---
+  // --- 2. Process Errors (Polymorphic Universal Engine) ---
   for (const err of data.errors) {
-    const fingerprint = generateFingerprint(err.errorClass, err.message);
+    const fingerprint = generateErrorFingerprint(service._id, err.errorClass, cleanMessageForFingerprint(err.message));
     const errTimestamp = err.timestamp ? new Date(err.timestamp) : new Date();
 
     errorEvents.push({
-      apmId: service._id,
+      serviceId: service._id,
+      serviceModel: 'ApmService',
       traceId: err.traceId,
       fingerprint,
       stackTrace: err.stackTrace || '',
@@ -168,18 +156,17 @@ const processBatchBackground = async (data: { traces: any[], errors: any[] }, se
   }
 
   // --- 3. DB Writes ---
-  if (traceDocs.length > 0) {
-    await ApmTrace.insertMany(traceDocs);
-  }
+  if (traceDocs.length > 0) await ApmTrace.insertMany(traceDocs);
 
   if (errorGroupsMap.size > 0) {
     const groupPromises = Array.from(errorGroupsMap.values()).map(async (g) => {
-      const groupDoc = await ApmErrorGroup.findOneAndUpdate(
-        { apmId: service._id, fingerprint: g.fingerprint },
+      const groupDoc = await ErrorGroup.findOneAndUpdate(
+        { ownerId: service.ownerId, fingerprint: g.fingerprint },
         {
           $setOnInsert: {
             ownerId: service.ownerId,
-            apmId: service._id,
+            serviceId: service._id,
+            serviceModel: 'ApmService',
             fingerprint: g.fingerprint,
             errorClass: g.errorClass,
             message: g.message,
@@ -202,7 +189,7 @@ const processBatchBackground = async (data: { traces: any[], errors: any[] }, se
       return { ...rest, groupId: fingerprintToGroupId.get(fingerprint) };
     });
 
-    await ApmErrorEvent.insertMany(finalErrorEvents);
+    await ErrorEvent.insertMany(finalErrorEvents);
   }
 
   const bulkOps = Array.from(metricsMap.values()).map(m => {
@@ -222,7 +209,5 @@ const processBatchBackground = async (data: { traces: any[], errors: any[] }, se
     };
   });
 
-  if (bulkOps.length > 0) {
-    await ApmMetric.bulkWrite(bulkOps);
-  }
+  if (bulkOps.length > 0) await ApmMetric.bulkWrite(bulkOps);
 };

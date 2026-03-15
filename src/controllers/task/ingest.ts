@@ -1,18 +1,15 @@
 import { Request, Response } from 'express';
-import crypto from 'crypto';
 import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
-import { ApmErrorGroup, ApmErrorEvent } from '../../models/ApmError';
+import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/Error';
 import { logger } from '../../utils/logger';
 import { TaskBatchSchema } from '../../utils/validation';
 
-// Helper: Deterministic Error Fingerprinting
-const generateFingerprint = (errorClass: string, message: string): string => {
-  const normalizedMessage = message
+// Helper: Clean Dynamic Data before Fingerprinting
+const cleanMessageForFingerprint = (message: string): string => {
+  return message
     .replace(/[0-9a-fA-F]{24}/g, '<id>')
     .replace(/\b[0-9a-f]{8}\b-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-\b[0-9a-f]{12}\b/ig, '<uuid>')
     .replace(/\d+/g, '<num>');
-
-  return crypto.createHash('sha256').update(`${errorClass}:${normalizedMessage}`).digest('hex');
 };
 
 export const ingestTaskBatch = async (req: Request, res: Response) => {
@@ -28,10 +25,8 @@ export const ingestTaskBatch = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Invalid payload format', details: batch.error });
     }
 
-    // Fast Exit
     res.status(202).json({ status: 'accepted', queuedRuns: batch.data.runs.length });
 
-    // Background Processing
     setImmediate(() => {
       processTaskBatchBackground(batch.data, service)
         .catch(err => logger.error(`[Task] Background processing failed: ${err.message}`));
@@ -48,7 +43,7 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
 
   const runDocs = [];
   const metricsMap = new Map<string, any>();
-  const signaturesMap = new Map<string, any>(); //State tracking
+  const signaturesMap = new Map<string, any>();
   const errorEvents: any[] = [];
   const errorGroupsMap = new Map<string, any>();
 
@@ -72,10 +67,9 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
       spans: item.spans,
       timestamp
     });
-    // Extract Cron Expression if provided by our SDK
+
     const scheduleExpression = item.metadata?.expression;
 
-    // Signature Aggregation (Upsert Map)
     if (!signaturesMap.has(item.taskName)) {
       signaturesMap.set(item.taskName, {
         taskName: item.taskName,
@@ -96,10 +90,8 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
     sig.durationTotal += item.duration;
     sig.runCount++;
 
-
-    // Metric Aggregation (Memory Map keyed by taskName + timeBucket)
     const bucketTime = new Date(timestamp);
-    bucketTime.setSeconds(0, 0); // Floor to minute
+    bucketTime.setSeconds(0, 0);
     const bucketKey = `${item.taskName}_${bucketTime.toISOString()}`;
 
     if (!metricsMap.has(bucketKey)) {
@@ -119,14 +111,14 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
     m.attemptsSum += (item.attempts || 1);
   }
 
-  // --- 2. Process Task Errors (Bridging to Global APM Errors) ---
+  // --- 2. Process Task Errors (Polymorphic Universal Engine) ---
   for (const err of data.errors) {
-    const fingerprint = generateFingerprint(err.errorClass, err.message);
+    const fingerprint = generateErrorFingerprint(service._id, err.errorClass, cleanMessageForFingerprint(err.message));
     const errTimestamp = err.timestamp ? new Date(err.timestamp) : new Date();
 
     errorEvents.push({
-      serviceType: 'task',
-      taskServiceId: service._id,
+      serviceId: service._id,
+      serviceModel: 'TaskService',
       traceId: err.runId, // Aligning runId to traceId for the error UI
       fingerprint,
       stackTrace: err.stackTrace || '',
@@ -149,7 +141,6 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
   // --- 3. DB Writes ---
   if (runDocs.length > 0) await TaskRun.insertMany(runDocs);
 
-  // Write Signatures
   if (signaturesMap.size > 0) {
     const signatureOps = Array.from(signaturesMap.values()).map(sig => {
       const batchAvgDuration = sig.durationTotal / sig.runCount;
@@ -169,8 +160,6 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
               }
             },
             {
-              // Calculate Exponential Moving Average (EMA) entirely in Mongo!
-              // Formula: (CurrentBatchAvg * 0.1) + (PreviousEMA * 0.9)
               $set: {
                 avgDuration: {
                   $add: [
@@ -190,14 +179,13 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
 
   if (errorGroupsMap.size > 0) {
     const groupPromises = Array.from(errorGroupsMap.values()).map(async (g) => {
-      // Upsert polymorphic error group
-      const groupDoc = await ApmErrorGroup.findOneAndUpdate(
+      const groupDoc = await ErrorGroup.findOneAndUpdate(
         { ownerId: service.ownerId, fingerprint: g.fingerprint },
         {
           $setOnInsert: {
             ownerId: service.ownerId,
-            serviceType: 'task',
-            taskServiceId: service._id,
+            serviceId: service._id,
+            serviceModel: 'TaskService',
             fingerprint: g.fingerprint,
             errorClass: g.errorClass,
             message: g.message,
@@ -220,7 +208,7 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
       return { ...rest, groupId: fingerprintToGroupId.get(fingerprint) };
     });
 
-    await ApmErrorEvent.insertMany(finalErrorEvents);
+    await ErrorEvent.insertMany(finalErrorEvents);
   }
 
   const bulkOps = Array.from(metricsMap.values()).map(m => ({

@@ -1,7 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
-import { ApmErrorGroup, ApmErrorEvent } from '../../models/ApmError';
-import { ApmService } from '../../models/Apm';
+import { ErrorGroup, ErrorEvent } from '../models/Error';
+import { ApmService } from '../models/Apm';
+import { TaskService } from '../models/Task';
 
 const getStartDate = (range: string) => {
   const date = new Date();
@@ -21,15 +22,12 @@ const getTrendFormat = (range: string) => {
   return "%Y-%m-%dT%H:00:00.000Z"; // Default 24h is hourly
 };
 
-// --- Helper: Zero-Fill Time Series for Trend Graphs ---
 const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
   if (!data || data.length === 0) return [];
-
   const filled = [];
   const now = new Date();
 
   let current = new Date(startDate);
-  // Align start boundary based on the resolution
   if (range === '1h') current.setSeconds(0, 0);
   else if (range === '24h') current.setMinutes(0, 0, 0);
   else current.setHours(0, 0, 0, 0);
@@ -42,17 +40,27 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
     else if (range === '24h') key = current.toISOString().slice(0, 13) + ":00:00.000Z";
     else key = current.toISOString().slice(0, 10);
 
-    filled.push({
-      time: key,
-      count: dataMap.get(key) || 0
-    });
+    filled.push({ time: key, count: dataMap.get(key) || 0 });
 
     if (range === '1h') current.setMinutes(current.getMinutes() + 1);
     else if (range === '24h') current.setHours(current.getHours() + 1);
     else current.setDate(current.getDate() + 1);
   }
-
   return filled;
+};
+
+// --- DTO Formatter ---
+// Transforms the raw DB document into a clean, frontend-ready object
+const mapErrorGroupDTO = (g: any) => {
+  const service = g.serviceId ? {
+    _id: g.serviceId._id,
+    name: g.serviceId.name,
+    type: g.serviceModel === 'TaskService' ? 'task' : 'apm',
+    framework: g.serviceId.framework || 'unknown'
+  } : null;
+
+  const { serviceId, serviceModel, ...rest } = g;
+  return { ...rest, service };
 };
 
 export const getGlobalErrors = async (req: Request, res: Response, next: NextFunction) => {
@@ -62,14 +70,14 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
     const limit = parseInt(req.query.limit as string) || 20;
     const search = req.query.search as string;
     const status = req.query.status as string || 'unresolved';
-    const apmId = req.query.apmId as string;
+    const reqServiceId = req.query.serviceId as string; // Formerly apmId
     const range = req.query.range as string || '24h';
 
     const startDate = getStartDate(range);
 
     const query: any = { ownerId: uid, lastSeen: { $gte: startDate } };
     if (status !== 'all') query.status = status;
-    if (apmId) query.apmId = apmId;
+    if (reqServiceId) query.serviceId = reqServiceId;
 
     if (search) {
       query.$or = [
@@ -78,39 +86,44 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
       ];
     }
 
-    const [groups, total] = await Promise.all([
-      ApmErrorGroup.find(query)
+    const [groupsRaw, total] = await Promise.all([
+      ErrorGroup.find(query)
         .sort({ lastSeen: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
-        .populate('apmId', 'name framework')
+        .populate('serviceId', 'name framework status') // Mongoose auto-resolves ApmService vs TaskService!
         .lean(),
-      ApmErrorGroup.countDocuments(query)
+      ErrorGroup.countDocuments(query)
     ]);
 
+    const groups = groupsRaw.map(mapErrorGroupDTO);
+
     // --- AGGREGATE GLOBAL TREND & STATS ---
-    let apmIdsMatch = [];
-    if (apmId) {
-      apmIdsMatch = [new mongoose.Types.ObjectId(apmId)];
+    let serviceIdsMatch = [];
+    if (reqServiceId) {
+      serviceIdsMatch = [new mongoose.Types.ObjectId(reqServiceId)];
     } else {
-      const userApms = await ApmService.find({ ownerId: uid }).select('_id').lean();
-      apmIdsMatch = userApms.map(a => a._id);
+      // If no specific service is selected, aggregate across ALL services the user owns
+      const [userApms, userTasks] = await Promise.all([
+        ApmService.find({ ownerId: uid }).select('_id').lean(),
+        TaskService.find({ ownerId: uid }).select('_id').lean()
+      ]);
+      serviceIdsMatch = [...userApms.map(a => a._id), ...userTasks.map(t => t._id)];
     }
 
     const [trendRaw, eventStats, unresolvedCount] = await Promise.all([
-      ApmErrorEvent.aggregate([
-        { $match: { apmId: { $in: apmIdsMatch }, timestamp: { $gte: startDate } } },
+      ErrorEvent.aggregate([
+        { $match: { serviceId: { $in: serviceIdsMatch }, timestamp: { $gte: startDate } } },
         { $group: { _id: { $dateToString: { format: getTrendFormat(range), date: "$timestamp" } }, count: { $sum: 1 } } },
         { $sort: { "_id": 1 } }
       ]),
-      ApmErrorEvent.aggregate([
-        { $match: { apmId: { $in: apmIdsMatch }, timestamp: { $gte: startDate } } },
-        { $group: { _id: null, count: { $sum: 1 }, uniqueServices: { $addToSet: "$apmId" } } }
+      ErrorEvent.aggregate([
+        { $match: { serviceId: { $in: serviceIdsMatch }, timestamp: { $gte: startDate } } },
+        { $group: { _id: null, count: { $sum: 1 }, uniqueServices: { $addToSet: "$serviceId" } } }
       ]),
-      ApmErrorGroup.countDocuments({ ownerId: uid, status: 'unresolved', lastSeen: { $gte: startDate } })
+      ErrorGroup.countDocuments({ ownerId: uid, status: 'unresolved', lastSeen: { $gte: startDate } })
     ]);
 
-    // Apply zero-filling only if data exists
     const trend = trendRaw.length > 0 ? fillTimeGaps(trendRaw, range, startDate) : [];
 
     res.json({
@@ -136,32 +149,28 @@ export const getErrorGroupDetails = async (req: Request, res: Response, next: Ne
 
     const startDate = getStartDate(range);
 
-    const group = await ApmErrorGroup.findOne({ _id: groupId, ownerId: uid })
-      .populate('apmId', 'name framework')
+    const groupRaw = await ErrorGroup.findOne({ _id: groupId, ownerId: uid })
+      .populate('serviceId', 'name framework status')
       .lean();
 
-    if (!group) return res.status(404).json({ error: 'Error group not found' });
+    if (!groupRaw) return res.status(404).json({ error: 'Error group not found' });
+    const group = mapErrorGroupDTO(groupRaw);
 
     const [events, trendRaw] = await Promise.all([
-      ApmErrorEvent.find({ groupId, timestamp: { $gte: startDate } })
+      ErrorEvent.find({ groupId, timestamp: { $gte: startDate } })
         .sort({ timestamp: -1 })
         .limit(100)
         .lean(),
-      ApmErrorEvent.aggregate([
+      ErrorEvent.aggregate([
         { $match: { groupId: new mongoose.Types.ObjectId(groupId), timestamp: { $gte: startDate } } },
         { $group: { _id: { $dateToString: { format: getTrendFormat(range), date: "$timestamp" } }, count: { $sum: 1 } } },
         { $sort: { "_id": 1 } }
       ])
     ]);
 
-    // Apply zero-filling only if data exists
     const trend = trendRaw.length > 0 ? fillTimeGaps(trendRaw, range, startDate) : [];
 
-    res.json({
-      group,
-      events,
-      trend
-    });
+    res.json({ group, events, trend });
   } catch (error) {
     next(error);
   }
@@ -177,7 +186,7 @@ export const updateErrorStatus = async (req: Request, res: Response, next: NextF
       return res.status(400).json({ error: 'Invalid status' });
     }
 
-    const updated = await ApmErrorGroup.findOneAndUpdate(
+    const updated = await ErrorGroup.findOneAndUpdate(
       { _id: groupId, ownerId: uid },
       { $set: { status } },
       { new: true }
@@ -193,7 +202,8 @@ export const updateErrorStatus = async (req: Request, res: Response, next: NextF
 export const getTraceErrors = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id, traceId } = req.params;
-    const events = await ApmErrorEvent.find({ apmId: id, traceId }).sort({ timestamp: 1 }).lean();
+    // Polymorphic lookup across ANY service that matches this traceId/runId combo
+    const events = await ErrorEvent.find({ serviceId: id, traceId }).sort({ timestamp: 1 }).lean();
     res.json({ errors: events });
   } catch (error) {
     next(error);
