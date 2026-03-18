@@ -80,8 +80,7 @@ const processBatchBackground = async (data: { traces: any[], errors: any[] }, se
       duration: item.duration,
       ip, country, city, userAgent: item.userAgent, browser, os, device,
       timestamp,
-      spans: item.spans || [],
-      error: item.error
+      spans: item.spans || []
     });
 
     if (item.error && item.error.name && item.error.message) {
