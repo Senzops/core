@@ -15,7 +15,7 @@ const cleanMessageForFingerprint = (message: string): string => {
 
 export const ingestRumBatch = async (req: Request, res: Response) => {
   try {
-    const apiKey = req.headers['x-service-api-key'] as string;
+    const apiKey = (req.headers['x-service-api-key'] || req.query.apiKey) as string;
     if (!apiKey) return res.status(401).json({ error: 'Missing API Key' });
 
     const service = await RumService.findOne({ apiKey });
