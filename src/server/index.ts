@@ -30,6 +30,13 @@ import { ingestTaskBatch } from '../controllers/task/ingest';
 import { deleteTaskService, listTaskServices, registerTaskService } from '../controllers/task/main';
 import { getTaskEntityDetail, getTaskRunDetail, getTaskServiceDashboard } from '../controllers/task/stats';
 import { getErrorGroupDetails, getGlobalErrors, getTraceErrors, updateErrorStatus } from '../controllers/error';
+import { ingestRumBatch } from '../controllers/rum/ingest';
+import {
+  registerService as registerRumService,
+  listServices as listRumServices,
+  deleteService as deleteRumService
+} from '../controllers/rum/main';
+import { getRumDashboard, getRumTraceDetail } from '../controllers/rum/stats';
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -115,6 +122,7 @@ ingestRouter.post('/stats', agentIngestLimiter, authenticateAgent, ingestMetrics
 ingestRouter.post('/web', webIngestLimiter, ingestWebMetrics);
 ingestRouter.post('/apm', apmLimiter, ingestApmBatch);
 ingestRouter.post('/task', apmLimiter, ingestTaskBatch);
+ingestRouter.post('/rum', apmLimiter, ingestRumBatch);
 
 // 2. VPS API (Frontend User)
 const apiRouter = express.Router();
@@ -169,6 +177,12 @@ apiRouter.get('/task/:id/dashboard', getTaskServiceDashboard);
 apiRouter.get('/task/:id/entity/:taskName', getTaskEntityDetail);
 apiRouter.get('/task/:id/run/:runId', getTaskRunDetail);
 
+// --- RUM / WEB APM (Dashboard) ---
+apiRouter.post('/rum/register', registerRumService);
+apiRouter.get('/rum/list', listRumServices);
+apiRouter.delete('/rum/:id', deleteRumService);
+apiRouter.get('/rum/:id/dashboard', getRumDashboard);
+apiRouter.get('/rum/:id/trace/:traceId', getRumTraceDetail);
 
 
 // --- Mounting Routes (CRITICAL ORDER) ---

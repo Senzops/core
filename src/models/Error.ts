@@ -25,7 +25,7 @@ export interface IErrorGroup extends Document {
 
   // Polymorphic Relationship
   serviceId: mongoose.Types.ObjectId;
-  serviceModel: 'ApmService' | 'TaskService'; // Tells Mongoose which collection to populate from
+  serviceModel: 'ApmService' | 'TaskService' | 'RumService'; // Tells Mongoose which collection to populate from
 
   fingerprint: string; // Cryptographic hash
   errorClass: string;
@@ -41,7 +41,7 @@ const ErrorGroupSchema = new Schema<IErrorGroup>({
 
   // Polymorphic Relations
   serviceId: { type: Schema.Types.ObjectId, required: true, refPath: 'serviceModel' },
-  serviceModel: { type: String, required: true, enum: ['ApmService', 'TaskService'] },
+  serviceModel: { type: String, required: true, enum: ['ApmService', 'TaskService', 'RumService'] },
 
   fingerprint: { type: String, required: true },
   errorClass: { type: String, required: true },
@@ -69,7 +69,7 @@ export interface IErrorEvent extends Document {
 
   // Polymorphic Relationship
   serviceId: mongoose.Types.ObjectId;
-  serviceModel: 'ApmService' | 'TaskService';
+  serviceModel: 'ApmService' | 'TaskService' | 'RumService';
 
   traceId?: string; // Generic: Links to APM traceIds or Task runIds
   stackTrace: string;
@@ -82,7 +82,7 @@ const ErrorEventSchema = new Schema<IErrorEvent>({
 
   // Polymorphic Relations
   serviceId: { type: Schema.Types.ObjectId, required: true, refPath: 'serviceModel', index: true },
-  serviceModel: { type: String, required: true, enum: ['ApmService', 'TaskService'] },
+  serviceModel: { type: String, required: true, enum: ['ApmService', 'TaskService', 'RumService'] },
 
   traceId: { type: String, index: true },
   stackTrace: { type: String, required: true },

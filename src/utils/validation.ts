@@ -233,3 +233,83 @@ export const TaskBatchSchema = z.object({
   runs: z.array(TaskRunItem).optional().default([]),
   errors: z.array(TaskErrorItemSchema).optional().default([])
 });
+
+// ============================================================================
+// --- RUM (WEB APM) MONITORING SCHEMAS ---
+// ============================================================================
+
+export const RegisterRumSchema = z.object({
+  name: z.string().min(1).max(50),
+  domain: z.string().min(3).max(253).regex(
+    /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/,
+    "Invalid domain or subdomain format"
+  )
+});
+
+const RumSpanSchema = z.object({
+  spanId: z.string(),
+  name: z.string(),
+  type: z.enum(['fetch', 'xhr', 'resource', 'long-task', 'click', 'custom']),
+  method: z.string().optional(),
+  status: z.number().optional(),
+  size: z.number().optional(),
+  startTime: z.number().min(0),
+  duration: z.number().min(0),
+});
+
+const CoreWebVitalsSchema = z.object({
+  lcp: z.number().optional(),
+  inp: z.number().optional(),
+  cls: z.number().optional(),
+  fcp: z.number().optional(),
+});
+
+const NavigationTimingsSchema = z.object({
+  dns: z.number().optional(),
+  tcp: z.number().optional(),
+  ssl: z.number().optional(),
+  ttfb: z.number().optional(),
+  domInteractive: z.number().optional(),
+  domComplete: z.number().optional(),
+});
+
+const FrustrationSchema = z.object({
+  rageClicks: z.number().nonnegative().default(0),
+  deadClicks: z.number().nonnegative().default(0),
+  errorCount: z.number().nonnegative().default(0),
+});
+
+const RumTraceItem = z.object({
+  traceId: z.string(),   // W3C Traceparent ID
+  sessionId: z.string(),
+  traceType: z.enum(['initial_load', 'route_change']),
+
+  url: z.string().url(),
+  path: z.string(),
+  referrer: z.string().optional().default(''),
+
+  vitals: CoreWebVitalsSchema.optional().default({}),
+  timings: NavigationTimingsSchema.optional().default({}),
+  frustration: FrustrationSchema.optional().default({ rageClicks: 0, deadClicks: 0, errorCount: 0 }),
+
+  connectionType: z.string().optional(), // '4g', 'wifi', etc.
+  deviceMemory: z.number().optional(),
+
+  spans: z.array(RumSpanSchema).optional().default([]),
+  duration: z.number().nonnegative(),
+  timestamp: z.string().datetime(),
+});
+
+const RumErrorItemSchema = z.object({
+  errorClass: z.string(),
+  message: z.string(),
+  stackTrace: z.string().optional(),
+  traceId: z.string().optional(),
+  context: z.any().optional(),    // Holds Breadcrumbs, DOM state
+  timestamp: z.string().datetime().optional()
+});
+
+export const RumBatchSchema = z.object({
+  traces: z.array(RumTraceItem).optional().default([]),
+  errors: z.array(RumErrorItemSchema).optional().default([])
+});
