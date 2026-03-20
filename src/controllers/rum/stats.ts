@@ -182,7 +182,7 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
     const recentTraces = await RumTrace.find(traceMatchQuery)
       .select('-spans')
       .sort({ timestamp: -1 })
-      .limit(50)
+      .limit(2000)
       .lean();
 
     res.json({ service, stats, trend, recentTraces });
