@@ -53,7 +53,6 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
   return filled;
 };
 
-// Calculate safe averages to prevent divide-by-zero or NaN
 const safeAvg = (sum: number, count: number) => (count > 0 ? sum / count : 0);
 
 export const getRumDashboard = async (req: Request, res: Response, next: NextFunction) => {
@@ -61,6 +60,7 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
     const { id } = req.params;
     const { uid } = (req as any).user;
     const range = req.query.range as string || '24h';
+    const pathFilter = req.query.path as string; // NEW: Path filtering
     const startDate = getStartDate(range);
 
     const service = await RumService.findOne({ _id: id, ownerId: uid }).lean();
@@ -68,54 +68,101 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
 
     const serviceIdObj = new mongoose.Types.ObjectId(id);
 
-    // 1. Time-Series Trend Aggregation
-    const trendRaw = await RumMetric.aggregate([
-      { $match: { serviceId: serviceIdObj, timestamp: { $gte: startDate } } },
-      {
-        $group: {
-          _id: { $dateToString: { format: getTrendFormat(range), date: "$timestamp" } },
-          pageViews: { $sum: "$pageViews" },
-          sessions: { $sum: "$sessions" },
-          lcpSum: { $sum: "$vitalsSum.lcp" }, lcpCount: { $sum: "$vitalsCount.lcp" },
-          inpSum: { $sum: "$vitalsSum.inp" }, inpCount: { $sum: "$vitalsCount.inp" },
-          clsSum: { $sum: "$vitalsSum.cls" }, clsCount: { $sum: "$vitalsCount.cls" },
-          rageClicks: { $sum: "$frustrationTotal.rageClicks" },
-          deadClicks: { $sum: "$frustrationTotal.deadClicks" },
-          errors: { $sum: "$frustrationTotal.errors" }
-        }
-      },
-      { $sort: { "_id": 1 } },
-      {
-        $project: {
-          _id: 1, pageViews: 1, sessions: 1, rageClicks: 1, deadClicks: 1, errors: 1,
-          lcpAvg: { $cond: [{ $gt: ["$lcpCount", 0] }, { $divide: ["$lcpSum", "$lcpCount"] }, 0] },
-          inpAvg: { $cond: [{ $gt: ["$inpCount", 0] }, { $divide: ["$inpSum", "$inpCount"] }, 0] },
-          clsAvg: { $cond: [{ $gt: ["$clsCount", 0] }, { $divide: ["$clsSum", "$clsCount"] }, 0] }
-        }
-      }
-    ]);
+    let trendRaw = [];
+    let rawStats: any = {};
 
-    const trend = trendRaw.length > 0 ? fillTimeGaps(trendRaw, range, startDate) : [];
+    // If filtering by a specific path, we must aggregate on the fly using RumTrace (Because RumMetric is globally pre-aggregated)
+    if (pathFilter) {
+      const matchQuery = { serviceId: serviceIdObj, path: pathFilter, timestamp: { $gte: startDate } };
 
-    // 2. Global Summary Stats
-    const statsAgg = await RumMetric.aggregate([
-      { $match: { serviceId: serviceIdObj, timestamp: { $gte: startDate } } },
-      {
-        $group: {
-          _id: null,
-          pageViews: { $sum: "$pageViews" },
-          sessions: { $sum: "$sessions" },
-          lcpSum: { $sum: "$vitalsSum.lcp" }, lcpCount: { $sum: "$vitalsCount.lcp" },
-          inpSum: { $sum: "$vitalsSum.inp" }, inpCount: { $sum: "$vitalsCount.inp" },
-          clsSum: { $sum: "$vitalsSum.cls" }, clsCount: { $sum: "$vitalsCount.cls" },
-          rageClicks: { $sum: "$frustrationTotal.rageClicks" },
-          deadClicks: { $sum: "$frustrationTotal.deadClicks" },
-          errors: { $sum: "$frustrationTotal.errors" }
+      trendRaw = await RumTrace.aggregate([
+        { $match: matchQuery },
+        {
+          $group: {
+            _id: { $dateToString: { format: getTrendFormat(range), date: "$timestamp" } },
+            pageViews: { $sum: 1 },
+            sessions: { $addToSet: "$sessionId" },
+            lcpSum: { $sum: "$vitals.lcp" }, lcpCount: { $sum: { $cond: [{ $ifNull: ["$vitals.lcp", false] }, 1, 0] } },
+            inpSum: { $sum: "$vitals.inp" }, inpCount: { $sum: { $cond: [{ $ifNull: ["$vitals.inp", false] }, 1, 0] } },
+            clsSum: { $sum: "$vitals.cls" }, clsCount: { $sum: { $cond: [{ $ifNull: ["$vitals.cls", false] }, 1, 0] } },
+            rageClicks: { $sum: "$frustration.rageClicks" },
+            deadClicks: { $sum: "$frustration.deadClicks" },
+            errors: { $sum: "$frustration.errorCount" }
+          }
+        },
+        { $sort: { "_id": 1 } },
+        {
+          $project: {
+            _id: 1, pageViews: 1, sessions: { $size: "$sessions" }, rageClicks: 1, deadClicks: 1, errors: 1,
+            lcpAvg: { $cond: [{ $gt: ["$lcpCount", 0] }, { $divide: ["$lcpSum", "$lcpCount"] }, 0] },
+            inpAvg: { $cond: [{ $gt: ["$inpCount", 0] }, { $divide: ["$inpSum", "$inpCount"] }, 0] },
+            clsAvg: { $cond: [{ $gt: ["$clsCount", 0] }, { $divide: ["$clsSum", "$clsCount"] }, 0] }
+          }
         }
-      }
-    ]);
+      ]);
 
-    const rawStats = statsAgg[0] || {};
+      const statsAgg = await RumTrace.aggregate([
+        { $match: matchQuery },
+        {
+          $group: {
+            _id: null,
+            pageViews: { $sum: 1 },
+            sessions: { $addToSet: "$sessionId" },
+            lcpSum: { $sum: "$vitals.lcp" }, lcpCount: { $sum: { $cond: [{ $ifNull: ["$vitals.lcp", false] }, 1, 0] } },
+            inpSum: { $sum: "$vitals.inp" }, inpCount: { $sum: { $cond: [{ $ifNull: ["$vitals.inp", false] }, 1, 0] } },
+            clsSum: { $sum: "$vitals.cls" }, clsCount: { $sum: { $cond: [{ $ifNull: ["$vitals.cls", false] }, 1, 0] } },
+            rageClicks: { $sum: "$frustration.rageClicks" },
+            deadClicks: { $sum: "$frustration.deadClicks" },
+            errors: { $sum: "$frustration.errorCount" }
+          }
+        }
+      ]);
+      rawStats = statsAgg[0] || {};
+      rawStats.sessions = rawStats.sessions ? rawStats.sessions.length : 0;
+
+    } else {
+      // Global View: Use the hyper-fast pre-aggregated metrics collection
+      trendRaw = await RumMetric.aggregate([
+        { $match: { serviceId: serviceIdObj, timestamp: { $gte: startDate } } },
+        {
+          $group: {
+            _id: { $dateToString: { format: getTrendFormat(range), date: "$timestamp" } },
+            pageViews: { $sum: "$pageViews" }, sessions: { $sum: "$sessions" },
+            lcpSum: { $sum: "$vitalsSum.lcp" }, lcpCount: { $sum: "$vitalsCount.lcp" },
+            inpSum: { $sum: "$vitalsSum.inp" }, inpCount: { $sum: "$vitalsCount.inp" },
+            clsSum: { $sum: "$vitalsSum.cls" }, clsCount: { $sum: "$vitalsCount.cls" },
+            rageClicks: { $sum: "$frustrationTotal.rageClicks" }, deadClicks: { $sum: "$frustrationTotal.deadClicks" }, errors: { $sum: "$frustrationTotal.errors" }
+          }
+        },
+        { $sort: { "_id": 1 } },
+        {
+          $project: {
+            _id: 1, pageViews: 1, sessions: 1, rageClicks: 1, deadClicks: 1, errors: 1,
+            lcpAvg: { $cond: [{ $gt: ["$lcpCount", 0] }, { $divide: ["$lcpSum", "$lcpCount"] }, 0] },
+            inpAvg: { $cond: [{ $gt: ["$inpCount", 0] }, { $divide: ["$inpSum", "$inpCount"] }, 0] },
+            clsAvg: { $cond: [{ $gt: ["$clsCount", 0] }, { $divide: ["$clsSum", "$clsCount"] }, 0] }
+          }
+        }
+      ]);
+
+      const statsAgg = await RumMetric.aggregate([
+        { $match: { serviceId: serviceIdObj, timestamp: { $gte: startDate } } },
+        {
+          $group: {
+            _id: null,
+            pageViews: { $sum: "$pageViews" }, sessions: { $sum: "$sessions" },
+            lcpSum: { $sum: "$vitalsSum.lcp" }, lcpCount: { $sum: "$vitalsCount.lcp" },
+            inpSum: { $sum: "$vitalsSum.inp" }, inpCount: { $sum: "$vitalsCount.inp" },
+            clsSum: { $sum: "$vitalsSum.cls" }, clsCount: { $sum: "$vitalsCount.cls" },
+            rageClicks: { $sum: "$frustrationTotal.rageClicks" }, deadClicks: { $sum: "$frustrationTotal.deadClicks" }, errors: { $sum: "$frustrationTotal.errors" }
+          }
+        }
+      ]);
+      rawStats = statsAgg[0] || {};
+    }
+
+    const trend = trendRaw.length > 0 ? fillTimeGaps(trendRaw, range, startDate) : fillTimeGaps([], range, startDate);
+
     const stats = {
       pageViews: rawStats.pageViews || 0,
       sessions: rawStats.sessions || 0,
@@ -129,9 +176,11 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
       }
     };
 
-    // 3. Recent Raw Traces (Page Loads) for the Table
-    const recentTraces = await RumTrace.find({ serviceId: serviceIdObj, timestamp: { $gte: startDate } })
-      .select('-spans') // Omit heavy spans for overview table
+    const traceMatchQuery: any = { serviceId: serviceIdObj, timestamp: { $gte: startDate } };
+    if (pathFilter) traceMatchQuery.path = pathFilter;
+
+    const recentTraces = await RumTrace.find(traceMatchQuery)
+      .select('-spans')
       .sort({ timestamp: -1 })
       .limit(50)
       .lean();
@@ -145,16 +194,9 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
 export const getRumTraceDetail = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id, traceId } = req.params;
-
-    // Fetch the frontend browser trace
     const trace = await RumTrace.findOne({ serviceId: id, traceId }).lean();
     if (!trace) return res.status(404).json({ error: "RUM Trace not found" });
-
-    // Fetch related JS exceptions
     const errors = await ErrorEvent.find({ serviceId: id, traceId }).lean();
-
-    // The frontend will separately call your existing APM trace endpoint 
-    // to search for backend traces using this exact same `traceId`!
     res.json({ trace, errors });
   } catch (error) {
     next(error);
