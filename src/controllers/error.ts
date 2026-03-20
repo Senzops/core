@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { ErrorGroup, ErrorEvent } from '../models/Error';
 import { ApmService } from '../models/Apm';
 import { TaskService } from '../models/Task';
+import { RumService } from '../models/Rum'; // NEW: Import RUM Model
 
 const getStartDate = (range: string) => {
   const date = new Date();
@@ -55,7 +56,7 @@ const mapErrorGroupDTO = (g: any) => {
   const service = g.serviceId ? {
     _id: g.serviceId._id,
     name: g.serviceId.name,
-    type: g.serviceModel === 'TaskService' ? 'task' : 'apm',
+    type: g.serviceModel === 'TaskService' ? 'task' : g.serviceModel === 'RumService' ? 'rum' : 'apm', // NEW: Added RUM type
     framework: g.serviceId.framework || 'unknown'
   } : null;
 
@@ -70,7 +71,7 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
     const limit = parseInt(req.query.limit as string) || 20;
     const search = req.query.search as string;
     const status = req.query.status as string || 'unresolved';
-    const reqServiceId = req.query.serviceId as string; // Formerly apmId
+    const reqServiceId = req.query.serviceId as string;
     const range = req.query.range as string || '24h';
 
     const startDate = getStartDate(range);
@@ -91,7 +92,7 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
         .sort({ lastSeen: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
-        .populate('serviceId', 'name framework status') // Mongoose auto-resolves ApmService vs TaskService!
+        .populate('serviceId', 'name framework status') // Mongoose auto-resolves ApmService vs TaskService vs RumService
         .lean(),
       ErrorGroup.countDocuments(query)
     ]);
@@ -104,11 +105,16 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
       serviceIdsMatch = [new mongoose.Types.ObjectId(reqServiceId)];
     } else {
       // If no specific service is selected, aggregate across ALL services the user owns
-      const [userApms, userTasks] = await Promise.all([
+      const [userApms, userTasks, userRums] = await Promise.all([
         ApmService.find({ ownerId: uid }).select('_id').lean(),
-        TaskService.find({ ownerId: uid }).select('_id').lean()
+        TaskService.find({ ownerId: uid }).select('_id').lean(),
+        RumService.find({ ownerId: uid }).select('_id').lean() // NEW: Fetch RUM services
       ]);
-      serviceIdsMatch = [...userApms.map(a => a._id), ...userTasks.map(t => t._id)];
+      serviceIdsMatch = [
+        ...userApms.map(a => a._id),
+        ...userTasks.map(t => t._id),
+        ...userRums.map(r => r._id) // NEW: Merge RUM IDs
+      ];
     }
 
     const [trendRaw, eventStats, unresolvedCount] = await Promise.all([
@@ -150,7 +156,7 @@ export const getErrorGroupDetails = async (req: Request, res: Response, next: Ne
     const startDate = getStartDate(range);
 
     const groupRaw = await ErrorGroup.findOne({ _id: groupId, ownerId: uid })
-      .populate('serviceId', 'name framework status')
+      .populate('serviceId', 'name framework status domain') // Fetches domain if it's a RUM service
       .lean();
 
     if (!groupRaw) return res.status(404).json({ error: 'Error group not found' });
