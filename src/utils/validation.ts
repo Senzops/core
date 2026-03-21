@@ -249,7 +249,7 @@ export const RegisterRumSchema = z.object({
 const RumSpanSchema = z.object({
   spanId: z.string(),
   name: z.string(),
-  type: z.enum(['fetch', 'xhr', 'resource', 'long-task', 'click', 'custom']),
+  type: z.enum(['fetch', 'xhr', 'http', 'resource', 'long-task', 'click', 'custom']),
   method: z.string().optional(),
   status: z.number().optional(),
   size: z.number().optional(),
