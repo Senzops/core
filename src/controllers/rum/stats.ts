@@ -1,8 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import { RumService, RumMetric, RumTrace } from '../../models/Rum';
-import { ApmTrace } from '../../models/Apm'; // NEW: Import ApmTrace to find downstream distributed traces
-import { ErrorEvent } from '../../models/Error';
+import { ApmTrace, ApmService } from '../../models/Apm';
 
 const getStartDate = (range: string) => {
   const date = new Date();
@@ -193,15 +192,37 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
 export const getRumTraceDetail = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id, traceId } = req.params;
+    const { uid } = (req as any).user; // We need UID to securely fetch user's APM services
+
     const trace = await RumTrace.findOne({ serviceId: id, traceId }).lean();
     if (!trace) return res.status(404).json({ error: "RUM Trace not found" });
 
-    // Find any APM traces that share this specific W3C traceId
-    // The parentId inside the APM trace will map to the exact RUM spanId!
-    const childrenTraces = await ApmTrace.find({ traceId })
-      .populate('serviceId', 'name') // Inject the backend service name for the UI
-      .select('_id serviceId traceId parentId duration timestamp path status hasErrors')
+    // 1. Find Related APM Services (Owned by the same user)
+    // This ensures we only link downstream backend traces that belong to this tenant
+    const userServices = await ApmService.find({ ownerId: uid }).select('_id name').lean();
+    const serviceIds = userServices.map(s => s._id);
+
+    // Create a dictionary for instant O(1) mapping of Service ID -> Service Name
+    const serviceMap = userServices.reduce((acc: any, curr) => {
+      acc[curr._id.toString()] = curr.name;
+      return acc;
+    }, {});
+
+    // 2. Find Downstream Children
+    // Querying by the shared W3C traceId across all the user's APM services
+    // CRITICAL FIX: explicitly returning `parentSpanId` so TraceWaterfall can connect the dots!
+    const childTracesRaw = await ApmTrace.find({
+      traceId: trace.traceId,
+      serviceId: { $in: serviceIds }
+    })
+      .select('serviceId traceId parentSpanId status duration method route path timestamp hasErrors')
       .lean();
+
+    // 3. Format Response for Frontend
+    const childrenTraces = childTracesRaw.map(c => ({
+      ...c,
+      serviceName: serviceMap[c.serviceId.toString()] || 'Unknown Service'
+    }));
 
     res.json({ trace, childrenTraces });
   } catch (error) {
