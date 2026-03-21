@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import { RumService, RumMetric, RumTrace } from '../../models/Rum';
+import { ApmTrace } from '../../models/Apm'; // NEW: Import ApmTrace to find downstream distributed traces
 import { ErrorEvent } from '../../models/Error';
 
 const getStartDate = (range: string) => {
@@ -60,7 +61,7 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
     const { id } = req.params;
     const { uid } = (req as any).user;
     const range = req.query.range as string || '24h';
-    const pathFilter = req.query.path as string; // NEW: Path filtering
+    const pathFilter = req.query.path as string;
     const startDate = getStartDate(range);
 
     const service = await RumService.findOne({ _id: id, ownerId: uid }).lean();
@@ -71,7 +72,6 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
     let trendRaw = [];
     let rawStats: any = {};
 
-    // If filtering by a specific path, we must aggregate on the fly using RumTrace (Because RumMetric is globally pre-aggregated)
     if (pathFilter) {
       const matchQuery = { serviceId: serviceIdObj, path: pathFilter, timestamp: { $gte: startDate } };
 
@@ -121,7 +121,6 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
       rawStats.sessions = rawStats.sessions ? rawStats.sessions.length : 0;
 
     } else {
-      // Global View: Use the hyper-fast pre-aggregated metrics collection
       trendRaw = await RumMetric.aggregate([
         { $match: { serviceId: serviceIdObj, timestamp: { $gte: startDate } } },
         {
@@ -196,8 +195,15 @@ export const getRumTraceDetail = async (req: Request, res: Response, next: NextF
     const { id, traceId } = req.params;
     const trace = await RumTrace.findOne({ serviceId: id, traceId }).lean();
     if (!trace) return res.status(404).json({ error: "RUM Trace not found" });
-    const errors = await ErrorEvent.find({ serviceId: id, traceId }).lean();
-    res.json({ trace, errors });
+
+    // Find any APM traces that share this specific W3C traceId
+    // The parentId inside the APM trace will map to the exact RUM spanId!
+    const childrenTraces = await ApmTrace.find({ traceId })
+      .populate('serviceId', 'name') // Inject the backend service name for the UI
+      .select('_id serviceId traceId parentId duration timestamp path status hasErrors')
+      .lean();
+
+    res.json({ trace, childrenTraces });
   } catch (error) {
     next(error);
   }
