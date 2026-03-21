@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import { ApmService, ApmTrace } from '../../models/Apm';
+import { RumService, RumTrace } from '../../models/Rum';
 
 // --- Get Recent Invocations (List) ---
 export const getInvocations = async (req: Request, res: Response, next: NextFunction) => {
@@ -66,7 +67,7 @@ export const getTraceDetail = async (req: Request, res: Response, next: NextFunc
     const trace = await ApmTrace.findOne(traceQuery).lean();
     if (!trace) return res.status(404).json({ error: "Trace not found" });
 
-    // 2. Find Related Services (Owned by same user)
+    // 2. Find Related APM Services (Owned by same user)
     const userServices = await ApmService.find({ ownerId: uid }).select('_id name').lean();
     const serviceIds = userServices.map(s => s._id);
 
@@ -76,37 +77,92 @@ export const getTraceDetail = async (req: Request, res: Response, next: NextFunc
       return acc;
     }, {});
 
-    // 3. Find Children (Downstream Calls)
-    // We look for traces that list THIS trace as their parent
-    const childTraces = await ApmTrace.find({
-      parentTraceId: trace.traceId,
-      serviceId: { $in: serviceIds }
-    })
-      .select('serviceId traceId parentSpanId status duration method route timestamp')
+    // 3. Find Children (Downstream APM Calls)
+    // Extract all span IDs that were initiated by THIS trace
+    const spanIds = trace.spans?.map((s: any) => s.spanId).filter(Boolean) || [];
+
+    const childQuery: any = {
+      serviceId: { $in: serviceIds },
+      _id: { $ne: trace._id } // CRITICAL FIX: Prevent self-referencing infinite loops
+    };
+
+    const orConditions = [];
+    if (spanIds.length > 0) orConditions.push({ parentSpanId: { $in: spanIds } });
+    if (trace.traceId) orConditions.push({ parentTraceId: trace.traceId });
+    orConditions.push({ parentTraceId: trace._id.toString() }); // Legacy fallback
+    childQuery.$or = orConditions;
+
+    const childTraces = await ApmTrace.find(childQuery)
+      .select('serviceId traceId parentSpanId parentTraceId status duration method route timestamp hasErrors')
       .lean();
 
     // 4. Find Parent (Upstream Call)
-    let parentTrace = null;
-    if (trace.parentTraceId) {
+    let parentTrace: any = null;
+
+    // 4A. W3C Standard: Try to find an APM trace whose specific span spawned this trace
+    if (trace.parentSpanId) {
       parentTrace = await ApmTrace.findOne({
-        traceId: trace.parentTraceId,
-        serviceId: { $in: serviceIds }
+        serviceId: { $in: serviceIds },
+        traceId: trace.traceId,
+        "spans.spanId": trace.parentSpanId,
+        _id: { $ne: trace._id }
       })
         .select('serviceId traceId status duration method route')
         .lean();
     }
 
-    // 5. Construct Response
+    // 4B. Legacy APM Agent Fallback
+    if (!parentTrace && trace.parentTraceId && trace.parentTraceId !== trace.traceId) {
+      parentTrace = await ApmTrace.findOne({
+        serviceId: { $in: serviceIds },
+        $or: [{ traceId: trace.parentTraceId }, { _id: trace.parentTraceId }],
+        _id: { $ne: trace._id }
+      })
+        .select('serviceId traceId status duration method route')
+        .lean();
+    }
+
+    // 4C. RUM Fallback (Frontend Initiator): 
+    // If no APM parent exists, but a RUM trace shares the identical global traceId, 
+    // it means this backend trace was triggered by a frontend fetch/XHR!
+    if (!parentTrace && trace.traceId) {
+      const rumServices = await RumService.find({ ownerId: uid }).select('_id name').lean();
+      if (rumServices.length > 0) {
+        const rumParent = await RumTrace.findOne({
+          serviceId: { $in: rumServices.map(s => s._id) },
+          traceId: trace.traceId
+        }).lean();
+
+        if (rumParent) {
+          const rumSvcName = rumServices.find(s => s._id.toString() === rumParent.serviceId.toString())?.name || 'Web App';
+          parentTrace = {
+            _id: rumParent._id,
+            traceId: rumParent.traceId,
+            serviceId: rumParent.serviceId,
+            serviceName: rumSvcName,
+            method: 'RUM',
+            route: rumParent.path,
+            duration: rumParent.duration,
+            status: 200,
+            type: 'rum' // Custom tag so the frontend can style it as a RUM node
+          };
+        }
+      }
+    }
+
+    // Resolve APM service name if it was found in 4A or 4B
+    if (parentTrace && parentTrace.type !== 'rum') {
+      parentTrace.serviceName = serviceMap[parentTrace.serviceId.toString()] || 'Unknown Service';
+    }
+
+    // 5. Construct Final Response
     res.json({
       ...trace,
       children: childTraces.map(c => ({
         ...c,
         serviceName: serviceMap[c.serviceId.toString()] || 'Unknown Service'
       })),
-      parent: parentTrace ? {
-        ...parentTrace,
-        serviceName: serviceMap[parentTrace.serviceId.toString()] || 'Unknown Service'
-      } : null
+      parent: parentTrace || null
     });
 
   } catch (error) {
