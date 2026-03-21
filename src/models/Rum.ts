@@ -33,6 +33,7 @@ export interface IRumSpan {
   size?: number;      // Bytes transferred
   startTime: number;
   duration: number;
+  meta?: any;         // Explicitly allow flexible metadata
 }
 
 export interface IRumTrace extends Document {
@@ -96,7 +97,8 @@ const RumSpanSchema = new Schema({
   status: Number,
   size: Number,
   startTime: Number,
-  duration: Number
+  duration: Number,
+  meta: { type: mongoose.Schema.Types.Mixed }
 }, { _id: false });
 
 const RumTraceSchema = new Schema<IRumTrace>({

@@ -255,6 +255,7 @@ const RumSpanSchema = z.object({
   size: z.number().optional(),
   startTime: z.number().min(0),
   duration: z.number().min(0),
+  meta: z.record(z.any()).optional().nullable(),
 });
 
 const CoreWebVitalsSchema = z.object({
