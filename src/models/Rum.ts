@@ -4,7 +4,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IRumService extends Document {
   ownerId: string;
   name: string;
-  domain: string;
+  domains: string[];
   apiKey: string;
   samplingRate: number;
   lastSeen: Date;
@@ -14,7 +14,7 @@ export interface IRumService extends Document {
 const RumServiceSchema = new Schema<IRumService>({
   ownerId: { type: String, required: true, index: true },
   name: { type: String, required: true },
-  domain: { type: String, required: true },
+  domains: [{ type: String, required: true }],
   apiKey: { type: String, required: true, select: false, unique: true, index: true },
   samplingRate: { type: Number, default: 1.0, min: 0.0, max: 1.0 },
   lastSeen: { type: Date, default: null }

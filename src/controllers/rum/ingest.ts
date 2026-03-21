@@ -21,15 +21,27 @@ export const ingestRumBatch = async (req: Request, res: Response) => {
     const service = await RumService.findOne({ apiKey });
     if (!service) return res.status(403).json({ error: 'Invalid API Key' });
 
+    // --- MULTI-DOMAIN CORS VALIDATION ---
     const origin = req.headers.origin || req.headers.referer || '';
-    if (origin && service.domain !== '*' && service.domain !== 'localhost') {
+    if (origin) {
       try {
-        const originHost = new URL(origin).hostname;
-        if (!originHost.includes(service.domain)) {
-          logger.warn(`[RUM] Blocked rogue telemetry from unauthorized origin: ${originHost} (Expected: ${service.domain})`);
-          return res.status(403).json({ error: 'Unauthorized Origin' });
+        const originHost = new URL(origin).hostname.toLowerCase();
+        const hasWildcard = service.domains.includes('*');
+        const isLocalhost = originHost === 'localhost' || originHost === '127.0.0.1';
+
+        if (!hasWildcard && !isLocalhost) {
+          // Strict verification: Exact match OR valid subdomain (e.g. watch.corsflix.net ends with .corsflix.net)
+          const isAllowed = service.domains.some((d: string) => originHost === d || originHost.endsWith(`.${d}`));
+
+          if (!isAllowed) {
+            logger.warn(`[RUM] Blocked rogue telemetry from unauthorized origin: ${originHost}. Allowed: [${service.domains.join(', ')}]`);
+            return res.status(403).json({ error: 'Unauthorized Origin' });
+          }
         }
-      } catch (e) { }
+      } catch (e) {
+        // If URL parsing fails, fail secure
+        return res.status(400).json({ error: 'Malformed Origin Header' });
+      }
     }
 
     const batch = RumBatchSchema.safeParse(req.body);

@@ -2,32 +2,42 @@ import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { RumService, RumTrace, RumMetric } from '../../models/Rum';
 import { ErrorGroup, ErrorEvent } from '../../models/Error';
-import { RegisterRumSchema } from '../../utils/validation';
 
 // --- Register New RUM Service ---
 export const registerService = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
-    
-    // Validates name and domain (ensures domain is a valid format)
-    const { name, domain } = RegisterRumSchema.parse(req.body);
+    const { name, domains } = req.body; // 'domains' is expected as a comma-separated string
 
-    // Generate specific RUM Key (Prefix with sz_rum_ for explicit clarity in the UI)
+    if (!name || !domains) {
+      return res.status(400).json({ error: "Name and Domains are required." });
+    }
+
+    // 1. Split, trim, and heavily sanitize the domains
+    const domainArray = domains
+      .split(',')
+      .map((d: string) => d.trim().replace(/^https?:\/\//, '').replace(/\/.*$/, '').toLowerCase())
+      .filter(Boolean);
+
+    if (domainArray.length === 0) {
+      return res.status(400).json({ error: "At least one valid domain is required." });
+    }
+
     const apiKey = `sz_rum_${crypto.randomBytes(24).toString('hex')}`;
 
     const newService = await RumService.create({
       ownerId: uid,
       name,
-      domain,
+      domains: domainArray,
       apiKey,
-      samplingRate: 1.0 // Default to 100% capture
+      samplingRate: 1.0
     });
 
     res.status(201).json({
       message: 'RUM Service Created',
       serviceId: newService._id,
-      apiKey: newService.apiKey, // Shown ONCE to the user
-      domain: newService.domain
+      apiKey: newService.apiKey,
+      domains: newService.domains
     });
   } catch (error) {
     next(error);
@@ -38,14 +48,11 @@ export const registerService = async (req: Request, res: Response, next: NextFun
 export const listServices = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
-    
-    // We don't select the apiKey here for security reasons. 
-    // If they lose it, they must rotate/re-create the service.
     const services = await RumService.find({ ownerId: uid })
-      .select('-apiKey') 
+      .select('-apiKey')
       .sort({ createdAt: -1 })
       .lean();
-      
+
     res.json(services);
   } catch (error) {
     next(error);
@@ -61,17 +68,11 @@ export const deleteService = async (req: Request, res: Response, next: NextFunct
     const result = await RumService.findOneAndDelete({ _id: id, ownerId: uid });
     if (!result) return res.status(404).json({ error: 'RUM Service not found' });
 
-    // 1. Cascade delete raw traces
     const traceDelete = RumTrace.deleteMany({ serviceId: id });
-    
-    // 2. Cascade delete aggregated time-series metrics
     const metricDelete = RumMetric.deleteMany({ serviceId: id });
-
-    // 3. Cascade delete Universal Errors securely (Ensure we only delete errors belonging to THIS model)
     const errorGroupDelete = ErrorGroup.deleteMany({ serviceId: id, serviceModel: 'RumService' });
     const errorEventDelete = ErrorEvent.deleteMany({ serviceId: id, serviceModel: 'RumService' });
 
-    // Execute all purges concurrently for performance
     await Promise.all([traceDelete, metricDelete, errorGroupDelete, errorEventDelete]);
 
     res.json({ message: 'RUM Service and all associated telemetry successfully purged.' });
