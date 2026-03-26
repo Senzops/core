@@ -52,8 +52,7 @@ const PORT = process.env.PORT || 5000;
 const MONGO_URI: string = process.env.MONGO_URI!;
 const SENZOR_APM_API_KEY: string = process.env.SENZOR_APM_API_KEY!;
 senzor.init({
-  apiKey: SENZOR_APM_API_KEY,
-  debug: true
+  apiKey: SENZOR_APM_API_KEY
 });
 
 // --- Firebase Init ---

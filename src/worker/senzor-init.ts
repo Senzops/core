@@ -7,6 +7,5 @@ if (!process.env.MONGO_URI) {
 }
 
 senzor.init({
-  apiKey: process.env.SENZOR_TASK_API_KEY!,
-  debug: true,
+  apiKey: process.env.SENZOR_TASK_API_KEY!
 });
