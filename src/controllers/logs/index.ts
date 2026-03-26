@@ -132,3 +132,20 @@ export const ingestGlobalLogs = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Internal Server Error' });
   }
 };
+
+// --- 5. Fetch Single Log by ID (For Permalinks & Hard Refreshes) ---
+export const getLogById = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { uid } = (req as any).user;
+    const { id } = req.params;
+
+    const log = await LogEvent.findOne({ _id: id, ownerId: uid })
+      .populate('serviceId', 'name')
+      .lean();
+
+    if (!log) return res.status(404).json({ error: 'Log not found' });
+    res.json({ log });
+  } catch (error) {
+    next(error);
+  }
+};

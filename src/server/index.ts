@@ -37,7 +37,7 @@ import {
   deleteService as deleteRumService
 } from '../controllers/rum/main';
 import { getRumDashboard, getRumTraceDetail } from '../controllers/rum/stats';
-import { ingestGlobalLogs, getDashboardLogs, getTraceLogs, getLogApiKey } from '../controllers/logs';
+import { ingestGlobalLogs, getDashboardLogs, getTraceLogs, getLogApiKey, getLogById } from '../controllers/logs';
 
 
 if (!process.env.MONGO_URI) {
@@ -191,6 +191,7 @@ apiRouter.get('/rum/:id/trace/:traceId', getRumTraceDetail);
 // --- NEW LOG MANAGEMENT ROUTES ---
 apiRouter.get('/logs', getDashboardLogs);
 apiRouter.get('/logs/key', getLogApiKey);
+apiRouter.get('/logs/:id', getLogById); 
 
 // Bi-directional Trace to Log links
 apiRouter.get('/apm/:id/trace/:traceId/logs', getTraceLogs);
