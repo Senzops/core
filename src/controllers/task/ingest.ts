@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
 import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/Error';
+import { LogEvent } from '../../models/Log';
 import { logger } from '../../utils/logger';
 import { TaskBatchSchema } from '../../utils/validation';
 
@@ -25,7 +26,11 @@ export const ingestTaskBatch = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Invalid payload format', details: batch.error });
     }
 
-    res.status(202).json({ status: 'accepted', queuedRuns: batch.data.runs.length });
+    res.status(202).json({
+      status: 'accepted',
+      queuedRuns: batch.data.runs.length,
+      queuedLogs: batch.data.logs.length
+    });
 
     setImmediate(() => {
       processTaskBatchBackground(batch.data, service)
@@ -38,7 +43,7 @@ export const ingestTaskBatch = async (req: Request, res: Response) => {
   }
 };
 
-const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, service: any) => {
+const processTaskBatchBackground = async (data: { runs: any[], errors: any[], logs: any[] }, service: any) => {
   await TaskService.findByIdAndUpdate(service._id, { lastSeen: new Date(), status: 'online' });
 
   const runDocs = [];
@@ -111,7 +116,7 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
     m.attemptsSum += (item.attempts || 1);
   }
 
-  // --- 2. Process Task Errors (Polymorphic Universal Engine) ---
+  // --- 2. Process Task Errors ---
   for (const err of data.errors) {
     const fingerprint = generateErrorFingerprint(service._id, err.errorClass, cleanMessageForFingerprint(err.message));
     const errTimestamp = err.timestamp ? new Date(err.timestamp) : new Date();
@@ -138,7 +143,25 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[] }, 
     if (errTimestamp < group.firstSeen) group.firstSeen = errTimestamp;
   }
 
-  // --- 3. DB Writes ---
+  // --- 3. Process Auto-Instrumented Task Logs ---
+  if (data.logs && data.logs.length > 0) {
+    const logsToInsert = data.logs.map((log: any) => ({
+      ownerId: service.ownerId,
+      serviceId: service._id,
+      serviceModel: 'TaskService',
+      traceId: log.runId || log.traceId, // Run ID maps to traceId in Log schema
+      level: log.level || 'info',
+      message: log.message || 'Empty Log',
+      attributes: log.attributes || {},
+      timestamp: log.timestamp ? new Date(log.timestamp) : new Date()
+    }));
+
+    if (logsToInsert.length > 0) {
+      await LogEvent.insertMany(logsToInsert, { ordered: false });
+    }
+  }
+
+  // --- 4. DB Writes ---
   if (runDocs.length > 0) await TaskRun.insertMany(runDocs);
 
   if (signaturesMap.size > 0) {

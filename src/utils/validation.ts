@@ -99,6 +99,19 @@ export const RegisterMonitorSchema = z.object({
   interval: z.enum(['15', '30', '60']).transform(Number), // accept strings, convert to number
 });
 
+
+// Log Payload
+export const LogPayloadSchema = z.object({
+  level: z.string().default('info'),
+  message: z.string(),
+  attributes: z.record(z.any()).default({}),
+  traceId: z.string().optional(),
+  runId: z.string().optional(), // Task runs use runId
+  spanId: z.string().optional(),
+  timestamp: z.string().optional()
+});
+
+//  APM
 export const RegisterApmSchema = z.object({
   name: z.string().min(1).max(50),
   framework: z.string().optional(),
@@ -148,10 +161,11 @@ const ApmErrorItemSchema = z.object({
 
 // Batch Payload (Upgraded to accept { traces, errors } but falls back to Array for legacy)
 export const ApmBatchSchema = z.union([
-  z.array(ApmTraceItem).transform(traces => ({ traces, errors: [] })),
+  z.array(ApmTraceItem).transform(traces => ({ traces, errors: [], logs: [] })),
   z.object({
     traces: z.array(ApmTraceItem).optional().default([]),
-    errors: z.array(ApmErrorItemSchema).optional().default([])
+    errors: z.array(ApmErrorItemSchema).optional().default([]),
+    logs: z.array(LogPayloadSchema).default([])
   })
 ]);
 
@@ -231,7 +245,8 @@ const TaskErrorItemSchema = z.object({
 
 export const TaskBatchSchema = z.object({
   runs: z.array(TaskRunItem).optional().default([]),
-  errors: z.array(TaskErrorItemSchema).optional().default([])
+  errors: z.array(TaskErrorItemSchema).optional().default([]),
+  logs: z.array(LogPayloadSchema).default([])
 });
 
 // ============================================================================
@@ -312,5 +327,6 @@ const RumErrorItemSchema = z.object({
 
 export const RumBatchSchema = z.object({
   traces: z.array(RumTraceItem).optional().default([]),
-  errors: z.array(RumErrorItemSchema).optional().default([])
+  errors: z.array(RumErrorItemSchema).optional().default([]),
+  logs: z.array(LogPayloadSchema).default([])
 });

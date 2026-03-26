@@ -3,6 +3,7 @@ import geoip from 'geoip-lite';
 import { UAParser } from 'ua-parser-js';
 import { RumService, RumTrace, RumMetric } from '../../models/Rum';
 import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/Error';
+import { LogEvent } from '../../models/Log';
 import { logger } from '../../utils/logger';
 import { RumBatchSchema } from '../../utils/validation';
 
@@ -52,7 +53,8 @@ export const ingestRumBatch = async (req: Request, res: Response) => {
     res.status(202).json({
       status: 'accepted',
       queuedTraces: batch.data.traces.length,
-      queuedErrors: batch.data.errors.length
+      queuedErrors: batch.data.errors.length,
+      queuedLogs: batch.data.logs?.length || 0
     });
 
     setImmediate(() => {
@@ -68,7 +70,7 @@ export const ingestRumBatch = async (req: Request, res: Response) => {
   }
 };
 
-const processRumBatchBackground = async (data: { traces: any[], errors: any[] }, service: any, requestIp: string) => {
+const processRumBatchBackground = async (data: { traces: any[], errors: any[], logs?: any[] }, service: any, requestIp: string) => {
   await RumService.findByIdAndUpdate(service._id, { lastSeen: new Date() });
 
   const traceDocs = [];
@@ -98,10 +100,10 @@ const processRumBatchBackground = async (data: { traces: any[], errors: any[] },
       traceType: item.traceType,
       url: item.url, path: item.path, referrer: item.referrer,
       vitals: item.vitals,
-      timings: item.timings,             // NEW: Navigation Timings
-      frustration: item.frustration,     // NEW: Rage & Dead clicks
-      connectionType: item.connectionType, // NEW: Network Context
-      deviceMemory: item.deviceMemory,     // NEW: Hardware Context
+      timings: item.timings,             // Navigation Timings
+      frustration: item.frustration,     // Rage & Dead clicks
+      connectionType: item.connectionType, // Network Context
+      deviceMemory: item.deviceMemory,     // Hardware Context
       ip, country, city, userAgent: item.userAgent, browser, os, device,
       spans: item.spans, duration: item.duration, timestamp
     });
@@ -135,7 +137,7 @@ const processRumBatchBackground = async (data: { traces: any[], errors: any[] },
     if (v.cls !== undefined) { m.vitalsSum.cls += v.cls; m.vitalsCount.cls++; }
     if (v.fcp !== undefined) { m.vitalsSum.fcp += v.fcp; m.vitalsCount.fcp++; }
 
-    // Aggregate Timings (NEW)
+    // Aggregate Timings 
     const t = item.timings || {};
     if (t.dns !== undefined) { m.timingsSum.dns += t.dns; m.timingsCount.dns++; }
     if (t.tcp !== undefined) { m.timingsSum.tcp += t.tcp; m.timingsCount.tcp++; }
@@ -143,7 +145,7 @@ const processRumBatchBackground = async (data: { traces: any[], errors: any[] },
     if (t.ttfb !== undefined) { m.timingsSum.ttfb += t.ttfb; m.timingsCount.ttfb++; }
     if (t.domComplete !== undefined) { m.timingsSum.domComplete += t.domComplete; m.timingsCount.domComplete++; }
 
-    // Aggregate Frustration (NEW)
+    // Aggregate Frustration
     const f = item.frustration || {};
     m.frustrationTotal.rageClicks += (f.rageClicks || 0);
     m.frustrationTotal.deadClicks += (f.deadClicks || 0);
@@ -271,4 +273,23 @@ const processRumBatchBackground = async (data: { traces: any[], errors: any[] },
   });
 
   if (bulkOps.length > 0) await RumMetric.bulkWrite(bulkOps);
+
+  // --- 4. Process Auto-Instrumented RUM Logs (NEW) ---
+  if (data.logs && data.logs.length > 0) {
+    const logsToInsert = data.logs.map((log: any) => ({
+      ownerId: service.ownerId,
+      serviceId: service._id,
+      serviceModel: 'RumService',
+      traceId: log.traceId,
+      spanId: log.spanId,
+      level: log.level || 'info',
+      message: log.message || 'Empty Log',
+      attributes: log.attributes || {},
+      timestamp: log.timestamp ? new Date(log.timestamp) : new Date()
+    }));
+
+    if (logsToInsert.length > 0) {
+      await LogEvent.insertMany(logsToInsert, { ordered: false });
+    }
+  }
 };

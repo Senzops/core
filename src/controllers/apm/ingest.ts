@@ -3,6 +3,7 @@ import geoip from 'geoip-lite';
 import { UAParser } from 'ua-parser-js';
 import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
 import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/Error';
+import { LogEvent } from '../../models/Log';
 import { logger } from '../../utils/logger';
 import { ApmBatchSchema } from '../../utils/validation';
 
@@ -30,7 +31,8 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
     res.status(202).json({
       status: 'accepted',
       queuedTraces: batch.data.traces.length,
-      queuedErrors: batch.data.errors.length
+      queuedErrors: batch.data.errors.length,
+      queuedLogs: batch.data.logs.length
     });
 
     setImmediate(() => {
@@ -46,7 +48,7 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
   }
 };
 
-const processBatchBackground = async (data: { traces: any[], errors: any[] }, service: any) => {
+const processBatchBackground = async (data: { traces: any[], errors: any[], logs: any[] }, service: any) => {
   await ApmService.findByIdAndUpdate(service._id, { lastSeen: new Date() });
 
   const traceDocs = [];
@@ -154,7 +156,7 @@ const processBatchBackground = async (data: { traces: any[], errors: any[] }, se
     if (errTimestamp < group.firstSeen) group.firstSeen = errTimestamp;
   }
 
-  // --- 3. DB Writes ---
+  // --- 3. DB Writes (Traces & Errors) ---
   if (traceDocs.length > 0) await ApmTrace.insertMany(traceDocs);
 
   if (errorGroupsMap.size > 0) {
@@ -209,4 +211,24 @@ const processBatchBackground = async (data: { traces: any[], errors: any[] }, se
   });
 
   if (bulkOps.length > 0) await ApmMetric.bulkWrite(bulkOps);
+
+  // --- 4. Process Auto-Instrumented APM Logs (NEW) ---
+  if (data.logs && data.logs.length > 0) {
+    const logsToInsert = data.logs.map((log: any) => ({
+      ownerId: service.ownerId,
+      serviceId: service._id,
+      serviceModel: 'ApmService',
+      traceId: log.traceId,
+      spanId: log.spanId,
+      level: log.level || 'info',
+      message: log.message || 'Empty Log',
+      attributes: log.attributes || {},
+      timestamp: log.timestamp ? new Date(log.timestamp) : new Date()
+    }));
+
+    if (logsToInsert.length > 0) {
+      // Use ordered: false to ensure one bad log doesn't fail the rest of the batch
+      await LogEvent.insertMany(logsToInsert, { ordered: false });
+    }
+  }
 };

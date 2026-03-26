@@ -37,6 +37,8 @@ import {
   deleteService as deleteRumService
 } from '../controllers/rum/main';
 import { getRumDashboard, getRumTraceDetail } from '../controllers/rum/stats';
+import { ingestGlobalLogs, getDashboardLogs, getTraceLogs, getLogApiKey } from '../controllers/logs';
+
 
 if (!process.env.MONGO_URI) {
   dotenv.config({ path: "src/config/.env" });
@@ -123,6 +125,7 @@ ingestRouter.post('/web', webIngestLimiter, ingestWebMetrics);
 ingestRouter.post('/apm', apmLimiter, ingestApmBatch);
 ingestRouter.post('/task', apmLimiter, ingestTaskBatch);
 ingestRouter.post('/rum', apmLimiter, ingestRumBatch);
+ingestRouter.post('/logs', apmLimiter, ingestGlobalLogs); 
 
 // 2. VPS API (Frontend User)
 const apiRouter = express.Router();
@@ -183,6 +186,17 @@ apiRouter.get('/rum/list', listRumServices);
 apiRouter.delete('/rum/:id', deleteRumService);
 apiRouter.get('/rum/:id/dashboard', getRumDashboard);
 apiRouter.get('/rum/:id/trace/:traceId', getRumTraceDetail);
+
+
+// --- NEW LOG MANAGEMENT ROUTES ---
+apiRouter.get('/logs', getDashboardLogs);
+apiRouter.get('/logs/key', getLogApiKey);
+
+// Bi-directional Trace to Log links
+apiRouter.get('/apm/:id/trace/:traceId/logs', getTraceLogs);
+apiRouter.get('/rum/:id/trace/:traceId/logs', getTraceLogs);
+apiRouter.get('/task/:id/run/:traceId/logs', getTraceLogs); // We use traceId path param to map to runId
+
 
 
 // --- Mounting Routes (CRITICAL ORDER) ---
