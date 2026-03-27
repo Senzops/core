@@ -14,8 +14,8 @@
     "start": "concurrently \"npm run start:server\" \"npm run start:worker\" --names \"API,WORKER\""
   },
   "dependencies": {
+    "@ip-location-db/geolite2-city-mmdb": "^2.3.2026032519",
     "@senzops/apm-node": "^1.1.17",
-    "@types/geoip-lite": "^1.4.4",
     "@types/node-cron": "^3.0.11",
     "@types/ua-parser-js": "^0.7.39",
     "axios": "^1.13.2",
@@ -25,9 +25,9 @@
     "express": "^4.18.2",
     "express-rate-limit": "^7.1.5",
     "firebase-admin": "^11.11.1",
-    "geoip-lite": "^1.4.10",
     "helmet": "^7.1.0",
     "ioredis": "^5.9.3",
+    "maxmind": "^5.0.5",
     "mongoose": "^8.0.3",
     "morgan": "^1.10.0",
     "node-cron": "^4.2.1",

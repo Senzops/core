@@ -1,19 +1,47 @@
 import { Request, Response } from 'express';
-import geoip from 'geoip-lite';
 import { UAParser } from 'ua-parser-js';
 import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
 import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/Error';
 import { LogEvent } from '../../models/Log';
 import { logger } from '../../utils/logger';
 import { ApmBatchSchema } from '../../utils/validation';
+import { normaliseIP, isPrivateOrLoopback } from '../../utils/getClientIp';
+import { getGeoData } from '../../utils/getGeoData';
 
-// --- Helper: Clean Dynamic Data before Fingerprinting ---
-const cleanMessageForFingerprint = (message: string): string => {
-  return message
-    .replace(/[0-9a-fA-F]{24}/g, '<id>') // Mongo IDs
-    .replace(/\b[0-9a-f]{8}\b-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-\b[0-9a-f]{12}\b/ig, '<uuid>') // UUIDs
-    .replace(/\d+/g, '<num>'); // Numbers
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Strip dynamic tokens from error messages before fingerprinting so that
+ * "User 507f1f77 not found" and "User abc123de not found" collapse into the
+ * same error group.
+ */
+const cleanMessageForFingerprint = (message: string): string =>
+  message
+    .replace(/[0-9a-fA-F]{24}/g, '<id>')      // MongoDB ObjectIds
+    .replace(
+      /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+      '<uuid>'
+    )                                           // UUIDs
+    .replace(/\d+/g, '<num>');                  // All remaining numbers
+
+/**
+ * Extract and normalise an IP that was captured by the APM SDK on the
+ * application server and forwarded here inside the batch payload.
+ *
+ * Unlike the web-analytics ingest (where we read headers on THIS request),
+ * here the IP is a string value inside each trace item — so we just clean
+ * and validate it rather than checking proxy headers.
+ */
+const extractPayloadIp = (rawIp: unknown): string | null => {
+  if (!rawIp || typeof rawIp !== 'string') return null;
+  return normaliseIP(rawIp);
 };
+
+// ---------------------------------------------------------------------------
+// Controller
+// ---------------------------------------------------------------------------
 
 export const ingestApmBatch = async (req: Request, res: Response) => {
   try {
@@ -25,21 +53,25 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
 
     const batch = ApmBatchSchema.safeParse(req.body);
     if (!batch.success) {
-      return res.status(400).json({ error: 'Invalid payload format', details: batch.error });
+      return res.status(400).json({
+        error: 'Invalid payload format',
+        details: batch.error,
+      });
     }
 
+    // Acknowledge immediately — processing happens in the background
     res.status(202).json({
       status: 'accepted',
       queuedTraces: batch.data.traces.length,
       queuedErrors: batch.data.errors.length,
-      queuedLogs: batch.data.logs.length
+      queuedLogs: batch.data.logs.length,
     });
 
     setImmediate(() => {
-      processBatchBackground(batch.data, service)
-        .catch(err => logger.error(`[APM] Background processing failed: ${err.message}`));
+      processBatchBackground(batch.data, service).catch((err) =>
+        logger.error(`[APM] Background processing failed: ${err.message}`)
+      );
     });
-
   } catch (error) {
     logger.error('[APM] Ingest Error', error);
     if (!res.headersSent) {
@@ -48,26 +80,44 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
   }
 };
 
-const processBatchBackground = async (data: { traces: any[], errors: any[], logs: any[] }, service: any) => {
+// ---------------------------------------------------------------------------
+// Background processor
+// ---------------------------------------------------------------------------
+
+const processBatchBackground = async (
+  data: { traces: any[]; errors: any[]; logs: any[] },
+  service: any
+) => {
   await ApmService.findByIdAndUpdate(service._id, { lastSeen: new Date() });
 
-  const traceDocs = [];
+  const traceDocs: any[] = [];
   const metricsMap = new Map<string, any>();
   const errorEvents: any[] = [];
   const errorGroupsMap = new Map<string, any>();
 
-  // --- 1. Process Traces ---
+  // -------------------------------------------------------------------------
+  // 1. Process Traces
+  // -------------------------------------------------------------------------
   for (const item of data.traces) {
-    let ip = item.ip || '';
-    if (ip.includes('::ffff:')) ip = ip.replace('::ffff:', '');
-    const geo = ip ? geoip.lookup(ip) : null;
+    // --- IP normalisation ---
+    // The IP arrives embedded in the trace payload (captured by the SDK).
+    // normaliseIP handles: ::ffff: stripping, IPv6 brackets, port suffixes.
+    const ip = extractPayloadIp(item.ip);
 
+    // --- Geo lookup ---
+    // We pass req=null here because CDN headers belong to the SDK→ingestor
+    // HTTP leg, not to the original end-user request. Skip header fast-path
+    // and go straight to the local MaxMind DB.
+    // isPrivateOrLoopback guard lives inside getGeoData — private IPs return
+    // { country: 'Unknown', city: 'Unknown' } without touching the DB.
+    const { country, city } = await getGeoData(null, ip);
+
+    // --- User-agent parsing ---
     const uaParser = new UAParser(item.userAgent || '');
     const browser = uaParser.getBrowser().name || 'Unknown';
     const os = uaParser.getOS().name || 'Unknown';
     const device = uaParser.getDevice().type || 'Desktop';
-    const country = geo?.country || 'Unknown';
-    const city = geo?.city || 'Unknown';
+
     const timestamp = new Date(item.timestamp);
 
     traceDocs.push({
@@ -80,29 +130,46 @@ const processBatchBackground = async (data: { traces: any[], errors: any[], logs
       path: item.path,
       status: item.status,
       duration: item.duration,
-      ip, country, city, userAgent: item.userAgent, browser, os, device,
+      ip: ip ?? 'Unknown',   // store cleaned value, never raw
+      country,
+      city,
+      userAgent: item.userAgent,
+      browser,
+      os,
+      device,
       timestamp,
-      spans: item.spans || []
+      spans: item.spans || [],
     });
 
-    if (item.error && item.error.name && item.error.message) {
+    // Promote trace-attached errors into the errors array
+    if (item.error?.name && item.error?.message) {
       data.errors.push({
         errorClass: item.error.name,
         message: item.error.message,
         stackTrace: item.error.stack || '',
         traceId: item.traceId,
-        timestamp: item.timestamp
+        timestamp: item.timestamp,
       });
     }
 
+    // --- Metrics bucket (1-minute resolution) ---
     const bucketTime = new Date(timestamp);
     bucketTime.setSeconds(0, 0);
     const bucketKey = bucketTime.toISOString();
 
     if (!metricsMap.has(bucketKey)) {
       metricsMap.set(bucketKey, {
-        timestamp: bucketTime, requests: 0, errorCount: 0, durationSum: 0, durationMax: 0,
-        routes: {}, statusCodes: {}, countries: {}, browsers: {}, os: {}, devices: {}
+        timestamp: bucketTime,
+        requests: 0,
+        errorCount: 0,
+        durationSum: 0,
+        durationMax: 0,
+        routes: {},
+        statusCodes: {},
+        countries: {},
+        browsers: {},
+        os: {},
+        devices: {},
       });
     }
 
@@ -112,22 +179,28 @@ const processBatchBackground = async (data: { traces: any[], errors: any[], logs
     m.durationSum += item.duration;
     if (item.duration > m.durationMax) m.durationMax = item.duration;
 
-    const incrementMap = (mapObj: any, key: string) => {
+    const inc = (obj: Record<string, number>, key: string) => {
       const safeKey = key.replace(/\./g, '_').replace(/\$/g, '');
-      mapObj[safeKey] = (mapObj[safeKey] || 0) + 1;
+      obj[safeKey] = (obj[safeKey] || 0) + 1;
     };
 
-    incrementMap(m.routes, `${item.method} ${item.route}`);
-    incrementMap(m.statusCodes, item.status.toString());
-    incrementMap(m.countries, country);
-    incrementMap(m.browsers, browser);
-    incrementMap(m.os, os);
-    incrementMap(m.devices, device);
+    inc(m.routes, `${item.method} ${item.route}`);
+    inc(m.statusCodes, item.status.toString());
+    inc(m.countries, country);
+    inc(m.browsers, browser);
+    inc(m.os, os);
+    inc(m.devices, device);
   }
 
-  // --- 2. Process Errors (Polymorphic Universal Engine) ---
+  // -------------------------------------------------------------------------
+  // 2. Process Errors
+  // -------------------------------------------------------------------------
   for (const err of data.errors) {
-    const fingerprint = generateErrorFingerprint(service._id, err.errorClass, cleanMessageForFingerprint(err.message));
+    const fingerprint = generateErrorFingerprint(
+      service._id,
+      err.errorClass,
+      cleanMessageForFingerprint(err.message)
+    );
     const errTimestamp = err.timestamp ? new Date(err.timestamp) : new Date();
 
     errorEvents.push({
@@ -137,7 +210,7 @@ const processBatchBackground = async (data: { traces: any[], errors: any[], logs
       fingerprint,
       stackTrace: err.stackTrace || '',
       context: err.context || {},
-      timestamp: errTimestamp
+      timestamp: errTimestamp,
     });
 
     if (!errorGroupsMap.has(fingerprint)) {
@@ -147,18 +220,26 @@ const processBatchBackground = async (data: { traces: any[], errors: any[], logs
         message: err.message,
         firstSeen: errTimestamp,
         lastSeen: errTimestamp,
-        count: 0
+        count: 0,
       });
     }
+
     const group = errorGroupsMap.get(fingerprint);
     group.count++;
     if (errTimestamp > group.lastSeen) group.lastSeen = errTimestamp;
     if (errTimestamp < group.firstSeen) group.firstSeen = errTimestamp;
   }
 
-  // --- 3. DB Writes (Traces & Errors) ---
-  if (traceDocs.length > 0) await ApmTrace.insertMany(traceDocs);
+  // -------------------------------------------------------------------------
+  // 3. DB Writes
+  // -------------------------------------------------------------------------
 
+  // Traces
+  if (traceDocs.length > 0) {
+    await ApmTrace.insertMany(traceDocs, { ordered: false });
+  }
+
+  // Error groups + events
   if (errorGroupsMap.size > 0) {
     const groupPromises = Array.from(errorGroupsMap.values()).map(async (g) => {
       const groupDoc = await ErrorGroup.findOneAndUpdate(
@@ -172,10 +253,10 @@ const processBatchBackground = async (data: { traces: any[], errors: any[], logs
             errorClass: g.errorClass,
             message: g.message,
             firstSeen: g.firstSeen,
-            status: 'unresolved'
+            status: 'unresolved',
           },
           $max: { lastSeen: g.lastSeen },
-          $inc: { totalCount: g.count }
+          $inc: { totalCount: g.count },
         },
         { upsert: true, new: true }
       );
@@ -183,21 +264,32 @@ const processBatchBackground = async (data: { traces: any[], errors: any[], logs
     });
 
     const resolvedGroups = await Promise.all(groupPromises);
-    const fingerprintToGroupId = new Map(resolvedGroups.map(g => [g.fingerprint, g.groupId]));
+    const fingerprintToGroupId = new Map(
+      resolvedGroups.map((g) => [g.fingerprint, g.groupId])
+    );
 
-    const finalErrorEvents = errorEvents.map(e => {
-      const { fingerprint, ...rest } = e;
-      return { ...rest, groupId: fingerprintToGroupId.get(fingerprint) };
-    });
+    const finalErrorEvents = errorEvents.map(({ fingerprint, ...rest }) => ({
+      ...rest,
+      groupId: fingerprintToGroupId.get(fingerprint),
+    }));
 
-    await ErrorEvent.insertMany(finalErrorEvents);
+    await ErrorEvent.insertMany(finalErrorEvents, { ordered: false });
   }
 
-  const bulkOps = Array.from(metricsMap.values()).map(m => {
-    const incUpdate: any = { requests: m.requests, errorCount: m.errorCount, durationSum: m.durationSum };
-    const addMapToInc = (prefix: string, obj: any) => {
-      for (const [k, v] of Object.entries(obj)) incUpdate[`${prefix}.${k}`] = v;
+  // APM metrics (bulk upsert)
+  const bulkOps = Array.from(metricsMap.values()).map((m) => {
+    const incUpdate: Record<string, any> = {
+      requests: m.requests,
+      errorCount: m.errorCount,
+      durationSum: m.durationSum,
     };
+
+    const addMapToInc = (prefix: string, obj: Record<string, number>) => {
+      for (const [k, v] of Object.entries(obj)) {
+        incUpdate[`${prefix}.${k}`] = v;
+      }
+    };
+
     addMapToInc('routes', m.routes);
     addMapToInc('statusCodes', m.statusCodes);
     addMapToInc('countries', m.countries);
@@ -206,14 +298,22 @@ const processBatchBackground = async (data: { traces: any[], errors: any[], logs
     addMapToInc('devices', m.devices);
 
     return {
-      updateOne: { filter: { serviceId: service._id, timestamp: m.timestamp }, update: { $inc: incUpdate, $max: { durationMax: m.durationMax } }, upsert: true }
+      updateOne: {
+        filter: { serviceId: service._id, timestamp: m.timestamp },
+        update: { $inc: incUpdate, $max: { durationMax: m.durationMax } },
+        upsert: true,
+      },
     };
   });
 
-  if (bulkOps.length > 0) await ApmMetric.bulkWrite(bulkOps);
+  if (bulkOps.length > 0) {
+    await ApmMetric.bulkWrite(bulkOps, { ordered: false });
+  }
 
-  // --- 4. Process Auto-Instrumented APM Logs (NEW) ---
-  if (data.logs && data.logs.length > 0) {
+  // -------------------------------------------------------------------------
+  // 4. Process APM Logs
+  // -------------------------------------------------------------------------
+  if (data.logs?.length > 0) {
     const logsToInsert = data.logs.map((log: any) => ({
       ownerId: service.ownerId,
       serviceId: service._id,
@@ -223,12 +323,10 @@ const processBatchBackground = async (data: { traces: any[], errors: any[], logs
       level: log.level || 'info',
       message: log.message || 'Empty Log',
       attributes: log.attributes || {},
-      timestamp: log.timestamp ? new Date(log.timestamp) : new Date()
+      timestamp: log.timestamp ? new Date(log.timestamp) : new Date(),
     }));
 
-    if (logsToInsert.length > 0) {
-      // Use ordered: false to ensure one bad log doesn't fail the rest of the batch
-      await LogEvent.insertMany(logsToInsert, { ordered: false });
-    }
+    // ordered: false — one malformed log doc must not abort the whole batch
+    await LogEvent.insertMany(logsToInsert, { ordered: false });
   }
 };

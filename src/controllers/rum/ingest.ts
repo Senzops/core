@@ -1,11 +1,12 @@
 import { Request, Response } from 'express';
-import geoip from 'geoip-lite';
 import { UAParser } from 'ua-parser-js';
 import { RumService, RumTrace, RumMetric } from '../../models/Rum';
 import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/Error';
 import { LogEvent } from '../../models/Log';
 import { logger } from '../../utils/logger';
 import { RumBatchSchema } from '../../utils/validation';
+import { getClientIp } from "../../utils/getClientIp";
+import { getGeoData } from "../../utils/getGeoData";
 
 const cleanMessageForFingerprint = (message: string): string => {
   return message
@@ -58,7 +59,7 @@ export const ingestRumBatch = async (req: Request, res: Response) => {
     });
 
     setImmediate(() => {
-      processRumBatchBackground(batch.data, service, req.ip || req.socket.remoteAddress || '')
+      processRumBatchBackground(batch.data, service, req)
         .catch(err => logger.error(`[RUM] Background processing failed: ${err.message}`));
     });
 
@@ -70,19 +71,15 @@ export const ingestRumBatch = async (req: Request, res: Response) => {
   }
 };
 
-const processRumBatchBackground = async (data: { traces: any[], errors: any[], logs?: any[] }, service: any, requestIp: string) => {
+const processRumBatchBackground = async (data: { traces: any[], errors: any[], logs?: any[] }, service: any, req: Request) => {
   await RumService.findByIdAndUpdate(service._id, { lastSeen: new Date() });
 
   const traceDocs = [];
   const metricsMap = new Map<string, any>();
   const errorEvents: any[] = [];
   const errorGroupsMap = new Map<string, any>();
-
-  let ip = requestIp;
-  if (ip.includes('::ffff:')) ip = ip.replace('::ffff:', '');
-  const geo = ip ? geoip.lookup(ip) : null;
-  const country = geo?.country || 'Unknown';
-  const city = geo?.city || 'Unknown';
+  const ip = getClientIp(req);
+  const { country, city } = await getGeoData(req, ip);
 
   // --- 1. Process Traces (Page Views / Route Changes) ---
   for (const item of data.traces) {

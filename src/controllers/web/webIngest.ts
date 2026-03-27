@@ -1,8 +1,9 @@
 import { Request, Response } from "express";
-import geoip from "geoip-lite";
 import { UAParser } from "ua-parser-js";
 import { WebEvent, WebMetric, Website } from "../../models/Web";
 import { logger } from "../../utils/logger";
+import { getClientIp } from "../../utils/getClientIp";
+import { getGeoData } from "../../utils/getGeoData";
 import {
   EMAIL_HOST_HINTS,
   PAID_MEDIUM_HINTS,
@@ -10,20 +11,26 @@ import {
   SOCIAL_HOSTS,
 } from "../../utils/categorizeReferrers";
 
-// Helper to determine traffic channel
-const getChannel = (referrer: string, url: string) => {
+// ---------------------------------------------------------------------------
+// Traffic channel classifier
+// ---------------------------------------------------------------------------
+
+const getChannel = (referrer: string, url: string): string => {
   if (!referrer || referrer === "Direct") return "Direct";
   const ref = referrer.toLowerCase();
 
   if (url) {
-    const r = new URL(url);
-    const params = r.searchParams;
-    const utmMedium = params.get("utm_medium");
-    if (utmMedium) {
-      const mediumLower = utmMedium.toLowerCase();
-      if (PAID_MEDIUM_HINTS.some((h) => mediumLower.includes(h))) return "Paid";
-      if (mediumLower.includes("email")) return "Email";
-      if (mediumLower.includes("social")) return "Social";
+    try {
+      const r = new URL(url);
+      const utmMedium = r.searchParams.get("utm_medium");
+      if (utmMedium) {
+        const mediumLower = utmMedium.toLowerCase();
+        if (PAID_MEDIUM_HINTS.some((h) => mediumLower.includes(h))) return "Paid";
+        if (mediumLower.includes("email")) return "Email";
+        if (mediumLower.includes("social")) return "Social";
+      }
+    } catch {
+      // Malformed URL — fall through to header-based classification
     }
   }
 
@@ -33,6 +40,10 @@ const getChannel = (referrer: string, url: string) => {
 
   return "Referral";
 };
+
+// ---------------------------------------------------------------------------
+// Controller
+// ---------------------------------------------------------------------------
 
 export const ingestWebMetrics = async (req: Request, res: Response) => {
   try {
@@ -49,59 +60,59 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
       duration,
     } = req.body;
 
-    // Check if Website exists in DB
+    // Validate website exists before acknowledging the request
     const site = await Website.findOne({ _id: webId });
     if (!site) return res.status(404).json({ error: "Website not found" });
 
-    // 1. Respond Immediately (Fire-and-forget)
-    // We send 200 OK right away so the user's browser isn't waiting
+    // Respond immediately — browser doesn't wait for geo/DB work
     res.status(200).send("ok");
 
-    // 2. Background Processing
+    // -------------------------------------------------------------------------
+    // Background processing (fire-and-forget)
+    // -------------------------------------------------------------------------
     setImmediate(async () => {
       try {
-        // --- A. Enrichment ---
-        let ip =
-          req.headers["x-forwarded-for"] || req.socket.remoteAddress || "";
-        if (Array.isArray(ip)) ip = ip[0];
-        if (typeof ip === "string" && ip.includes("::ffff:"))
-          ip = ip.replace("::ffff:", "");
-        const geo = geoip.lookup(ip as string);
-        const country = geo?.country || "Unknown";
-        const city = geo?.city || "Unknown";
+        // --- A. IP extraction ---
+        // getClientIp checks all proxy headers in priority order and
+        // returns a clean, normalised IP string (or null).
+        const clientIp = getClientIp(req);
 
+        // --- B. Geo lookup ---
+        // Tries CDN headers first (free + instant), then local MaxMind DB.
+        // Never returns "Unknown" due to a private IP being passed to the DB.
+        const { country, city } = await getGeoData(req, clientIp);
+
+        // --- C. User-agent parsing ---
         const uaString = req.headers["user-agent"] || "";
         const parser = new UAParser(uaString);
         const browser = parser.getBrowser().name || "Unknown";
         const os = parser.getOS().name || "Unknown";
-        let device = parser.getDevice().type || "Desktop";
+        let device: string = parser.getDevice().type || "Desktop";
         if (device === "Desktop" && width && width < 768) device = "Mobile";
 
         const channel = getChannel(referrer, url);
         const timestamp = new Date();
 
-        // --- B. Handle Ping (Duration Update) ---
+        // --- D. Handle ping (duration heartbeat) ---
         if (type === "ping") {
-          // Update Raw Trace
           await WebEvent.findOneAndUpdate(
             { sessionId, path, type: "pageview" },
             { $inc: { duration: duration || 0 } },
-            { sort: { createdAt: -1 } },
+            { sort: { createdAt: -1 } }
           );
 
-          // Update Metric (Add duration to the bucket)
           const bucketTime = new Date(timestamp);
           bucketTime.setSeconds(0, 0);
 
           await WebMetric.updateOne(
             { webId, timestamp: bucketTime },
             { $inc: { durationSum: duration || 0 } },
-            { upsert: true },
+            { upsert: true }
           );
           return;
         }
 
-        // --- C. Store Pageview (Raw) ---
+        // --- E. Store raw pageview event ---
         await WebEvent.create({
           webId,
           visitorId,
@@ -121,12 +132,14 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
           createdAt: timestamp,
         });
 
-        // --- D. Update Metric (Aggregated) ---
+        // --- F. Update aggregated metric bucket (1-minute resolution) ---
         const bucketTime = new Date(timestamp);
         bucketTime.setSeconds(0, 0);
 
-        const incUpdate: any = { views: 1 };
+        const incUpdate: Record<string, number> = { views: 1 };
+
         const addMap = (prefix: string, key: string) => {
+          // Sanitise keys: MongoDB disallows '.' and '$' in field names
           const safeKey = key.replace(/\./g, "_").replace(/\$/g, "");
           incUpdate[`${prefix}.${safeKey}`] = 1;
         };
@@ -143,7 +156,7 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
         await WebMetric.updateOne(
           { webId, timestamp: bucketTime },
           { $inc: incUpdate },
-          { upsert: true },
+          { upsert: true }
         );
       } catch (bgError) {
         logger.error("Background Web Ingest Error", bgError);
@@ -151,6 +164,5 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
     });
   } catch (error) {
     logger.error("Senzor Web Ingest Error", error);
-    // Already sent response, but log it
   }
 };
