@@ -40,13 +40,12 @@ import { getRumDashboard, getRumTraceDetail } from '../controllers/rum/stats';
 import { ingestGlobalLogs, getDashboardLogs, getTraceLogs, getLogApiKey, getLogById } from '../controllers/logs';
 import { authenticateMcp } from '../middlewares/mcpAuth';
 import {
-  handleMcpSse,
-  handleMcpMessage,
   getMcpKeys,
   createMcpKey,
   revokeMcpKey,
   getMcpUsage
-} from '../controllers/mcp';
+} from '../controllers/mcp/main';
+import { mcpAgentRouter } from '../controllers/mcp/agent';
 
 
 if (!process.env.MONGO_URI) {
@@ -123,43 +122,9 @@ const apmLimiter = rateLimit({
   legacyHeaders: false,
 });
 
-const mcpLimiter = rateLimit({
-  windowMs: 1 * 60 * 1000,
-  max: 60, // 60 messages per minute max to prevent AI infinite loops
-  message: "Too many requests. AI agent must yield and summarize findings."
-});
-
-// ============================================================================
-// 1. AI AGENT ROUTES
-// ============================================================================
-// We apply authenticateMcp to BOTH the SSE and Message POST endpoints 
-// so the JWT middleware never accidentally intercepts them.
-app.get('/api/mcp/sse', authenticateMcp, handleMcpSse);
-
-// Catch ALL MCP POSTs (including rogue ones from Cursor) to prevent them 
-// from falling through to the JWT auth router.
-app.post(['/api/mcp/messages', '/api/mcp/sse'], authenticateMcp, mcpLimiter, (req, res, next) => {
-  let mcpReq = req as any;
-  
-  // Reconstruct the request as a Readable stream because the MCP SDK
-  // expects to consume raw streams, but express.json() already destroyed it.
-  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
-    const { Readable } = require('stream');
-    const bodyBuffer = Buffer.from(JSON.stringify(req.body));
-    
-    mcpReq = Readable.from(bodyBuffer);
-    mcpReq.query = req.query;
-    mcpReq.method = req.method;
-    mcpReq.url = req.url;
-    mcpReq.headers = { ...req.headers };
-    
-    // Crucial: Delete content-length to prevent the MCP SDK's raw-body parser 
-    // from hanging if our stringified byte length slightly differs from the original.
-    delete mcpReq.headers['content-length']; 
-  }
-  
-  handleMcpMessage(mcpReq, res).catch(next);
-});
+// AI AGENT ROUTES
+// Explicitly isolated and mounted FIRST to bypass standard user JWT logic.
+app.use('/api/mcp', mcpAgentRouter);
 
 // --- Routes Definition ---
 

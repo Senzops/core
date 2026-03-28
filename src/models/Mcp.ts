@@ -2,7 +2,7 @@ import mongoose, { Schema, Document } from 'mongoose';
 
 export interface IMcpApiKey extends Document {
   ownerId: string;
-  name: string; // e.g., "Cursor IDE", "Claude Desktop"
+  name: string;
   key: string;
   status: 'active' | 'revoked';
   lastUsedAt?: Date;
@@ -21,7 +21,7 @@ export const McpApiKey = mongoose.model<IMcpApiKey>('McpApiKey', McpApiKeySchema
 
 export interface IMcpUsage extends Document {
   ownerId: string;
-  timestamp: Date; // Bucketed by hour
+  timestamp: Date;
   totalQueries: number;
   toolCalls: Map<string, number>;
 }
@@ -33,8 +33,8 @@ const McpUsageSchema = new Schema<IMcpUsage>({
   toolCalls: { type: Map, of: Number, default: {} }
 });
 
-// TTL of 30 days for usage metrics
-McpUsageSchema.index({ timestamp: 1 }, { expireAfterSeconds: 2592000 });
+// TTL of 7 days (604800 seconds) for usage metrics to match frontend views
+McpUsageSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 });
 McpUsageSchema.index({ ownerId: 1, timestamp: 1 }, { unique: true });
 
 export const McpUsage = mongoose.model<IMcpUsage>('McpUsage', McpUsageSchema);

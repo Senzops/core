@@ -1,23 +1,78 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import mongoose from "mongoose";
+import { Request, Response } from 'express';
 
-// Models
-import { ApmService, ApmTrace } from "../models/Apm";
-import { RumService } from "../models/Rum";
-import { TaskService } from "../models/Task";
-import { LogEvent } from "../models/Log";
-import { ErrorGroup } from "../models/Error";
+// --- ALL READ-ONLY CONTROLLERS ---
+import { listServices as listApmServices } from '../controllers/apm/main';
+import { getApmStats } from '../controllers/apm/stats';
+import { getInvocations, getTraceDetail } from '../controllers/apm/traces';
+import { listVps, getVpsStats } from '../controllers/vps';
+import { listWebsites } from '../controllers/web/main';
+import { getWebStats } from '../controllers/web/webStats';
+import { listMonitors, getMonitorStats } from '../controllers/monitor';
+import { listDatabases } from '../controllers/database/main';
+import { getDatabaseStats } from '../controllers/database/stats';
+import { listTaskServices } from '../controllers/task/main';
+import { getTaskServiceDashboard, getTaskEntityDetail, getTaskRunDetail } from '../controllers/task/stats';
+import { getGlobalErrors, getErrorGroupDetails, getTraceErrors } from '../controllers/error';
+import { listServices as listRumServices } from '../controllers/rum/main';
+import { getRumDashboard, getRumTraceDetail } from '../controllers/rum/stats';
+import { getDashboardLogs, getTraceLogs, getLogById } from '../controllers/logs';
+
 import { McpUsage } from "../models/Mcp";
-import { DatabaseService, DbMetric } from "../models/Database";
-import { Monitor } from "../models/Monitor";
-import { Vps, VpsRun } from "../models/Vps";
 
-// --- Usage Tracking (Fire & Forget) ---
+// --- 1. Mock Express Runtime (TypeScript Safe) ---
+// We use a closure (currentStatus) instead of 'this' to avoid TypeScript context binding errors.
+const simulateExpressCall = async (
+  controller: Function,
+  ownerId: string,
+  params: Record<string, any> = {},
+  query: Record<string, any> = {}
+): Promise<{ status: number; data: any }> => {
+  return new Promise((resolve, reject) => {
+    const req = {
+      user: { uid: ownerId },
+      params,
+      query,
+      body: {},
+      headers: {},
+      ip: '127.0.0.1'
+    } as unknown as Request;
+
+    let currentStatus = 200; // Closure variable replaces `this.statusCode`
+
+    const res = {
+      status: (code: number) => {
+        currentStatus = code;
+        return res;
+      },
+      json: (data: any) => {
+        resolve({ status: currentStatus, data });
+        return res;
+      },
+      send: (data: any) => {
+        resolve({ status: currentStatus, data });
+        return res;
+      }
+    } as unknown as Response;
+
+    const next = (err?: any) => {
+      if (err) reject(err);
+      else resolve({ status: 500, data: { error: 'Next() called without error' } });
+    };
+
+    try {
+      Promise.resolve(controller(req, res, next)).catch(reject);
+    } catch (error) {
+      reject(error);
+    }
+  });
+};
+
+// --- 2. Usage Tracking ---
 const trackUsage = (ownerId: string, toolName: string) => {
   const bucketTime = new Date();
-  bucketTime.setMinutes(0, 0, 0); // Bucket by hour for efficient querying
-
+  bucketTime.setMinutes(0, 0, 0);
   McpUsage.updateOne(
     { ownerId, timestamp: bucketTime },
     { $inc: { totalQueries: 1, [`toolCalls.${toolName}`]: 1 } },
@@ -25,185 +80,206 @@ const trackUsage = (ownerId: string, toolName: string) => {
   ).catch(() => { });
 };
 
+// --- 3. Complete Tool Definitions ---
+const MCP_TOOLS = [
+  // --- APM Tools ---
+  {
+    name: "apm_list_services",
+    description: "List all active APM (Backend) services and their IDs.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listApmServices, uid)
+  },
+  {
+    name: "apm_get_stats",
+    description: "Get performance aggregations (latency, RPS) for an APM service.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getApmStats, uid, { id: args.id }, { range: args.range })
+  },
+  {
+    name: "apm_get_invocations",
+    description: "Get a list of recent HTTP trace invocations for a service.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getInvocations, uid, { id: args.id }, { limit: 20 })
+  },
+  {
+    name: "apm_get_trace_detail",
+    description: "Get the full execution waterfall (spans) for a specific traceId.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, traceId: { type: "string" } }, required: ["id", "traceId"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getTraceDetail, uid, { id: args.id, traceId: args.traceId })
+  },
+
+  // --- RUM (Web APM) Tools ---
+  {
+    name: "rum_list_services",
+    description: "List all active RUM (Frontend Web APM) applications.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listRumServices, uid)
+  },
+  {
+    name: "rum_get_dashboard",
+    description: "Get Web Vitals (LCP, INP, CLS) and page views for a RUM app.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getRumDashboard, uid, { id: args.id }, { range: args.range })
+  },
+  {
+    name: "rum_get_trace_detail",
+    description: "Get the frontend execution trace (XHR/Fetch spans) for a RUM traceId.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, traceId: { type: "string" } }, required: ["id", "traceId"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getRumTraceDetail, uid, { id: args.id, traceId: args.traceId })
+  },
+
+  // --- Background Tasks Tools ---
+  {
+    name: "task_list_services",
+    description: "List all Background Task services.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listTaskServices, uid)
+  },
+  {
+    name: "task_get_dashboard",
+    description: "Get job execution metrics (failures, delays, durations).",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getTaskServiceDashboard, uid, { id: args.id }, { range: args.range })
+  },
+  {
+    name: "task_get_entity_detail",
+    description: "Get specific historical performance for a single task queue/cron name.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, taskName: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id", "taskName"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getTaskEntityDetail, uid, { id: args.id, taskName: args.taskName }, { range: args.range })
+  },
+  {
+    name: "task_get_run_detail",
+    description: "Get the detailed spans and metadata for a specific task runId.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, runId: { type: "string" } }, required: ["id", "runId"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getTaskRunDetail, uid, { id: args.id, runId: args.runId })
+  },
+
+  // --- Logs Tools ---
+  {
+    name: "logs_query",
+    description: "Search system logs. Use filters like level:error.",
+    inputSchema: { type: "object", properties: { search: { type: "string" }, range: { type: "string", default: "24h" }, limit: { type: "number", default: 20 } } },
+    execute: (args: any, uid: string) => simulateExpressCall(getDashboardLogs, uid, {}, { search: args.search, range: args.range, limit: Math.min(args.limit || 20, 50) })
+  },
+  {
+    name: "logs_get_by_id",
+    description: "Get the full payload of a single log by its MongoDB _id.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getLogById, uid, { id: args.id })
+  },
+  {
+    name: "logs_get_by_trace",
+    description: "Get all logs explicitly attached to an APM/RUM traceId or Task runId.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, traceId: { type: "string" } }, required: ["id", "traceId"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getTraceLogs, uid, { id: args.id, traceId: args.traceId })
+  },
+
+  // --- Error Tracking Tools ---
+  {
+    name: "error_get_global",
+    description: "Get a list of unresolved exception groups across the platform.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(getGlobalErrors, uid, {}, { status: 'unresolved', limit: 20 })
+  },
+  {
+    name: "error_get_group_detail",
+    description: "Get details and recent occurrences of a specific error fingerprint (groupId).",
+    inputSchema: { type: "object", properties: { groupId: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["groupId"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getErrorGroupDetails, uid, { groupId: args.groupId }, { range: args.range })
+  },
+  {
+    name: "error_get_trace_errors",
+    description: "Get raw error events that occurred during a specific APM traceId.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, traceId: { type: "string" } }, required: ["id", "traceId"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getTraceErrors, uid, { id: args.id, traceId: args.traceId })
+  },
+
+  // --- Web Analytics Tools ---
+  {
+    name: "web_list_websites",
+    description: "List all standard Web Analytics (Non-RUM) tracking properties.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listWebsites, uid)
+  },
+  {
+    name: "web_get_stats",
+    description: "Get pageviews, visitors, and referriers for a standard Web Analytics property.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getWebStats, uid, { id: args.id }, { range: args.range })
+  },
+
+  // --- Uptime Monitor Tools ---
+  {
+    name: "uptime_list_monitors",
+    description: "List all external uptime monitors (cron pingers).",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listMonitors, uid)
+  },
+  {
+    name: "uptime_get_stats",
+    description: "Get uptime percentage, latency, and status history for a monitor.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getMonitorStats, uid, { id: args.id }, { range: args.range })
+  },
+
+  // --- Infrastructure Tools (VPS) ---
+  {
+    name: "vps_list",
+    description: "List monitored Linux VPS servers.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listVps, uid)
+  },
+  {
+    name: "vps_get_stats",
+    description: "Get CPU, RAM, Disk, Network, and Docker metrics for a VPS.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "1h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getVpsStats, uid, { id: args.id }, { range: args.range })
+  },
+
+  // --- Database Tools ---
+  {
+    name: "database_list",
+    description: "List monitored database instances (MongoDB, Redis).",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listDatabases, uid)
+  },
+  {
+    name: "database_get_stats",
+    description: "Get database throughput and latency metrics.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "1h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getDatabaseStats, uid, { id: args.id }, { range: args.range })
+  }
+];
+
 export const registerSenzorTools = (server: Server, ownerId: string) => {
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: MCP_TOOLS.map(t => ({ name: t.name, description: t.description, inputSchema: t.inputSchema as any }))
+  }));
 
-  // --- 1. REGISTER TOOLS SCHEMA ---
-  server.setRequestHandler(ListToolsRequestSchema, async () => {
-    return {
-      tools: [
-        // APM & General
-        {
-          name: "list_services",
-          description: "List all active APM, RUM, and Background Task services.",
-          inputSchema: { type: "object", properties: {} }
-        },
-        {
-          name: "get_apm_trace",
-          description: "Fetch the detailed execution waterfall, spans, and metadata for a specific backend traceId.",
-          inputSchema: {
-            type: "object",
-            properties: { traceId: { type: "string", description: "The W3C traceId" } },
-            required: ["traceId"]
-          }
-        },
-        // Logs & Errors
-        {
-          name: "query_logs",
-          description: "Search system logs. Use New Relic style syntax (e.g. level:error message:timeout).",
-          inputSchema: {
-            type: "object",
-            properties: {
-              search: { type: "string", description: "Search query string" },
-              limit: { type: "number", description: "Max logs to return (capped at 50 for safety)" }
-            }
-          }
-        },
-        {
-          name: "get_unresolved_errors",
-          description: "Retrieve a list of the most frequent, currently unresolved exception groups across the platform.",
-          inputSchema: { type: "object", properties: {} }
-        },
-        // Infrastructure (VPS)
-        {
-          name: "list_vps_servers",
-          description: "List all monitored VPS/Server instances to get their IDs and overall status.",
-          inputSchema: { type: "object", properties: {} }
-        },
-        {
-          name: "get_vps_metrics",
-          description: "Get the absolute latest system telemetry (CPU, Memory, Disk, Network, Docker) for a specific VPS.",
-          inputSchema: {
-            type: "object",
-            properties: { vpsId: { type: "string", description: "The VPS ID" } },
-            required: ["vpsId"]
-          }
-        },
-        // Databases
-        {
-          name: "list_databases",
-          description: "List all monitored databases (MongoDB, Redis, etc.) and their connection status.",
-          inputSchema: { type: "object", properties: {} }
-        },
-        {
-          name: "get_database_metrics",
-          description: "Get the latest performance metrics (throughput, latency, memory, ops) for a specific database.",
-          inputSchema: {
-            type: "object",
-            properties: { dbId: { type: "string", description: "The Database ID" } },
-            required: ["dbId"]
-          }
-        },
-        // Uptime
-        {
-          name: "list_uptime_monitors",
-          description: "List all external uptime monitors and their current health status (up/down).",
-          inputSchema: { type: "object", properties: {} }
-        }
-      ]
-    };
-  });
-
-  // --- 2. HANDLE TOOL EXECUTION ---
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-
-    // Asynchronously log usage metrics for the dashboard
     trackUsage(ownerId, name);
 
+    const tool = MCP_TOOLS.find(t => t.name === name);
+    if (!tool) throw new Error(`Tool not found: ${name}`);
+
     try {
-      switch (name) {
+      const result = await tool.execute(args || {}, ownerId);
 
-        // --- SOFTWARE APM & TASKS ---
-        case "list_services": {
-          const [apm, rum, tasks] = await Promise.all([
-            ApmService.find({ ownerId }).select('_id name framework status').lean(),
-            RumService.find({ ownerId }).select('_id name domains').lean(),
-            TaskService.find({ ownerId }).select('_id name status').lean()
-          ]);
-          return { content: [{ type: "text", text: JSON.stringify({ APM: apm, RUM: rum, BackgroundTasks: tasks }, null, 2) }] };
-        }
-
-        case "get_apm_trace": {
-          const { traceId } = args as any;
-          // Security: Explicitly match ownerId via service lookup
-          const userServices = await ApmService.find({ ownerId }).select('_id').lean();
-          const serviceIds = userServices.map(s => s._id);
-
-          const trace = await ApmTrace.findOne({ traceId, serviceId: { $in: serviceIds } }).lean();
-          if (!trace) return { content: [{ type: "text", text: "Trace not found or access denied." }] };
-
-          return { content: [{ type: "text", text: JSON.stringify(trace, null, 2) }] };
-        }
-
-        // --- LOGS & ERRORS ---
-        case "query_logs": {
-          const searchArgs = args as any;
-          const limit = Math.min(searchArgs.limit || 20, 50); // Hard CAP against AI context overflow
-
-          // Basic text search fallback (you can import parseLogQuery here for full New Relic syntax)
-          const query: any = { ownerId };
-          if (searchArgs.search) {
-            query.$or = [
-              { message: { $regex: searchArgs.search, $options: 'i' } },
-              { level: { $regex: `^${searchArgs.search}$`, $options: 'i' } }
-            ];
-          }
-
-          const logs = await LogEvent.find(query).sort({ timestamp: -1 }).limit(limit).select('-__v -ownerId').lean();
-          return { content: [{ type: "text", text: JSON.stringify(logs, null, 2) }] };
-        }
-
-        case "get_unresolved_errors": {
-          const errors = await ErrorGroup.find({ ownerId, status: 'unresolved' })
-            .sort({ lastSeen: -1 })
-            .limit(15) // Hard CAP
-            .select('fingerprint errorClass message firstSeen lastSeen totalCount')
-            .lean();
-          return { content: [{ type: "text", text: JSON.stringify(errors, null, 2) }] };
-        }
-
-        // --- INFRASTRUCTURE (VPS) ---
-        case "list_vps_servers": {
-          const servers = await Vps.find({ ownerId }).select('_id name status metadata lastSeen').lean();
-          return { content: [{ type: "text", text: JSON.stringify(servers, null, 2) }] };
-        }
-
-        case "get_vps_metrics": {
-          const { vpsId } = args as any;
-          const vps = await Vps.findOne({ _id: vpsId, ownerId }).lean();
-          if (!vps) return { content: [{ type: "text", text: "VPS not found or access denied." }] };
-
-          const latestRun = await VpsRun.findOne({ vpsId }).sort({ createdAt: -1 }).select('metrics createdAt isOnline').lean();
-          return { content: [{ type: "text", text: JSON.stringify(latestRun || { status: "No recent metrics" }, null, 2) }] };
-        }
-
-        // --- DATABASES ---
-        case "list_databases": {
-          const dbs = await DatabaseService.find({ ownerId }).select('_id name type status interval lastCheck errorMessage').lean();
-          return { content: [{ type: "text", text: JSON.stringify(dbs, null, 2) }] };
-        }
-
-        case "get_database_metrics": {
-          const { dbId } = args as any;
-          const db = await DatabaseService.findOne({ _id: dbId, ownerId }).lean();
-          if (!db) return { content: [{ type: "text", text: "Database not found or access denied." }] };
-
-          const latestMetric = await DbMetric.findOne({ dbId }).sort({ timestamp: -1 }).select('-__v -dbId').lean();
-          return { content: [{ type: "text", text: JSON.stringify(latestMetric || { status: "No recent metrics" }, null, 2) }] };
-        }
-
-        // --- UPTIME MONITORS ---
-        case "list_uptime_monitors": {
-          const monitors = await Monitor.find({ ownerId }).select('_id name url status interval lastCheck nextCheck').lean();
-          return { content: [{ type: "text", text: JSON.stringify(monitors, null, 2) }] };
-        }
-
-        default:
-          throw new Error(`Tool not found: ${name}`);
+      // Pass controller errors (400/404s) elegantly back to the LLM
+      if (result.status >= 400) {
+        return {
+          content: [{ type: "text", text: `API Error ${result.status}: ${JSON.stringify(result.data)}` }],
+          isError: true
+        };
       }
+
+      return {
+        content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }]
+      };
     } catch (error: any) {
       return {
-        content: [{ type: "text", text: `Error executing tool: ${error.message}` }],
+        content: [{ type: "text", text: `Execution Exception: ${error.message}` }],
         isError: true
       };
     }
