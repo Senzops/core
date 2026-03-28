@@ -38,6 +38,15 @@ import {
 } from '../controllers/rum/main';
 import { getRumDashboard, getRumTraceDetail } from '../controllers/rum/stats';
 import { ingestGlobalLogs, getDashboardLogs, getTraceLogs, getLogApiKey, getLogById } from '../controllers/logs';
+import { authenticateMcp } from '../middlewares/mcpAuth';
+import {
+  handleMcpSse,
+  handleMcpMessage,
+  getMcpKeys,
+  createMcpKey,
+  revokeMcpKey,
+  getMcpUsage
+} from '../controllers/mcp';
 
 
 if (!process.env.MONGO_URI) {
@@ -114,6 +123,44 @@ const apmLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const mcpLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 60, // 60 messages per minute max to prevent AI infinite loops
+  message: "Too many requests. AI agent must yield and summarize findings."
+});
+
+// ============================================================================
+// 1. AI AGENT ROUTES
+// ============================================================================
+// We apply authenticateMcp to BOTH the SSE and Message POST endpoints 
+// so the JWT middleware never accidentally intercepts them.
+app.get('/api/mcp/sse', authenticateMcp, handleMcpSse);
+
+// Catch ALL MCP POSTs (including rogue ones from Cursor) to prevent them 
+// from falling through to the JWT auth router.
+app.post(['/api/mcp/messages', '/api/mcp/sse'], authenticateMcp, mcpLimiter, (req, res, next) => {
+  let mcpReq = req as any;
+  
+  // Reconstruct the request as a Readable stream because the MCP SDK
+  // expects to consume raw streams, but express.json() already destroyed it.
+  if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+    const { Readable } = require('stream');
+    const bodyBuffer = Buffer.from(JSON.stringify(req.body));
+    
+    mcpReq = Readable.from(bodyBuffer);
+    mcpReq.query = req.query;
+    mcpReq.method = req.method;
+    mcpReq.url = req.url;
+    mcpReq.headers = { ...req.headers };
+    
+    // Crucial: Delete content-length to prevent the MCP SDK's raw-body parser 
+    // from hanging if our stringified byte length slightly differs from the original.
+    delete mcpReq.headers['content-length']; 
+  }
+  
+  handleMcpMessage(mcpReq, res).catch(next);
+});
+
 // --- Routes Definition ---
 
 // 1. Ingestion API
@@ -124,7 +171,7 @@ ingestRouter.post('/web', webIngestLimiter, ingestWebMetrics);
 ingestRouter.post('/apm', apmLimiter, ingestApmBatch);
 ingestRouter.post('/task', apmLimiter, ingestTaskBatch);
 ingestRouter.post('/rum', apmLimiter, ingestRumBatch);
-ingestRouter.post('/logs', apmLimiter, ingestGlobalLogs); 
+ingestRouter.post('/logs', apmLimiter, ingestGlobalLogs);
 
 // 2. VPS API (Frontend User)
 const apiRouter = express.Router();
@@ -190,13 +237,20 @@ apiRouter.get('/rum/:id/trace/:traceId', getRumTraceDetail);
 // --- NEW LOG MANAGEMENT ROUTES ---
 apiRouter.get('/logs', getDashboardLogs);
 apiRouter.get('/logs/key', getLogApiKey);
-apiRouter.get('/logs/:id', getLogById); 
+apiRouter.get('/logs/:id', getLogById);
 
 // Bi-directional Trace to Log links
 apiRouter.get('/apm/:id/trace/:traceId/logs', getTraceLogs);
 apiRouter.get('/rum/:id/trace/:traceId/logs', getTraceLogs);
 apiRouter.get('/task/:id/run/:traceId/logs', getTraceLogs); // We use traceId path param to map to runId
 
+
+// --- MCP routes ---
+
+apiRouter.get('/mcp/keys', getMcpKeys);
+apiRouter.post('/mcp/keys', createMcpKey);
+apiRouter.delete('/mcp/keys/:id', revokeMcpKey);
+apiRouter.get('/mcp/usage', getMcpUsage);
 
 
 // --- Mounting Routes (CRITICAL ORDER) ---
