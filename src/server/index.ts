@@ -46,6 +46,16 @@ import {
   getMcpUsage
 } from '../controllers/mcp/main';
 import { mcpAgentRouter } from '../controllers/mcp/agent';
+import {
+  createDestination,
+  listDestinations,
+  createPolicy,
+  listPolicies,
+  getPolicyDetails,
+  createCondition,
+  deleteCondition,
+  updateIncidentStatus
+} from '../controllers/alerts';
 
 
 if (!process.env.MONGO_URI) {
@@ -210,13 +220,21 @@ apiRouter.get('/apm/:id/trace/:traceId/logs', getTraceLogs);
 apiRouter.get('/rum/:id/trace/:traceId/logs', getTraceLogs);
 apiRouter.get('/task/:id/run/:traceId/logs', getTraceLogs); // We use traceId path param to map to runId
 
-
 // --- MCP routes ---
-
 apiRouter.get('/mcp/keys', getMcpKeys);
 apiRouter.post('/mcp/keys', createMcpKey);
 apiRouter.delete('/mcp/keys/:id', revokeMcpKey);
 apiRouter.get('/mcp/usage', getMcpUsage);
+
+// --- NEW: ALERTS & INCIDENTS ---
+apiRouter.post('/alerts/destinations', createDestination);
+apiRouter.get('/alerts/destinations', listDestinations);
+apiRouter.post('/alerts/policies', createPolicy);
+apiRouter.get('/alerts/policies', listPolicies);
+apiRouter.get('/alerts/policies/:id', getPolicyDetails);
+apiRouter.post('/alerts/conditions', createCondition);
+apiRouter.delete('/alerts/conditions/:id', deleteCondition);
+apiRouter.patch('/alerts/incidents/:id/status', updateIncidentStatus);
 
 
 // --- Mounting Routes (CRITICAL ORDER) ---

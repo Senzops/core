@@ -31,6 +31,7 @@
     "mongoose": "^8.0.3",
     "morgan": "^1.10.0",
     "node-cron": "^4.2.1",
+    "resend": "^6.9.4",
     "socket.io": "^4.8.3",
     "ua-parser-js": "^2.0.6",
     "winston": "^3.11.0",

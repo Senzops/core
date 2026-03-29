@@ -5,6 +5,7 @@ import { logger } from '../utils/logger';
 import { startDatabaseWorker } from './database';
 import { startWatchdogWorker } from './watchdog';
 import { startDemoWorker } from './demo';
+import { startAlertWatchdog } from './alertWatchdog';
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/senzor';
 
@@ -20,6 +21,9 @@ const initWorker = async () => {
     startDatabaseWorker();
     startWatchdogWorker();
     startDemoWorker(); // Demo worker
+
+    // Boot up the Alert Evaluation Engine
+    startAlertWatchdog();
 
     // 3. Handle graceful shutdown
     process.on('SIGTERM', () => {
