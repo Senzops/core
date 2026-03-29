@@ -79,7 +79,7 @@ const processRumBatchBackground = async (data: { traces: any[], errors: any[], l
   const errorEvents: any[] = [];
   const errorGroupsMap = new Map<string, any>();
   const ip = getClientIp(req);
-  const { country, city } = await getGeoData(req, ip);
+  const { country, city } = await getGeoData(ip);
 
   // --- 1. Process Traces (Page Views / Route Changes) ---
   for (const item of data.traces) {

@@ -110,7 +110,7 @@ const processBatchBackground = async (
     // and go straight to the local MaxMind DB.
     // isPrivateOrLoopback guard lives inside getGeoData — private IPs return
     // { country: 'Unknown', city: 'Unknown' } without touching the DB.
-    const { country, city } = await getGeoData(null, ip);
+    const { country, city } = await getGeoData(ip);
 
     // --- User-agent parsing ---
     const uaParser = new UAParser(item.userAgent || '');

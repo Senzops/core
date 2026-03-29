@@ -1,25 +1,25 @@
 /**
  * getGeoData.ts
  *
- * Two-tier geo lookup:
+ * Resolves country and city from a client IP address using geoip-lite.
  *
- *   Tier 1 (fast-path) — CDN headers
- *     Cloudflare / Vercel inject ISO country codes and city names directly.
- *     Zero DB I/O. Used only when a live request object is available.
+ * Why geoip-lite:
+ *   - Synchronous, zero async overhead — safe to call in high-throughput ingest paths
+ *   - Bundles the MaxMind GeoLite2 database in-process (no external service, no download)
+ *   - Battle-tested, no runtime failure modes
  *
- *   Tier 2 (local DB) — MaxMind GeoLite2-City via @maxmind/geoip2-node
- *     Uses ReaderInstance (the resolved instance type from Reader.open()),
- *     which correctly exposes .city() and all other database methods.
+ * The original bugs this replaces were entirely in IP extraction, not in this library:
+ *   - geoip-lite returns null for ::ffff:x.x.x.x (IPv4-mapped IPv6) → pass clean IPv4
+ *   - geoip-lite returns null for private/loopback IPs → guard before lookup
+ *   - geoip-lite city data is IPv4-only → normaliseIP() in getClientIp ensures clean IPv4
  *
- * Usage:
- *   Web ingest (req object available): getGeoData(req, clientIp)
- *   APM batch  (no req object):        getGeoData(null, payloadIp)
+ * Keeping the database fresh (run this in your deploy pipeline):
+ *   MAXMIND_LICENSE_KEY=<your_free_key> npm run -w geoip-lite updatedb
+ *   A free MaxMind licence key is available at: https://www.maxmind.com/en/geolite2/signup
  */
 
-import { Request } from 'express';
-import { getGeoReader } from './GeoDbManager';
+import geoip from 'geoip-lite';
 import { isPrivateOrLoopback } from './getClientIp';
-import { logger } from './logger';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -30,90 +30,26 @@ export interface GeoData {
   city: string;    // English city name (e.g. "Singapore") or "Unknown"
 }
 
-const FALLBACK: GeoData = { country: 'Unknown', city: 'Unknown' };
-
-// ---------------------------------------------------------------------------
-// Tier 1: CDN / proxy header fast-path
-// ---------------------------------------------------------------------------
-
-/**
- * Attempt to resolve geo data from Cloudflare or Vercel Edge headers.
- * Returns null if headers are absent or carry known placeholder values.
- */
-const getGeoFromHeaders = (req: Request): GeoData | null => {
-  const h = req.headers;
-
-  const cfCountry = (h['cf-ipcountry'] as string | undefined)?.trim();
-  const cfCity = (h['cf-ipcity'] as string | undefined)?.trim();
-  const vercelCountry = (h['x-vercel-ip-country'] as string | undefined)?.trim();
-  const vercelCity = (h['x-vercel-ip-city'] as string | undefined)?.trim();
-
-  const country = cfCountry || vercelCountry;
-  const city = cfCity || vercelCity;
-
-  // "XX" = Cloudflare unknown, "T1" = Tor exit node — both unusable
-  if (!country || country === 'XX' || country === 'T1') return null;
-
-  return { country, city: city || 'Unknown' };
-};
-
-// ---------------------------------------------------------------------------
-// Tier 2: Local MaxMind DB lookup
-// ---------------------------------------------------------------------------
-
-const getGeoFromDB = async (ip: string): Promise<GeoData> => {
-  if (isPrivateOrLoopback(ip)) return FALLBACK;
-
-  try {
-    // getGeoReader() returns ReaderInstance — the awaited result of Reader.open().
-    // This is the instance type, which correctly exposes .city(), .country(), etc.
-    // (Storing/passing the Reader class itself as a type gives you the constructor,
-    // which only has static members — that is what caused the TS error.)
-    const reader = await getGeoReader();
-
-    // .city() is synchronous on the reader instance. It throws AddressNotFoundError
-    // when the IP has no record in the database — caught below.
-    const response = reader.city(ip);
-
-    const country =
-      response.country?.isoCode ??
-      response.registeredCountry?.isoCode ??
-      'Unknown';
-
-    // GeoLite2-City has city-level data for ~60-70% of IPs.
-    // undefined here is normal and not an error condition.
-    const city = response.city?.names?.en ?? 'Unknown';
-
-    return { country, city };
-  } catch (err: any) {
-    // AddressNotFoundError is normal — the IP simply isn't in the database.
-    // Everything else is a genuine infrastructure error worth logging.
-    if (err?.name !== 'AddressNotFoundError') {
-      logger.error(`[GeoDb] Lookup error for IP ${ip}: ${err?.message}`, err);
-    }
-    return FALLBACK;
-  }
-};
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve geo data for a given IP.
+ * Resolve geo data for a normalised IPv4 address.
  *
- * @param req  Express request (for CDN header fast-path), or null for APM batch path.
- * @param ip   Normalised IP string from getClientIp() / normaliseIP(). May be null.
+ * @param ip - Clean IPv4 string from normaliseIP() / getClientIp().
+ *             Must NOT be ::ffff: prefixed, bracketed, or contain a port.
+ *             Pass null if IP extraction failed — returns fallback immediately.
  */
-export const getGeoData = async (
-  req: Request | null,
-  ip: string | null
-): Promise<GeoData> => {
-  if (req) {
-    const fromHeaders = getGeoFromHeaders(req);
-    if (fromHeaders) return fromHeaders;
+export const getGeoData = (ip: string | null): GeoData => {
+  if (!ip || isPrivateOrLoopback(ip)) {
+    return { country: 'Unknown', city: 'Unknown' };
   }
 
-  if (!ip) return FALLBACK;
-  return getGeoFromDB(ip);
+  const geo = geoip.lookup(ip);
+
+  return {
+    country: geo?.country || 'Unknown',
+    city: geo?.city || 'Unknown',
+  };
 };

@@ -80,7 +80,7 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
         // --- B. Geo lookup ---
         // Tries CDN headers first (free + instant), then local MaxMind DB.
         // Never returns "Unknown" due to a private IP being passed to the DB.
-        const { country, city } = await getGeoData(req, clientIp);
+        const { country, city } = await getGeoData(clientIp);
 
         // --- C. User-agent parsing ---
         const uaString = req.headers["user-agent"] || "";
