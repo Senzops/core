@@ -1,7 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { AlertDestination, AlertPolicy, AlertCondition, AlertIncident } from '../models/Alert';
 
-// --- 1. DESTINATIONS ---
+// ============================================================================
+// 1. DESTINATIONS (CHANNELS)
+// ============================================================================
 export const createDestination = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
@@ -15,12 +17,50 @@ export const createDestination = async (req: Request, res: Response, next: NextF
 export const listDestinations = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
-    const destinations = await AlertDestination.find({ ownerId: uid }).lean();
+    const destinations = await AlertDestination.find({ ownerId: uid }).sort({ createdAt: -1 }).lean();
     res.json({ destinations });
   } catch (error) { next(error); }
 };
 
-// --- 2. POLICIES ---
+export const updateDestination = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { uid } = (req as any).user;
+    const { id } = req.params;
+    const { name, type, config } = req.body;
+
+    const destination = await AlertDestination.findOneAndUpdate(
+      { _id: id, ownerId: uid },
+      { name, type, config },
+      { new: true }
+    );
+
+    if (!destination) return res.status(404).json({ error: "Destination not found or access denied" });
+    res.json({ destination });
+  } catch (error) { next(error); }
+};
+
+export const deleteDestination = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { uid } = (req as any).user;
+    const { id } = req.params;
+
+    const destination = await AlertDestination.findOneAndDelete({ _id: id, ownerId: uid });
+    if (!destination) return res.status(404).json({ error: "Destination not found or access denied" });
+
+    // CASCADE: Remove this destination from any policies using it to prevent broken references
+    await AlertPolicy.updateMany(
+      { ownerId: uid, destinations: id },
+      { $pull: { destinations: id } }
+    );
+
+    res.json({ success: true, message: "Destination deleted and references cleared." });
+  } catch (error) { next(error); }
+};
+
+
+// ============================================================================
+// 2. POLICIES
+// ============================================================================
 export const createPolicy = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
@@ -34,12 +74,12 @@ export const createPolicy = async (req: Request, res: Response, next: NextFuncti
 export const listPolicies = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
-    // Populate destinations to show icons on the UI
+
     const policies = await AlertPolicy.find({ ownerId: uid })
       .populate('destinations', 'name type')
+      .sort({ createdAt: -1 })
       .lean();
 
-    // Also attach the number of active conditions and open incidents per policy
     const enrichedPolicies = await Promise.all(policies.map(async (p) => {
       const conditionCount = await AlertCondition.countDocuments({ policyId: p._id });
       const openIncidents = await AlertIncident.countDocuments({ policyId: p._id, status: 'open' });
@@ -58,9 +98,8 @@ export const getPolicyDetails = async (req: Request, res: Response, next: NextFu
     const policy = await AlertPolicy.findOne({ _id: id, ownerId: uid }).populate('destinations').lean();
     if (!policy) return res.status(404).json({ error: "Policy not found" });
 
-    const conditions = await AlertCondition.find({ policyId: id }).lean();
+    const conditions = await AlertCondition.find({ policyId: id }).sort({ createdAt: -1 }).lean();
 
-    // Get recent incidents
     const incidents = await AlertIncident.find({ policyId: id })
       .sort({ openedAt: -1 })
       .limit(50)
@@ -71,13 +110,48 @@ export const getPolicyDetails = async (req: Request, res: Response, next: NextFu
   } catch (error) { next(error); }
 };
 
-// --- 3. CONDITIONS ---
+export const updatePolicy = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { uid } = (req as any).user;
+    const { id } = req.params;
+    const { name, description, destinations } = req.body;
+
+    const policy = await AlertPolicy.findOneAndUpdate(
+      { _id: id, ownerId: uid },
+      { name, description, destinations },
+      { new: true }
+    );
+
+    if (!policy) return res.status(404).json({ error: "Policy not found or access denied" });
+    res.json({ policy });
+  } catch (error) { next(error); }
+};
+
+export const deletePolicy = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { uid } = (req as any).user;
+    const { id } = req.params;
+
+    const policy = await AlertPolicy.findOneAndDelete({ _id: id, ownerId: uid });
+    if (!policy) return res.status(404).json({ error: "Policy not found or access denied" });
+
+    // CASCADE: Delete all associated conditions and incidents so the watchdog doesn't process ghosts
+    await AlertCondition.deleteMany({ policyId: id });
+    await AlertIncident.deleteMany({ policyId: id });
+
+    res.json({ success: true, message: "Policy and all associated rules/incidents deleted." });
+  } catch (error) { next(error); }
+};
+
+
+// ============================================================================
+// 3. CONDITIONS (RULES)
+// ============================================================================
 export const createCondition = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
     const { policyId, name, target, query, threshold, frequency } = req.body;
 
-    // Verify policy ownership
     const policy = await AlertPolicy.findOne({ _id: policyId, ownerId: uid });
     if (!policy) return res.status(403).json({ error: "Invalid Policy ID" });
 
@@ -89,20 +163,42 @@ export const createCondition = async (req: Request, res: Response, next: NextFun
   } catch (error) { next(error); }
 };
 
+export const updateCondition = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { uid } = (req as any).user;
+    const { id } = req.params;
+    const { name, target, query, threshold, frequency } = req.body;
+
+    const condition = await AlertCondition.findOneAndUpdate(
+      { _id: id, ownerId: uid },
+      { name, target, query, threshold, frequency },
+      { new: true }
+    );
+
+    if (!condition) return res.status(404).json({ error: "Condition not found or access denied" });
+    res.json({ condition });
+  } catch (error) { next(error); }
+};
+
 export const deleteCondition = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
     const { id } = req.params;
 
-    await AlertCondition.findOneAndDelete({ _id: id, ownerId: uid });
-    // Also clean up associated open incidents so they don't get stuck
+    const condition = await AlertCondition.findOneAndDelete({ _id: id, ownerId: uid });
+    if (!condition) return res.status(404).json({ error: "Condition not found or access denied" });
+
+    // CASCADE: Clean up associated open/resolved incidents so they don't get stuck
     await AlertIncident.deleteMany({ conditionId: id });
 
-    res.json({ success: true });
+    res.json({ success: true, message: "Condition and associated incidents cleared." });
   } catch (error) { next(error); }
 };
 
-// --- 4. INCIDENTS (Acknowledge / Resolve Manually) ---
+
+// ============================================================================
+// 4. INCIDENTS (STATE MACHINE)
+// ============================================================================
 export const updateIncidentStatus = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
@@ -118,6 +214,7 @@ export const updateIncidentStatus = async (req: Request, res: Response, next: Ne
       { new: true }
     );
 
+    if (!incident) return res.status(404).json({ error: "Incident not found or access denied" });
     res.json({ incident });
   } catch (error) { next(error); }
 };

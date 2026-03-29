@@ -49,10 +49,15 @@ import { mcpAgentRouter } from '../controllers/mcp/agent';
 import {
   createDestination,
   listDestinations,
+  updateDestination,
+  deleteDestination,
   createPolicy,
   listPolicies,
   getPolicyDetails,
+  updatePolicy,
+  deletePolicy,
   createCondition,
+  updateCondition,
   deleteCondition,
   updateIncidentStatus
 } from '../controllers/alerts';
@@ -226,13 +231,18 @@ apiRouter.post('/mcp/keys', createMcpKey);
 apiRouter.delete('/mcp/keys/:id', revokeMcpKey);
 apiRouter.get('/mcp/usage', getMcpUsage);
 
-// --- NEW: ALERTS & INCIDENTS ---
+// --- ALERTS & INCIDENTS ---
 apiRouter.post('/alerts/destinations', createDestination);
 apiRouter.get('/alerts/destinations', listDestinations);
+apiRouter.put('/alerts/destinations/:id', updateDestination);
+apiRouter.delete('/alerts/destinations/:id', deleteDestination);
 apiRouter.post('/alerts/policies', createPolicy);
 apiRouter.get('/alerts/policies', listPolicies);
 apiRouter.get('/alerts/policies/:id', getPolicyDetails);
+apiRouter.put('/alerts/policies/:id', updatePolicy);
+apiRouter.delete('/alerts/policies/:id', deletePolicy);
 apiRouter.post('/alerts/conditions', createCondition);
+apiRouter.put('/alerts/conditions/:id', updateCondition);
 apiRouter.delete('/alerts/conditions/:id', deleteCondition);
 apiRouter.patch('/alerts/incidents/:id/status', updateIncidentStatus);
 
