@@ -3,3 +3,6 @@
 /**/.env
 /dist
 /**/*.log
+
+/**/*.mmdb
+/**/*.mmdb.tmp

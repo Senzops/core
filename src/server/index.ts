@@ -46,6 +46,7 @@ import {
   getMcpUsage
 } from '../controllers/mcp/main';
 import { mcpAgentRouter } from '../controllers/mcp/agent';
+import { initGeoDb } from '../utils/GeoDbManager';
 
 
 if (!process.env.MONGO_URI) {
@@ -59,9 +60,13 @@ app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 const MONGO_URI: string = process.env.MONGO_URI!;
 const SENZOR_APM_API_KEY: string = process.env.SENZOR_APM_API_KEY!;
+
 senzor.init({
   apiKey: SENZOR_APM_API_KEY
 });
+
+// Pre-warm the geo database reader at startup
+initGeoDb();
 
 // --- Firebase Init ---
 if (!admin.apps.length) {
