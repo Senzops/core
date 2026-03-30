@@ -1,26 +1,26 @@
 import { Request, Response, NextFunction } from 'express';
 import { ViewWidget } from '../../models/View';
 
-// Import all telemetry models
-import { ApmTrace } from '../../models/Apm';
-import { RumTrace } from '../../models/Rum';
+// Import all telemetry models AND their parent service models
+import { ApmTrace, ApmService } from '../../models/Apm';
+import { RumTrace, RumService } from '../../models/Rum';
 import { LogEvent } from '../../models/Log';
-import { TaskRun } from '../../models/Task';
-import { VpsRun } from '../../models/Vps';
-import { DbMetric } from '../../models/Database';
-import { MonitorRun } from '../../models/Monitor';
+import { TaskRun, TaskService } from '../../models/Task';
+import { VpsRun, Vps } from '../../models/Vps';
+import { DbMetric, DatabaseService } from '../../models/Database';
+import { MonitorRun, Monitor } from '../../models/Monitor';
 import { logger } from '../../utils/logger';
 
 // --- Helpers ---
 const getTargetModel = (target: string) => {
   switch (target) {
-    case 'apm': return { model: ApmTrace, timeField: 'timestamp' };
-    case 'rum': return { model: RumTrace, timeField: 'timestamp' };
-    case 'logs': return { model: LogEvent, timeField: 'timestamp' };
-    case 'task': return { model: TaskRun, timeField: 'timestamp' };
-    case 'vps': return { model: VpsRun, timeField: 'createdAt' };
-    case 'database': return { model: DbMetric, timeField: 'timestamp' };
-    case 'uptime': return { model: MonitorRun, timeField: 'createdAt' };
+    case 'apm': return { model: ApmTrace, parentModel: ApmService, foreignKey: 'serviceId', timeField: 'timestamp' };
+    case 'rum': return { model: RumTrace, parentModel: RumService, foreignKey: 'serviceId', timeField: 'timestamp' };
+    case 'logs': return { model: LogEvent, parentModel: null, foreignKey: 'ownerId', timeField: 'timestamp' };
+    case 'task': return { model: TaskRun, parentModel: TaskService, foreignKey: 'serviceId', timeField: 'timestamp' };
+    case 'vps': return { model: VpsRun, parentModel: Vps, foreignKey: 'vpsId', timeField: 'createdAt' };
+    case 'database': return { model: DbMetric, parentModel: DatabaseService, foreignKey: 'dbId', timeField: 'timestamp' };
+    case 'uptime': return { model: MonitorRun, parentModel: Monitor, foreignKey: 'monitorId', timeField: 'createdAt' };
     default: return null;
   }
 };
@@ -47,7 +47,7 @@ const buildAndExecutePipeline = async (
 ) => {
   const targetDef = getTargetModel(target);
   if (!targetDef) throw new Error('Unknown target telemetry');
-  const { model: TargetModel, timeField } = targetDef;
+  const { model: TargetModel, parentModel, foreignKey, timeField } = targetDef;
 
   // 1. Time Boundary Calculation
   const now = new Date();
@@ -60,11 +60,26 @@ const buildAndExecutePipeline = async (
     default: startDate.setHours(now.getHours() - 24); break;
   }
 
-  // 2. Safe Match Stage
+  // 2. Safe Match Stage & Tenant Isolation
+  let tenantIsolationMatch: any = {};
+
+  if (parentModel) {
+    // If the telemetry relies on a parent service (APM, VPS, Tasks), 
+    // fetch all service IDs owned by this user to verify access.
+    // Cast to any to bypass Mongoose Union Type signature complexities
+    const ownedParents = await (parentModel as any).find({ ownerId: uid }).select('_id').lean();
+    const ownedIds = ownedParents.map((p: any) => p._id);
+    tenantIsolationMatch = { [foreignKey]: { $in: ownedIds } };
+  } else {
+    // If the telemetry has native ownerId (Logs), query it directly.
+    tenantIsolationMatch = { [foreignKey]: uid };
+  }
+
   const safeMatch: any = {
-    ownerId: uid, // STRICT TENANT ISOLATION
+    ...tenantIsolationMatch,
     [timeField]: { $gte: startDate }
   };
+
   if (query && typeof query === 'object') {
     Object.assign(safeMatch, sanitizeMql(query));
   }
