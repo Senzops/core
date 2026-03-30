@@ -4,8 +4,6 @@ import { SavedView, ViewWidget } from '../../models/View';
 // ============================================================================
 // 1. DYNAMIC SCHEMA DICTIONARY
 // ============================================================================
-// This is the Single Source of Truth for the Monaco Editor and Widget Builder.
-// If you add new features to Senzor later, you only update them here.
 const SYSTEM_SCHEMA_DICTIONARY = {
   apm: [
     { field: "duration", type: "number", desc: "Execution latency in ms" },
@@ -46,11 +44,9 @@ const SYSTEM_SCHEMA_DICTIONARY = {
 
 export const getSchemaDictionary = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    // Send the dictionary so the UI can dynamically populate dropdowns and Monaco docs
     res.json({ schema: SYSTEM_SCHEMA_DICTIONARY });
   } catch (error) { next(error); }
 };
-
 
 // ============================================================================
 // 2. SAVED VIEWS (CANVAS)
@@ -70,7 +66,6 @@ export const listViews = async (req: Request, res: Response, next: NextFunction)
     const { uid } = (req as any).user;
     const views = await SavedView.find({ ownerId: uid }).sort({ createdAt: -1 }).lean();
 
-    // Attach widget counts for the dashboard listing
     const enrichedViews = await Promise.all(views.map(async (v) => {
       const widgetCount = await ViewWidget.countDocuments({ viewId: v._id });
       return { ...v, widgetCount };
@@ -88,7 +83,6 @@ export const getViewById = async (req: Request, res: Response, next: NextFunctio
     const view = await SavedView.findOne({ _id: id, ownerId: uid }).lean();
     if (!view) return res.status(404).json({ error: "Saved View not found" });
 
-    // Fetch all widgets belonging to this view
     const widgets = await ViewWidget.find({ viewId: id }).lean();
 
     res.json({ view, widgets });
@@ -127,7 +121,6 @@ export const deleteView = async (req: Request, res: Response, next: NextFunction
   } catch (error) { next(error); }
 };
 
-
 // ============================================================================
 // 3. WIDGETS
 // ============================================================================
@@ -136,7 +129,6 @@ export const createWidget = async (req: Request, res: Response, next: NextFuncti
     const { uid } = (req as any).user;
     const { viewId, name, target, query, visualization, config } = req.body;
 
-    // Verify view ownership
     const view = await SavedView.findOne({ _id: viewId, ownerId: uid });
     if (!view) return res.status(403).json({ error: "Invalid View ID" });
 
@@ -144,8 +136,11 @@ export const createWidget = async (req: Request, res: Response, next: NextFuncti
       ownerId: uid, viewId, name, target, query, visualization, config
     });
 
-    // Auto-inject default layout placement for the new widget
-    view.layout.push({ i: widget._id.toString(), x: 0, y: Infinity, w: 4, h: 2 });
+    // THE FIX: Do not use Infinity (JSON.stringify converts it to null, crashing Mongoose)
+    // Safely calculate the bottom of the grid layout using maxY + 1
+    const maxY = view.layout.reduce((max, item) => Math.max(max, item.y || 0), 0);
+    view.layout.push({ i: widget._id.toString(), x: 0, y: maxY + 1, w: 4, h: 2 });
+
     await view.save();
 
     res.status(201).json({ widget, layout: view.layout });
