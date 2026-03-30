@@ -72,7 +72,7 @@ import {
   updateWidget,
   deleteWidget
 } from '../controllers/view/main';
-import { executeWidgetQuery } from '../controllers/view/engine';
+import { executeLivePreview, getWidgetData } from '../controllers/view/engine';
 
 
 if (!process.env.MONGO_URI) {
@@ -270,7 +270,8 @@ apiRouter.post('/views/widgets', createWidget);
 apiRouter.put('/views/widgets/:id', updateWidget);
 apiRouter.delete('/views/widgets/:id', deleteWidget);
 
-apiRouter.get('/views/widgets/:id/data', executeWidgetQuery);
+apiRouter.get('/views/widgets/:id/data', getWidgetData); // Dashboard execution
+apiRouter.post('/views/execute', executeLivePreview);    // Live Preview execution
 
 
 // --- Mounting Routes (CRITICAL ORDER) ---
