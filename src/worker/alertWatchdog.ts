@@ -2,13 +2,15 @@ import cron from 'node-cron';
 import os from 'os';
 import { AlertCondition, AlertIncident, AlertPolicy, AlertDestination } from '../models/Alert';
 import { SystemLock } from '../models/Task';
-import { ApmTrace } from '../models/Apm';
-import { RumTrace } from '../models/Rum';
+
+// Import all telemetry models AND their parent service models
+import { ApmTrace, ApmService } from '../models/Apm';
+import { RumTrace, RumService } from '../models/Rum';
 import { LogEvent } from '../models/Log';
-import { TaskRun } from '../models/Task';
-import { VpsRun } from '../models/Vps';
-import { DbMetric } from '../models/Database';
-import { MonitorRun } from '../models/Monitor';
+import { TaskRun, TaskService } from '../models/Task';
+import { VpsRun, Vps } from '../models/Vps';
+import { DbMetric, DatabaseService } from '../models/Database';
+import { MonitorRun, Monitor } from '../models/Monitor';
 import { dispatchAlert } from '../services/alertTransport';
 import { logger } from '../utils/logger';
 
@@ -20,7 +22,6 @@ const LOCK_TTL_MS = 55 * 1000; // 55 seconds (Ensures lock releases before next 
 const sanitizeMql = (userQuery: any) => {
   const jsonStr = JSON.stringify(userQuery || {});
 
-  // Aggressively block MongoDB execution/script injection operators
   if (
     jsonStr.includes('$where') ||
     jsonStr.includes('$function') ||
@@ -28,22 +29,22 @@ const sanitizeMql = (userQuery: any) => {
     jsonStr.includes('$expr')
   ) {
     logger.warn(`[Alerts] Blocked malicious MQL execution attempt: ${jsonStr}`);
-    return {}; // Revert to empty query if malicious
+    return {};
   }
 
   return userQuery || {};
 };
 
-// --- 2. Collection Router ---
-const getCollectionForTarget = (target: string) => {
+// --- 2. Collection & Parent Router ---
+const getTargetModel = (target: string) => {
   switch (target) {
-    case 'apm': return ApmTrace;
-    case 'rum': return RumTrace;
-    case 'logs': return LogEvent;
-    case 'task': return TaskRun;
-    case 'vps': return VpsRun;
-    case 'database': return DbMetric;
-    case 'uptime': return MonitorRun;
+    case 'apm': return { model: ApmTrace, parentModel: ApmService, foreignKey: 'serviceId', timeField: 'timestamp' };
+    case 'rum': return { model: RumTrace, parentModel: RumService, foreignKey: 'serviceId', timeField: 'timestamp' };
+    case 'logs': return { model: LogEvent, parentModel: null, foreignKey: 'ownerId', timeField: 'timestamp' };
+    case 'task': return { model: TaskRun, parentModel: TaskService, foreignKey: 'serviceId', timeField: 'timestamp' };
+    case 'vps': return { model: VpsRun, parentModel: Vps, foreignKey: 'vpsId', timeField: 'createdAt' };
+    case 'database': return { model: DbMetric, parentModel: DatabaseService, foreignKey: 'dbId', timeField: 'timestamp' };
+    case 'uptime': return { model: MonitorRun, parentModel: Monitor, foreignKey: 'monitorId', timeField: 'createdAt' };
     default: return null;
   }
 };
@@ -76,10 +77,7 @@ export const runAlertWatchdogSweep = async () => {
       { upsert: true, new: true, rawResult: true }
     );
   } catch (lockError: any) {
-    if (lockError.code === 11000) {
-      // Another worker holds the lock. Silently bypass.
-      return;
-    }
+    if (lockError.code === 11000) return; // Another worker holds the lock. Silently bypass.
     throw lockError;
   }
 
@@ -89,27 +87,36 @@ export const runAlertWatchdogSweep = async () => {
   let resolved = 0;
 
   try {
-    // Fetch all Active Conditions
     const activeConditions = await AlertCondition.find({ isActive: true }).lean();
 
     for (const condition of activeConditions) {
       try {
         evaluated++;
-        const CollectionModel = getCollectionForTarget(condition.target);
-        if (!CollectionModel) continue;
+        const targetDef = getTargetModel(condition.target);
+        if (!targetDef) continue;
 
-        // Determine correct time field based on model
-        const timeField = ['vps', 'uptime'].includes(condition.target) ? 'createdAt' : 'timestamp';
-
-        // Calculate Time Window Lookback
+        const { model: CollectionModel, parentModel, foreignKey, timeField } = targetDef;
         const windowStart = new Date(now.getTime() - (condition.threshold.windowMins * 60 * 1000));
+
+        // --- THE FIX: Robust Tenant Isolation ---
+        let tenantIsolationMatch: any = {};
+
+        if (parentModel) {
+          // Fetch parent IDs and map them. Cast to 'any' fixes the TS Union Type error.
+          const ownedParents = await (parentModel as any).find({ ownerId: condition.ownerId }).select('_id').lean();
+          const ownedIds = ownedParents.map((p: any) => p._id);
+          tenantIsolationMatch = { [foreignKey]: { $in: ownedIds } };
+        } else {
+          // Fallback for native ownerId models (like Logs)
+          tenantIsolationMatch = { [foreignKey]: condition.ownerId };
+        }
 
         // Construct the strictly isolated MQL Sandbox
         const safeQuery = {
           $and: [
-            { ownerId: condition.ownerId }, // Absolutely enforce tenant isolation
-            { [timeField]: { $gte: windowStart } }, // Enforce time window
-            sanitizeMql(condition.query) // Inject user query securely
+            tenantIsolationMatch,
+            { [timeField]: { $gte: windowStart } },
+            sanitizeMql(condition.query)
           ]
         };
 
