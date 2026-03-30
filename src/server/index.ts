@@ -61,6 +61,18 @@ import {
   deleteCondition,
   updateIncidentStatus
 } from '../controllers/alerts';
+import {
+  getSchemaDictionary,
+  createView,
+  listViews,
+  getViewById,
+  updateViewLayout,
+  deleteView,
+  createWidget,
+  updateWidget,
+  deleteWidget
+} from '../controllers/view/main';
+import { executeWidgetQuery } from '../controllers/view/engine';
 
 
 if (!process.env.MONGO_URI) {
@@ -245,6 +257,20 @@ apiRouter.post('/alerts/conditions', createCondition);
 apiRouter.put('/alerts/conditions/:id', updateCondition);
 apiRouter.delete('/alerts/conditions/:id', deleteCondition);
 apiRouter.patch('/alerts/incidents/:id/status', updateIncidentStatus);
+
+// --- SAVED VIEWS (CUSTOM DASHBOARDS) ---
+apiRouter.get('/views/schema', getSchemaDictionary);
+apiRouter.post('/views', createView);
+apiRouter.get('/views', listViews);
+apiRouter.get('/views/:id', getViewById);
+apiRouter.put('/views/:id', updateViewLayout);
+apiRouter.delete('/views/:id', deleteView);
+
+apiRouter.post('/views/widgets', createWidget);
+apiRouter.put('/views/widgets/:id', updateWidget);
+apiRouter.delete('/views/widgets/:id', deleteWidget);
+
+apiRouter.get('/views/widgets/:id/data', executeWidgetQuery);
 
 
 // --- Mounting Routes (CRITICAL ORDER) ---
