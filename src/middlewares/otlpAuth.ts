@@ -31,9 +31,9 @@ export const authenticateOtlp = async (req: Request, res: Response, next: NextFu
 
     // Execute parallel lookups across all supported OTel target registries to minimize ingestion latency
     const [apmMatch, rumMatch, taskMatch] = await Promise.all([
-      ApmService.findOne({ apiKey, status: 'online' }).select('_id ownerId name').lean(),
-      RumService.findOne({ apiKey, status: 'online' }).select('_id ownerId name').lean(),
-      TaskService.findOne({ apiKey, status: 'online' }).select('_id ownerId name').lean()
+      ApmService.findOne({ apiKey }).select('_id ownerId name').lean(),
+      RumService.findOne({ apiKey }).select('_id ownerId name').lean(),
+      TaskService.findOne({ apiKey }).select('_id ownerId name').lean()
     ]);
 
     let context: OtlpContext | null = null;
