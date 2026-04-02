@@ -6,7 +6,6 @@ import morgan from 'morgan';
 import dotenv from 'dotenv';
 import rateLimit from 'express-rate-limit';
 import admin from 'firebase-admin';
-import senzor from '@senzops/apm-node';
 
 // Imports
 import { authenticateUser, authenticateAgent, errorHandler } from '../middlewares';
@@ -87,11 +86,6 @@ const httpServer = createServer(app);
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 const MONGO_URI: string = process.env.MONGO_URI!;
-const SENZOR_APM_API_KEY: string = process.env.SENZOR_APM_API_KEY!;
-
-senzor.init({
-  apiKey: SENZOR_APM_API_KEY
-});
 
 // --- Firebase Init ---
 if (!admin.apps.length) {
@@ -111,7 +105,6 @@ if (!admin.apps.length) {
 }
 
 // --- Middlewares ---
-app.use(senzor.requestHandler());  // senzor apm
 // Security Headers (Helmet)
 // CRITICAL: We must allow Cross-Origin Resource Policy for the Web Agent to POST data
 app.use(helmet({
@@ -309,7 +302,6 @@ app.use('/api', apiRouter);
 app.get('/health', (req, res) => res.send('Senzor Core: Online'));
 app.get('/status', getRandomStatus);
 
-app.use(senzor.errorHandler());
 // Error Handling
 app.use(errorHandler);
 
