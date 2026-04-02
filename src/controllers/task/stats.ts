@@ -206,6 +206,18 @@ export const getTaskRunDetail = async (req: Request, res: Response, next: NextFu
     const run = await TaskRun.findOne(query).lean();
     if (!run) return res.status(404).json({ error: "Task Run not found" });
 
+    // Normalize absolute OTLP timestamps to relative milliseconds dynamically
+    const normalizeSpans = (spans: any[], rootTime: Date) => {
+      const rootMs = new Date(rootTime).getTime();
+      return spans.map((s: any) => {
+        if (s.startTime > 1000000000) {
+          return { ...s, startTime: Math.max(0, s.startTime - rootMs) };
+        }
+        return s;
+      });
+    };
+    run.spans = normalizeSpans(run.spans || [], run.timestamp);
+
     // NEW: Generic Error Lookup
     const errors = await ErrorEvent.find({ serviceId: id, traceId: run.runId }).lean();
 

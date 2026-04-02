@@ -197,6 +197,18 @@ export const getRumTraceDetail = async (req: Request, res: Response, next: NextF
     const trace = await RumTrace.findOne({ serviceId: id, traceId }).lean();
     if (!trace) return res.status(404).json({ error: "RUM Trace not found" });
 
+    // Normalize absolute OTLP timestamps to relative milliseconds dynamically
+    const normalizeSpans = (spans: any[], rootTime: Date) => {
+      const rootMs = new Date(rootTime).getTime();
+      return spans.map((s: any) => {
+        if (s.startTime > 1000000000) {
+           return { ...s, startTime: Math.max(0, s.startTime - rootMs) };
+        }
+        return s;
+      });
+    };
+    trace.spans = normalizeSpans(trace.spans || [], trace.timestamp);
+
     // 1. Find Related APM Services (Owned by the same user)
     // This ensures we only link downstream backend traces that belong to this tenant
     const userServices = await ApmService.find({ ownerId: uid }).select('_id name').lean();

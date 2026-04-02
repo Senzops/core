@@ -73,6 +73,8 @@ import {
   deleteWidget
 } from '../controllers/view/main';
 import { executeLivePreview, getWidgetData } from '../controllers/view/engine';
+import { authenticateOtlp } from '../middlewares/otlpAuth';
+import { ingestOtlpLogs, ingestOtlpTraces } from '../controllers/otlp/gateway';
 
 
 if (!process.env.MONGO_URI) {
@@ -274,11 +276,29 @@ apiRouter.get('/views/widgets/:id/data', getWidgetData); // Dashboard execution
 apiRouter.post('/views/execute', executeLivePreview);    // Live Preview execution
 
 
+const otlpRouter = express.Router();
+
+// Apply a dedicated high-throughput rate limiter for OTel payloads
+const otlpLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 2000, standardHeaders: true, legacyHeaders: false });
+
+// OTLP requires high body limits as batches can be quite large
+otlpRouter.use(express.json({ limit: '10mb' }));
+otlpRouter.use(otlpLimiter);
+otlpRouter.use(authenticateOtlp); // Secure the gateway
+
+// Standard OTLP HTTP JSON Endpoints
+otlpRouter.post('/v1/traces', ingestOtlpTraces);
+otlpRouter.post('/v1/logs', ingestOtlpLogs);
+
+
 // --- Mounting Routes (CRITICAL ORDER) ---
 
 // Mount Ingest FIRST.
 // Matches /api/ingest/* strictly.
 app.use('/api/ingest', ingestRouter);
+
+// Mount the OTLP router
+app.use('/api/otlp', otlpRouter);
 
 // Mount Dashboard API SECOND.
 // This catches everything else starting with /api (like /api/vps/...)

@@ -67,6 +67,18 @@ export const getTraceDetail = async (req: Request, res: Response, next: NextFunc
     const trace = await ApmTrace.findOne(traceQuery).lean();
     if (!trace) return res.status(404).json({ error: "Trace not found" });
 
+    // Normalize absolute OTLP timestamps to relative milliseconds dynamically
+    const normalizeSpans = (spans: any[], rootTime: Date) => {
+      const rootMs = new Date(rootTime).getTime();
+      return spans.map(s => {
+        if (s.startTime > 1000000000) { 
+           return { ...s, startTime: Math.max(0, s.startTime - rootMs) };
+        }
+        return s;
+      });
+    };
+    trace.spans = normalizeSpans(trace.spans || [], trace.timestamp);
+
     // 2. Find Related APM Services (Owned by same user)
     const userServices = await ApmService.find({ ownerId: uid }).select('_id name').lean();
     const serviceIds = userServices.map(s => s._id);
