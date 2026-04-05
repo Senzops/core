@@ -19,32 +19,55 @@ export const requireIngestionQuota = async (req: Request, res: Response, next: N
       (req as any).website?.ownerId || 
       (req as any).vps?.ownerId ||
       (req as any).ownerId || 
+      (req as any).user?.uid ||
       (req as any).user?._id;
 
-    // Fallback: If identity isn't attached to req yet, dynamically resolve it from headers
+    // Fallback: If identity isn't attached to req yet, dynamically resolve it from the incoming request
     if (!ownerId) {
-      const apiKey = req.headers['x-api-key'] || 
-        (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.split(' ')[1] : null);
-      
-      if (apiKey) {
-         // Parallel lookup across all native agent registries to find the tenant instantly
-         const [apm, rum, task, vps, web] = await Promise.all([
-            mongoose.models.ApmService?.findOne({ apiKey }).select('ownerId').lean(),
-            mongoose.models.RumService?.findOne({ apiKey }).select('ownerId').lean(),
-            mongoose.models.TaskService?.findOne({ apiKey }).select('ownerId').lean(),
-            mongoose.models.Vps?.findOne({ apiKey }).select('ownerId').lean(),
-            mongoose.models.Website?.findOne({ apiKey }).select('ownerId').lean()
-         ]);
-         
+      // Extract potential keys from various ingestion methods
+      const serviceApiKey = req.headers['x-service-api-key'] as string; // APM, Task
+      const logApiKey = req.headers['x-log-api-key'] as string;         // Logs
+      const vpsApiKey = req.headers['x-api-key'] as string;             // VPS
+      const queryApiKey = req.query.apiKey as string;                   // RUM, Logs
+      const bearerToken = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.split(' ')[1] : null;
+
+      const possibleApiKey = serviceApiKey || logApiKey || vpsApiKey || queryApiKey || bearerToken;
+
+      // Web Analytics uses webId directly in body or query
+      const webId = req.body?.webId || req.query?.webId;
+
+      const lookups: Promise<any>[] = [];
+
+      // If an API key was provided, look it up across all relevant registries
+      if (possibleApiKey) {
+         lookups.push(
+            mongoose.models.ApmService?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
+            mongoose.models.RumService?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
+            mongoose.models.TaskService?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
+            mongoose.models.Vps?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
+            mongoose.models.LogApiKey?.findOne({ key: possibleApiKey }).select('ownerId').lean()
+         );
+      }
+
+      // If a Web Analytics ID was provided, look it up
+      if (webId && mongoose.Types.ObjectId.isValid(webId)) {
+         lookups.push(
+            mongoose.models.Website?.findById(webId).select('ownerId').lean()
+         );
+      }
+
+      // Execute parallel lookups for blazing fast resolution
+      if (lookups.length > 0) {
+         const results = await Promise.all(lookups);
          // Cast to any to safely bypass Mongoose's complex union type limitations
-         const match = (apm || rum || task || vps || web) as any;
+         const match = results.find(r => r != null) as any;
          if (match) ownerId = match.ownerId;
       }
     }
 
     if (!ownerId) {
       logger.warn('[Ingestion Limiter] Blocked payload: Unable to resolve tenant identity.');
-      return res.status(401).json({ error: "Missing or invalid API Key for telemetry ingestion." });
+      return res.status(401).json({ error: "Missing or invalid API Key or Web ID for telemetry ingestion." });
     }
 
     const ownerIdStr = ownerId.toString();
