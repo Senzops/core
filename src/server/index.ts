@@ -37,7 +37,6 @@ import {
 } from '../controllers/rum/main';
 import { getRumDashboard, getRumTraceDetail } from '../controllers/rum/stats';
 import { ingestGlobalLogs, getDashboardLogs, getTraceLogs, getLogApiKey, getLogById } from '../controllers/logs';
-import { authenticateMcp } from '../middlewares/mcpAuth';
 import {
   getMcpKeys,
   createMcpKey,
@@ -74,6 +73,9 @@ import {
 import { executeLivePreview, getWidgetData } from '../controllers/view/engine';
 import { authenticateOtlp } from '../middlewares/otlpAuth';
 import { ingestOtlpLogs, ingestOtlpTraces } from '../controllers/otlp/gateway';
+import { requireIngestionQuota } from '../middlewares/ingestionLimiter';
+import { requireServiceQuota } from '../middlewares/serviceLimiter';
+import { getActivePlans, getCurrentSubscription, handlePaddleWebhook } from '../controllers/billing';
 
 
 if (!process.env.MONGO_URI) {
@@ -154,35 +156,35 @@ app.use('/api/mcp', mcpAgentRouter);
 // 1. Ingestion API
 // Defined FIRST so it doesn't get caught by the generic /api middleware
 const ingestRouter = express.Router();
-ingestRouter.post('/stats', agentIngestLimiter, authenticateAgent, ingestMetrics);
-ingestRouter.post('/web', webIngestLimiter, ingestWebMetrics);
-ingestRouter.post('/apm', apmLimiter, ingestApmBatch);
-ingestRouter.post('/task', apmLimiter, ingestTaskBatch);
-ingestRouter.post('/rum', apmLimiter, ingestRumBatch);
-ingestRouter.post('/logs', apmLimiter, ingestGlobalLogs);
+ingestRouter.post('/stats', agentIngestLimiter, authenticateAgent, requireIngestionQuota, ingestMetrics);
+ingestRouter.post('/web', webIngestLimiter, requireIngestionQuota, ingestWebMetrics);
+ingestRouter.post('/apm', apmLimiter, requireIngestionQuota, ingestApmBatch);
+ingestRouter.post('/task', apmLimiter, requireIngestionQuota, ingestTaskBatch);
+ingestRouter.post('/rum', apmLimiter, requireIngestionQuota, ingestRumBatch);
+ingestRouter.post('/logs', apmLimiter, requireIngestionQuota, ingestGlobalLogs);
 
 // 2. VPS API (Frontend User)
 const apiRouter = express.Router();
 apiRouter.use(authenticateUser);
-apiRouter.post('/vps/register', apiLimiter, registerVps);
+apiRouter.post('/vps/register', apiLimiter, requireServiceQuota('Vps', 'Server'), registerVps);
 apiRouter.get('/vps/list', listVps);
 apiRouter.delete('/vps/:id', deleteVps);
 apiRouter.get('/vps/:id/stats', getVpsStats);
 
 // 3. Web Analytics API
-apiRouter.post('/web/register', registerWebsite);
+apiRouter.post('/web/register', requireServiceQuota('Website', 'Web Analytics'), registerWebsite);
 apiRouter.get('/web/list', listWebsites);
 apiRouter.delete('/web/:id', deleteWebsite);
 apiRouter.get('/web/:id/stats', getWebStats);
 
 // 4. Uptime Monitor API
-apiRouter.post('/uptime/register', registerMonitor);
+apiRouter.post('/uptime/register', requireServiceQuota('Monitor', 'Uptime Monitor'), registerMonitor);
 apiRouter.get('/uptime/list', listMonitors);
 apiRouter.delete('/uptime/:id', deleteMonitor);
 apiRouter.get('/uptime/:id/stats', getMonitorStats);
 
 // --- APM (Dashboard) ---
-apiRouter.post('/apm/register', registerService);
+apiRouter.post('/apm/register', requireServiceQuota('ApmService', 'APM Component'), registerService);
 apiRouter.get('/apm/list', listServices);
 apiRouter.delete('/apm/:id', deleteService);
 apiRouter.get('/apm/:id/stats', getApmStats);
@@ -190,7 +192,7 @@ apiRouter.get('/apm/:id/invocations', getInvocations);
 apiRouter.get('/apm/:id/trace/:traceId', getTraceDetail);
 
 // --- Database (Dashboard) ---
-apiRouter.post('/database/register', registerDatabase);
+apiRouter.post('/database/register', requireServiceQuota('Database', 'Database'), registerDatabase);
 apiRouter.get('/database/list', listDatabases);
 apiRouter.delete('/database/:id', deleteDatabase);
 apiRouter.get('/database/:id/stats', getDatabaseStats);
@@ -205,7 +207,7 @@ apiRouter.patch('/errors/:groupId/status', updateErrorStatus); // Resolve/Ignore
 apiRouter.get('/apm/:id/trace/:traceId/errors', getTraceErrors);
 
 // Task Services Management
-apiRouter.post('/task/register', registerTaskService);
+apiRouter.post('/task/register', requireServiceQuota('TaskService', 'Background Task'), registerTaskService);
 apiRouter.get('/task/list', listTaskServices);
 apiRouter.delete('/task/:id', deleteTaskService);
 
@@ -215,7 +217,7 @@ apiRouter.get('/task/:id/entity/:taskName', getTaskEntityDetail);
 apiRouter.get('/task/:id/run/:runId', getTaskRunDetail);
 
 // --- RUM / WEB APM (Dashboard) ---
-apiRouter.post('/rum/register', registerRumService);
+apiRouter.post('/rum/register', requireServiceQuota('RumService', 'RUM Application'), registerRumService);
 apiRouter.get('/rum/list', listRumServices);
 apiRouter.delete('/rum/:id', deleteRumService);
 apiRouter.get('/rum/:id/dashboard', getRumDashboard);
@@ -234,28 +236,28 @@ apiRouter.get('/task/:id/run/:traceId/logs', getTraceLogs); // We use traceId pa
 
 // --- MCP routes ---
 apiRouter.get('/mcp/keys', getMcpKeys);
-apiRouter.post('/mcp/keys', createMcpKey);
+apiRouter.post('/mcp/keys', requireServiceQuota('McpApiKey', 'MCP API Key'), createMcpKey);
 apiRouter.delete('/mcp/keys/:id', revokeMcpKey);
 apiRouter.get('/mcp/usage', getMcpUsage);
 
 // --- ALERTS & INCIDENTS ---
-apiRouter.post('/alerts/destinations', createDestination);
+apiRouter.post('/alerts/destinations', requireServiceQuota('AlertDestination', 'Alert Destination'), createDestination);
 apiRouter.get('/alerts/destinations', listDestinations);
 apiRouter.put('/alerts/destinations/:id', updateDestination);
 apiRouter.delete('/alerts/destinations/:id', deleteDestination);
-apiRouter.post('/alerts/policies', createPolicy);
+apiRouter.post('/alerts/policies', requireServiceQuota('AlertPolicy', 'Alert Policy'), createPolicy);
 apiRouter.get('/alerts/policies', listPolicies);
 apiRouter.get('/alerts/policies/:id', getPolicyDetails);
 apiRouter.put('/alerts/policies/:id', updatePolicy);
 apiRouter.delete('/alerts/policies/:id', deletePolicy);
-apiRouter.post('/alerts/conditions', createCondition);
+apiRouter.post('/alerts/conditions', requireServiceQuota('AlertCondition', 'Alert Condition'), createCondition);
 apiRouter.put('/alerts/conditions/:id', updateCondition);
 apiRouter.delete('/alerts/conditions/:id', deleteCondition);
 apiRouter.patch('/alerts/incidents/:id/status', updateIncidentStatus);
 
 // --- SAVED VIEWS (CUSTOM DASHBOARDS) ---
 apiRouter.get('/views/schema', getSchemaDictionary);
-apiRouter.post('/views', createView);
+apiRouter.post('/views', requireServiceQuota('View', 'Dashboard View'), createView);
 apiRouter.get('/views', listViews);
 apiRouter.get('/views/:id', getViewById);
 apiRouter.put('/views/:id', updateViewLayout);
@@ -268,7 +270,7 @@ apiRouter.delete('/views/widgets/:id', deleteWidget);
 apiRouter.get('/views/widgets/:id/data', getWidgetData); // Dashboard execution
 apiRouter.post('/views/execute', executeLivePreview);    // Live Preview execution
 
-
+// OTLP
 const otlpRouter = express.Router();
 
 // Apply a dedicated high-throughput rate limiter for OTel payloads
@@ -278,15 +280,31 @@ const otlpLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 2000, standardHead
 otlpRouter.use(express.json({ limit: '10mb' }));
 otlpRouter.use(otlpLimiter);
 otlpRouter.use(authenticateOtlp); // Secure the gateway
+otlpRouter.use(requireIngestionQuota);
 
 // Standard OTLP HTTP JSON Endpoints
 otlpRouter.post('/v1/traces', ingestOtlpTraces);
 otlpRouter.post('/v1/logs', ingestOtlpLogs);
 
+// ============================================================================
+// BILLING & MONETIZATION API
+// ============================================================================
+const billingRouter = express.Router();
+
+// Public/Webhook Routes (NO User Auth)
+billingRouter.get('/plans', getActivePlans);
+billingRouter.post('/paddle-webhook', express.raw({ type: 'application/json' }), handlePaddleWebhook);
+
+// Protected Billing Routes (Requires User Auth)
+billingRouter.get('/subscription', authenticateUser, getCurrentSubscription);
+
 
 // --- Mounting Routes (CRITICAL ORDER) ---
 
-// Mount Ingest FIRST.
+// Mount the Billing router
+app.use('/api/billing', billingRouter);
+
+// Mount Ingest.
 // Matches /api/ingest/* strictly.
 app.use('/api/ingest', ingestRouter);
 
