@@ -1,16 +1,14 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
 export interface ISubscription extends Document {
-  ownerId: mongoose.Types.ObjectId; // Links to User or Workspace
+  ownerId: string; // Changed to match Firebase UID typing universally
   planId: string;
   status: 'active' | 'past_due' | 'canceled' | 'trialing';
   provider: 'paddle' | 'stripe' | 'none';
 
-  // Provider Specifics
   providerCustomerId?: string;
   providerSubscriptionId?: string;
 
-  // Usage Tracking
   currentMonthBytes: number;
   billingCycleReset: Date;
 
@@ -20,7 +18,8 @@ export interface ISubscription extends Document {
 
 const SubscriptionSchema = new Schema<ISubscription>(
   {
-    ownerId: { type: Schema.Types.ObjectId, required: true, unique: true, index: true },
+    // CRITICAL FIX: type is now String to match the Firebase UID schema used platform-wide
+    ownerId: { type: String, required: true, unique: true, index: true },
     planId: { type: String, required: true, default: 'starter' },
     status: { type: String, required: true, default: 'active' },
     provider: { type: String, enum: ['paddle', 'stripe', 'none'], default: 'none' },

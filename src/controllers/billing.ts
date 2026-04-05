@@ -34,8 +34,12 @@ export const getActivePlans = async (req: Request, res: Response) => {
  */
 export const getCurrentSubscription = async (req: Request, res: Response) => {
   try {
-    // Safely capture Firebase UID or Mongo _id depending on your auth payload structure
-    const ownerId = (req as any).user?.uid || (req as any).user?._id;
+    // Force the use of the Firebase UID string to maintain parity across the platform
+    const ownerId = (req as any).user?.uid;
+
+    if (!ownerId) {
+      return res.status(401).json({ error: "Unauthorized. Missing user context." });
+    }
 
     // Explicitly type as 'any' to bypass Mongoose's strict union types between .lean() and .toObject()
     let sub: any = await Subscription.findOne({ ownerId }).lean();
