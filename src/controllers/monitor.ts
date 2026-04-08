@@ -9,13 +9,6 @@ export const registerMonitor = async (req: Request, res: Response, next: NextFun
     const { uid, email } = (req as any).user;
     const { name, url, interval } = RegisterMonitorSchema.parse(req.body);
 
-    // Ensure user exists in our DB (Syncing with Firebase)
-    await User.findOneAndUpdate(
-      { firebaseUid: uid },
-      { firebaseUid: uid, email },
-      { upsert: true, new: true }
-    );
-
     const newMonitor = await Monitor.create({
       ownerId: uid,
       name,

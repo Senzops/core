@@ -12,13 +12,6 @@ export const registerVps = async (req: Request, res: Response, next: NextFunctio
     const { uid, email } = (req as any).user;
     const { name } = RegisterVpsSchema.parse(req.body);
 
-    // Ensure user exists in our DB (Syncing with Firebase)
-    await User.findOneAndUpdate(
-      { firebaseUid: uid },
-      { firebaseUid: uid, email },
-      { upsert: true, new: true }
-    );
-
     // Generate a secure API Key
     const apiKey = crypto.randomBytes(24).toString('hex');
 

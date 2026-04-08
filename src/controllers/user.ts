@@ -5,6 +5,36 @@ import { Subscription } from '../models/Subscription';
 import { logger } from '../utils/logger';
 
 /**
+ * POST /api/user/sync
+ * JIT Identity Synchronization. Called transparently by the frontend
+ * upon Firebase session resolution to guarantee DB presence.
+ */
+export const syncUser = async (req: Request, res: Response) => {
+  try {
+    const uid = (req as any).user?.uid;
+    const email = (req as any).user?.email;
+
+    if (!uid || !email) {
+      return res.status(401).json({ error: "Missing authentication context." });
+    }
+
+    // Fire-and-forget upsert. If they exist, this resolves in ~2ms.
+    // If they are new, it creates them and triggers the Subscription Mongoose hook.
+    await User.findOneAndUpdate(
+      { firebaseUid: uid },
+      { firebaseUid: uid, email },
+      { upsert: true, new: true }
+    );
+
+    res.status(200).json({ synced: true });
+  } catch (error: any) {
+    logger.error(`[Identity Sync] Failed to sync user context: ${error.message}`);
+    // We return 200 anyway so a minor DB blip doesn't break the frontend login flow
+    res.status(200).json({ synced: false, error: "Sync deferred" });
+  }
+};
+
+/**
  * DELETE /api/user/account
  * Permanently purges user identity, billing data, and configuration plane.
  */
