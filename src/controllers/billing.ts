@@ -86,26 +86,37 @@ export const getCurrentSubscription = async (req: Request, res: Response) => {
 
 
 /**
- * Estimate DB Footprint without crashing the database via $group aggregations.
- * Uses indexed `countDocuments` multiplied by heuristic byte constants.
+ * PRODUCTION FIX: Estimate DB Footprint safely.
+ * Resolves service IDs first, then uses indexed $in arrays for blazing-fast counts.
  */
 export const getStorageStats = async (req: Request, res: Response) => {
   try {
     const ownerId = (req as any).user?.uid;
+
+    // 1. Instantly resolve all Service IDs owned by this tenant
+    const [apmServices, rumServices, taskServices] = await Promise.all([
+      mongoose.models.ApmService ? mongoose.models.ApmService.find({ ownerId }).select('_id').lean() : [],
+      mongoose.models.RumService ? mongoose.models.RumService.find({ ownerId }).select('_id').lean() : [],
+      mongoose.models.TaskService ? mongoose.models.TaskService.find({ ownerId }).select('_id').lean() : [],
+    ]);
+
+    const apmIds = apmServices.map(s => s._id);
+    const rumIds = rumServices.map(s => s._id);
+    const taskIds = taskServices.map(s => s._id);
+
+    // 2. Parallel execution of ultra-fast index scans using the resolved IDs
+    const [apmCount, logsCount, rumCount, taskCount] = await Promise.all([
+      apmIds.length > 0 && mongoose.models.ApmTrace ? mongoose.models.ApmTrace.countDocuments({ serviceId: { $in: apmIds } }) : 0,
+      mongoose.models.LogEvent ? mongoose.models.LogEvent.countDocuments({ ownerId }) : 0,
+      rumIds.length > 0 && mongoose.models.RumTrace ? mongoose.models.RumTrace.countDocuments({ serviceId: { $in: rumIds } }) : 0,
+      taskIds.length > 0 && mongoose.models.TaskRun ? mongoose.models.TaskRun.countDocuments({ serviceId: { $in: taskIds } }) : 0,
+    ]);
 
     // Enterprise Heuristics (Average bytes per document type)
     const APM_TRACE_BYTES = 2500;   // ~2.5KB per complex trace
     const LOG_BYTES = 800;          // ~0.8KB per log line
     const RUM_EVENT_BYTES = 1200;   // ~1.2KB per RUM payload
     const TASK_RUN_BYTES = 1500;    // ~1.5KB per background job record
-
-    // Parallel execution of ultra-fast index scans
-    const [apmCount, logsCount, rumCount, taskCount] = await Promise.all([
-      mongoose.models.ApmTrace ? mongoose.models.ApmTrace.countDocuments({ ownerId }) : 0,
-      mongoose.models.Log ? mongoose.models.Log.countDocuments({ ownerId }) : 0,
-      mongoose.models.RumTrace ? mongoose.models.RumTrace.countDocuments({ ownerId }) : 0,
-      mongoose.models.TaskRun ? mongoose.models.TaskRun.countDocuments({ ownerId }) : 0,
-    ]);
 
     const stats = [
       { service: 'APM Traces', bytes: apmCount * APM_TRACE_BYTES, count: apmCount, color: '#f97316' }, // Orange
@@ -115,7 +126,8 @@ export const getStorageStats = async (req: Request, res: Response) => {
     ];
 
     res.json({ stats, totalCalculatedBytes: stats.reduce((acc, curr) => acc + curr.bytes, 0) });
-  } catch (error) {
+  } catch (error: any) {
+    logger.error(`[Storage Stats] Error: ${error.message}`);
     res.status(500).json({ error: "Failed to calculate storage footprint." });
   }
 };
@@ -145,21 +157,55 @@ export const cancelSubscription = async (req: Request, res: Response) => {
   try {
     const ownerId = (req as any).user?.uid;
     const sub = await Subscription.findOne({ ownerId });
-
+    
     if (!sub || sub.planId === 'starter') {
       return res.status(400).json({ error: "No active paid subscription to cancel." });
     }
 
-    // In production, you will inject the Paddle SDK here to communicate with their API
-    // e.g., await paddle.subscriptions.cancel(sub.providerSubscriptionId);
+    if (sub.status === 'canceled') {
+      return res.status(400).json({ error: "Subscription is already scheduled for cancellation." });
+    }
 
+    // 1. Communicate with Paddle via Server-to-Server API
+    if (sub.provider === 'paddle' && sub.providerSubscriptionId) {
+      const isSandbox = process.env.PADDLE_ENV === 'sandbox';
+      const paddleApiUrl = isSandbox ? 'https://sandbox-api.paddle.com' : 'https://api.paddle.com';
+      const paddleApiKey = process.env.PADDLE_API_KEY; // Must be added to your backend .env
+
+      if (!paddleApiKey) {
+         logger.error(`[Billing] CRITICAL: Missing PADDLE_API_KEY environment variable.`);
+         return res.status(500).json({ error: "Internal payment gateway misconfiguration." });
+      }
+
+      // Call Paddle v2 API to cancel the subscription
+      const response = await fetch(`${paddleApiUrl}/subscriptions/${sub.providerSubscriptionId}/cancel`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${paddleApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          // 'next_billing_period' ensures they keep access until the end of the month they paid for
+          effective_from: 'next_billing_period' 
+        })
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        logger.error(`[Billing] Paddle API Error cancelling subscription ${sub.providerSubscriptionId}: ${JSON.stringify(errData)}`);
+        return res.status(400).json({ error: "Failed to communicate cancellation to payment provider. Please contact support." });
+      }
+    }
+    
+    // 2. Update local database state to reflect intention
     sub.status = 'canceled';
     await sub.save();
 
-    logger.info(`[Billing] User ${ownerId} scheduled subscription cancellation.`);
-
+    logger.info(`[Billing] User ${ownerId} successfully scheduled subscription cancellation via Paddle.`);
+    
     res.json({ message: "Subscription scheduled for cancellation. You will be downgraded to the Starter plan at the end of your current cycle." });
-  } catch (error) {
+  } catch (error: any) {
+    logger.error(`[Billing Cancel] Error: ${error.message}`);
     res.status(500).json({ error: "Failed to cancel subscription." });
   }
 };
