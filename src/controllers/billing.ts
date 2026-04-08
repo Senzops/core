@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
+import mongoose from 'mongoose';
 import { PLANS, getPlanConfig } from '../config/pricing';
 import { Subscription } from '../models/Subscription';
+import { Transaction } from '../models/Transaction';
 import { logger } from '../utils/logger';
 
 /**
@@ -82,77 +84,140 @@ export const getCurrentSubscription = async (req: Request, res: Response) => {
   }
 };
 
+
+/**
+ * Estimate DB Footprint without crashing the database via $group aggregations.
+ * Uses indexed `countDocuments` multiplied by heuristic byte constants.
+ */
+export const getStorageStats = async (req: Request, res: Response) => {
+  try {
+    const ownerId = (req as any).user?.uid;
+
+    // Enterprise Heuristics (Average bytes per document type)
+    const APM_TRACE_BYTES = 2500;   // ~2.5KB per complex trace
+    const LOG_BYTES = 800;          // ~0.8KB per log line
+    const RUM_EVENT_BYTES = 1200;   // ~1.2KB per RUM payload
+    const TASK_RUN_BYTES = 1500;    // ~1.5KB per background job record
+
+    // Parallel execution of ultra-fast index scans
+    const [apmCount, logsCount, rumCount, taskCount] = await Promise.all([
+      mongoose.models.ApmTrace ? mongoose.models.ApmTrace.countDocuments({ ownerId }) : 0,
+      mongoose.models.Log ? mongoose.models.Log.countDocuments({ ownerId }) : 0,
+      mongoose.models.RumTrace ? mongoose.models.RumTrace.countDocuments({ ownerId }) : 0,
+      mongoose.models.TaskRun ? mongoose.models.TaskRun.countDocuments({ ownerId }) : 0,
+    ]);
+
+    const stats = [
+      { service: 'APM Traces', bytes: apmCount * APM_TRACE_BYTES, count: apmCount, color: '#f97316' }, // Orange
+      { service: 'Logs', bytes: logsCount * LOG_BYTES, count: logsCount, color: '#3b82f6' },           // Blue
+      { service: 'RUM Events', bytes: rumCount * RUM_EVENT_BYTES, count: rumCount, color: '#ec4899' }, // Pink
+      { service: 'Tasks', bytes: taskCount * TASK_RUN_BYTES, count: taskCount, color: '#6366f1' },     // Indigo
+    ];
+
+    res.json({ stats, totalCalculatedBytes: stats.reduce((acc, curr) => acc + curr.bytes, 0) });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to calculate storage footprint." });
+  }
+};
+
+/**
+ * Fetch Billing History
+ */
+export const getTransactions = async (req: Request, res: Response) => {
+  try {
+    const ownerId = (req as any).user?.uid;
+    const transactions = await Transaction.find({ ownerId })
+      .select('paddleTransactionId amount currency status receiptUrl billedAt')
+      .sort({ billedAt: -1 })
+      .limit(24) // Last 2 years
+      .lean();
+
+    res.json({ transactions });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch billing history." });
+  }
+};
+
+/**
+ * Cancel Subscription Workflow
+ */
+export const cancelSubscription = async (req: Request, res: Response) => {
+  try {
+    const ownerId = (req as any).user?.uid;
+    const sub = await Subscription.findOne({ ownerId });
+
+    if (!sub || sub.planId === 'starter') {
+      return res.status(400).json({ error: "No active paid subscription to cancel." });
+    }
+
+    // In production, you will inject the Paddle SDK here to communicate with their API
+    // e.g., await paddle.subscriptions.cancel(sub.providerSubscriptionId);
+
+    sub.status = 'canceled';
+    await sub.save();
+
+    logger.info(`[Billing] User ${ownerId} scheduled subscription cancellation.`);
+
+    res.json({ message: "Subscription scheduled for cancellation. You will be downgraded to the Starter plan at the end of your current cycle." });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to cancel subscription." });
+  }
+};
+
+
 /**
  * POST /api/billing/paddle-webhook
  * Zero-Trust Webhook Receiver. This is hit by Paddle's servers, NOT your frontend.
  */
 export const handlePaddleWebhook = async (req: Request, res: Response) => {
   try {
-    // 1. Verify Paddle Signature 
-    // (Requires raw body parsing usually. Check Paddle docs for your specific framework setup)
     const signature = req.headers['paddle-signature'];
-    if (!signature) {
-      logger.warn('[Billing Webhook] Blocked unsigned Paddle webhook attempt.');
-      return res.status(401).send('Unauthorized');
-    }
+    if (!signature) return res.status(401).send('Unauthorized');
 
     const event = req.body;
-    const eventType = event.event_type; // e.g., 'subscription.activated', 'subscription.updated'
+    const eventType = event.event_type;
     const payload = event.data;
-
-    logger.info(`[Billing Webhook] Received ${eventType} for Customer: ${payload.customer_id}`);
-
-    // Paddle allows passing 'custom_data' during checkout. 
-    // We pass the user._id in custom_data from the frontend so Paddle returns it to us here.
     const ownerId = payload.custom_data?.ownerId;
 
     if (!ownerId) {
-      logger.error('[Billing Webhook] CRITICAL: Webhook received without custom_data.ownerId attached.');
-      return res.status(400).send('Missing ownerId in custom_data');
+      logger.error('[Billing Webhook] CRITICAL: Webhook received without custom_data.ownerId');
+      return res.status(400).send('Missing ownerId');
     }
 
-    // --- THE FIX: Map Paddle Product/Price IDs to our internal Plan IDs ---
-    const incomingPriceId = payload.items?.[0]?.price?.id || payload.items?.[0]?.product?.id;
+    // 1. Handle Successful Payments & Invoice Generation
+    if (eventType === 'transaction.completed' || eventType === 'transaction.paid') {
+      await Transaction.create({
+        ownerId,
+        paddleTransactionId: payload.id,
+        amount: parseFloat(payload.details?.totals?.grand_total || payload.amount || 0) / 100,
+        currency: payload.currency_code || 'USD',
+        status: 'completed',
+        receiptUrl: payload.receipt_url || payload.checkout?.receipt_url || '',
+        billedAt: new Date(payload.created_at || payload.billed_at || Date.now())
+      });
+      logger.info(`[Billing Webhook] Saved transaction receipt for ${ownerId}`);
+    }
 
-    const matchedPlan = Object.values(PLANS).find(p =>
-      p.paddlePriceIdMonthly === incomingPriceId ||
-      p.paddlePriceIdAnnual === incomingPriceId
-    );
-
-    const targetPlanId = matchedPlan ? matchedPlan.id : 'starter';
-
-    // 2. Handle Subscription Lifecycle Events
+    // 2. Handle Subscription Upgrades/Downgrades
     if (eventType === 'subscription.activated' || eventType === 'subscription.updated') {
+      const incomingPriceId = payload.items?.[0]?.price?.id || payload.items?.[0]?.product?.id;
+      const matchedPlan = Object.values(PLANS).find(p => p.paddlePriceIdMonthly === incomingPriceId || p.paddlePriceIdAnnual === incomingPriceId);
+      const targetPlanId = matchedPlan ? matchedPlan.id : 'starter';
       const nextBillingDate = new Date(payload.current_billing_period.ends_at);
 
       await Subscription.findOneAndUpdate(
         { ownerId },
-        {
-          $set: {
-            planId: targetPlanId,
-            status: payload.status === 'active' ? 'active' : 'past_due',
-            provider: 'paddle',
-            providerCustomerId: payload.customer_id,
-            providerSubscriptionId: payload.id,
-            billingCycleReset: nextBillingDate
-          }
-        },
+        { $set: { planId: targetPlanId, status: payload.status === 'active' ? 'active' : 'past_due', provider: 'paddle', providerCustomerId: payload.customer_id, providerSubscriptionId: payload.id, billingCycleReset: nextBillingDate } },
         { upsert: true }
       );
-      logger.info(`[Billing Webhook] Upgraded user ${ownerId} to plan: ${targetPlanId}`);
     }
     else if (eventType === 'subscription.canceled' || eventType === 'subscription.past_due') {
-      await Subscription.findOneAndUpdate(
-        { ownerId },
-        { $set: { status: eventType === 'subscription.canceled' ? 'canceled' : 'past_due' } }
-      );
-      logger.warn(`[Billing Webhook] Downgraded/Canceled user ${ownerId}`);
+      await Subscription.findOneAndUpdate({ ownerId }, { $set: { status: eventType === 'subscription.canceled' ? 'canceled' : 'past_due' } });
     }
 
-    // Acknowledge receipt to Paddle
     res.status(200).send('OK');
   } catch (error: any) {
     logger.error(`[Billing Webhook] Error: ${error.message}`);
-    res.status(500).send('Webhook Processing Failed');
+    res.status(500).send('Webhook Failed');
   }
 };

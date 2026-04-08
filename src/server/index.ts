@@ -75,7 +75,8 @@ import { authenticateOtlp } from '../middlewares/otlpAuth';
 import { ingestOtlpLogs, ingestOtlpTraces } from '../controllers/otlp/gateway';
 import { requireIngestionQuota } from '../middlewares/ingestionLimiter';
 import { requireServiceQuota } from '../middlewares/serviceLimiter';
-import { getActivePlans, getCurrentSubscription, handlePaddleWebhook } from '../controllers/billing';
+import { cancelSubscription, getActivePlans, getCurrentSubscription, getStorageStats, getTransactions, handlePaddleWebhook } from '../controllers/billing';
+import { deleteAccount } from '../controllers/user';
 
 
 if (!process.env.MONGO_URI) {
@@ -289,6 +290,11 @@ otlpRouter.post('/v1/logs', ingestOtlpLogs);
 // ============================================================================
 // BILLING & MONETIZATION API
 // ============================================================================
+// Billing Profile
+apiRouter.get('/billing/storage-stats', getStorageStats);
+apiRouter.get('/billing/transactions', getTransactions);
+apiRouter.post('/billing/cancel', cancelSubscription);
+
 const billingRouter = express.Router();
 
 // Public/Webhook Routes (NO User Auth)
@@ -297,6 +303,9 @@ billingRouter.post('/paddle-webhook', express.raw({ type: 'application/json' }),
 
 // Protected Billing Routes (Requires User Auth)
 billingRouter.get('/subscription', authenticateUser, getCurrentSubscription);
+
+// User Profile
+apiRouter.delete('/user/account', deleteAccount);
 
 
 // --- Mounting Routes (CRITICAL ORDER) ---
