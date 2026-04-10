@@ -221,9 +221,9 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
     if (!signature) return res.status(401).send('Unauthorized');
 
     const event = req.body;
-    const eventType = event.event_type;
+    const eventType = event.event_type; 
     const payload = event.data;
-    const ownerId = payload.custom_data?.ownerId;
+    const ownerId = payload.custom_data?.ownerId; 
 
     if (!ownerId) {
       logger.error('[Billing Webhook] CRITICAL: Webhook received without custom_data.ownerId');
@@ -232,13 +232,21 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
 
     // 1. Handle Successful Payments & Invoice Generation
     if (eventType === 'transaction.completed' || eventType === 'transaction.paid') {
+      
+      // Enterprise Safe Parsing: Safely traverse Paddle's deep nested objects.
+      // Falls back to null if the transaction has no receipt (e.g., 100% discount or trial)
+      const parsedReceiptUrl = payload.receipt_data?.receipt_url || payload.checkout?.receipt_url || null;
+      
+      // Convert raw amount strings to proper floats. Fallback to 0.
+      const rawAmount = payload.details?.totals?.grand_total || payload.amount || "0";
+
       await Transaction.create({
         ownerId,
         paddleTransactionId: payload.id,
-        amount: parseFloat(payload.details?.totals?.grand_total || payload.amount || 0) / 100,
+        amount: parseFloat(rawAmount) / 100, // Paddle v2 sends amounts in cents/lowest denomination
         currency: payload.currency_code || 'USD',
         status: 'completed',
-        receiptUrl: payload.receipt_url || payload.checkout?.receipt_url || '',
+        receiptUrl: parsedReceiptUrl,
         billedAt: new Date(payload.created_at || payload.billed_at || Date.now())
       });
       logger.info(`[Billing Webhook] Saved transaction receipt for ${ownerId}`);
@@ -256,7 +264,7 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
         { $set: { planId: targetPlanId, status: payload.status === 'active' ? 'active' : 'past_due', provider: 'paddle', providerCustomerId: payload.customer_id, providerSubscriptionId: payload.id, billingCycleReset: nextBillingDate } },
         { upsert: true }
       );
-    }
+    } 
     else if (eventType === 'subscription.canceled' || eventType === 'subscription.past_due') {
       await Subscription.findOneAndUpdate({ ownerId }, { $set: { status: eventType === 'subscription.canceled' ? 'canceled' : 'past_due' } });
     }
@@ -265,5 +273,63 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
   } catch (error: any) {
     logger.error(`[Billing Webhook] Error: ${error.message}`);
     res.status(500).send('Webhook Failed');
+  }
+};
+
+export const getTransactionReceipt = async (req: Request, res: Response) => {
+  try {
+    const ownerId = (req as any).user?.uid;
+    const { transactionId } = req.params;
+
+    // 1. Verify ownership (Security Check)
+    const tx = await Transaction.findOne({ paddleTransactionId: transactionId, ownerId });
+    if (!tx) {
+      return res.status(404).json({ error: "Transaction not found." });
+    }
+
+    // 2. Fast Path: If we already captured it during the webhook, return immediately
+    if (tx.receiptUrl) {
+      return res.json({ url: tx.receiptUrl });
+    }
+
+    // 3. JIT Fetch: Ask Paddle API for the Invoice URL
+    const isSandbox = process.env.PADDLE_ENV === 'sandbox';
+    const paddleApiUrl = isSandbox ? 'https://sandbox-api.paddle.com' : 'https://api.paddle.com';
+    const paddleApiKey = process.env.PADDLE_API_KEY;
+
+    if (!paddleApiKey) {
+      logger.error(`[Billing] Missing PADDLE_API_KEY for receipt retrieval.`);
+      return res.status(500).json({ error: "Internal payment configuration error." });
+    }
+
+    const response = await fetch(`${paddleApiUrl}/transactions/${transactionId}/invoice`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${paddleApiKey}`,
+        'Content-Type': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      logger.error(`[Billing] Paddle API failed to generate invoice for ${transactionId}`);
+      return res.status(404).json({ error: "Invoice is still generating. Please try again in a few minutes." });
+    }
+
+    const data = await response.json();
+    const invoiceUrl = data.data?.url;
+
+    if (invoiceUrl) {
+      // Opportunistically save the URL to the database to speed up future requests
+      tx.receiptUrl = invoiceUrl;
+      await tx.save();
+      
+      return res.json({ url: invoiceUrl });
+    }
+
+    return res.status(404).json({ error: "Invoice unavailable." });
+
+  } catch (error: any) {
+    logger.error(`[Billing Receipt] Error: ${error.message}`);
+    res.status(500).json({ error: "Failed to retrieve receipt." });
   }
 };

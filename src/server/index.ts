@@ -75,7 +75,7 @@ import { authenticateOtlp } from '../middlewares/otlpAuth';
 import { ingestOtlpLogs, ingestOtlpTraces } from '../controllers/otlp/gateway';
 import { requireIngestionQuota } from '../middlewares/ingestionLimiter';
 import { requireServiceQuota } from '../middlewares/serviceLimiter';
-import { cancelSubscription, getActivePlans, getCurrentSubscription, getStorageStats, getTransactions, handlePaddleWebhook } from '../controllers/billing';
+import { cancelSubscription, getActivePlans, getCurrentSubscription, getStorageStats, getTransactionReceipt, getTransactions, handlePaddleWebhook } from '../controllers/billing';
 import { deleteAccount, syncUser } from '../controllers/user';
 
 
@@ -293,6 +293,7 @@ otlpRouter.post('/v1/logs', ingestOtlpLogs);
 // Billing Profile
 apiRouter.get('/billing/storage-stats', getStorageStats);
 apiRouter.get('/billing/transactions', getTransactions);
+apiRouter.get('/billing/transactions/:transactionId/receipt', getTransactionReceipt); 
 apiRouter.post('/billing/cancel', cancelSubscription);
 
 const billingRouter = express.Router();
