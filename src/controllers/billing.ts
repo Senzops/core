@@ -232,23 +232,25 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
 
     // 1. Handle Successful Payments & Invoice Generation
     if (eventType === 'transaction.completed' || eventType === 'transaction.paid') {
-      
-      // Enterprise Safe Parsing: Safely traverse Paddle's deep nested objects.
-      // Falls back to null if the transaction has no receipt (e.g., 100% discount or trial)
       const parsedReceiptUrl = payload.receipt_data?.receipt_url || payload.checkout?.receipt_url || null;
-      
-      // Convert raw amount strings to proper floats. Fallback to 0.
       const rawAmount = payload.details?.totals?.grand_total || payload.amount || "0";
 
-      await Transaction.create({
-        ownerId,
-        paddleTransactionId: payload.id,
-        amount: parseFloat(rawAmount) / 100, // Paddle v2 sends amounts in cents/lowest denomination
-        currency: payload.currency_code || 'USD',
-        status: 'completed',
-        receiptUrl: parsedReceiptUrl,
-        billedAt: new Date(payload.created_at || payload.billed_at || Date.now())
-      });
+      // Use findOneAndUpdate with upsert: true to guarantee idempotency.
+      await Transaction.findOneAndUpdate(
+        { paddleTransactionId: payload.id }, // Match condition
+        {
+          $set: {
+            ownerId,
+            amount: parseFloat(rawAmount) / 100,
+            currency: payload.currency_code || 'USD',
+            status: 'completed',
+            receiptUrl: parsedReceiptUrl,
+            billedAt: new Date(payload.created_at || payload.billed_at || Date.now())
+          }
+        },
+        { upsert: true, new: true } // Create if missing, update if existing
+      );
+      
       logger.info(`[Billing Webhook] Saved transaction receipt for ${ownerId}`);
     }
 
@@ -276,6 +278,10 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
   }
 };
 
+/**
+ * JIT Receipt Retrieval
+ * Securely asks Paddle for a fresh invoice URL on-demand if the webhook missed it.
+ */
 export const getTransactionReceipt = async (req: Request, res: Response) => {
   try {
     const ownerId = (req as any).user?.uid;
