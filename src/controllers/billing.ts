@@ -232,7 +232,6 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
 
     // 1. Handle Successful Payments & Invoice Generation
     if (eventType === 'transaction.completed' || eventType === 'transaction.paid') {
-      const parsedReceiptUrl = payload.receipt_data?.receipt_url || payload.checkout?.receipt_url || null;
       const rawAmount = payload.details?.totals?.grand_total || payload.amount || "0";
 
       // Use findOneAndUpdate with upsert: true to guarantee idempotency.
@@ -244,7 +243,6 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
             amount: parseFloat(rawAmount) / 100,
             currency: payload.currency_code || 'USD',
             status: 'completed',
-            receiptUrl: parsedReceiptUrl,
             billedAt: new Date(payload.created_at || payload.billed_at || Date.now())
           }
         },
@@ -293,12 +291,7 @@ export const getTransactionReceipt = async (req: Request, res: Response) => {
       return res.status(404).json({ error: "Transaction not found." });
     }
 
-    // 2. Fast Path: If we already captured it during the webhook, return immediately
-    if (tx.receiptUrl) {
-      return res.json({ url: tx.receiptUrl });
-    }
-
-    // 3. JIT Fetch: Ask Paddle API for the Invoice URL
+    // 2. JIT Fetch: Ask Paddle API for the Invoice URL
     const isSandbox = process.env.PADDLE_ENV === 'sandbox';
     const paddleApiUrl = isSandbox ? 'https://sandbox-api.paddle.com' : 'https://api.paddle.com';
     const paddleApiKey = process.env.PADDLE_API_KEY;
@@ -325,10 +318,6 @@ export const getTransactionReceipt = async (req: Request, res: Response) => {
     const invoiceUrl = data.data?.url;
 
     if (invoiceUrl) {
-      // Opportunistically save the URL to the database to speed up future requests
-      tx.receiptUrl = invoiceUrl;
-      await tx.save();
-      
       return res.json({ url: invoiceUrl });
     }
 

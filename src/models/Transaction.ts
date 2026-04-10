@@ -6,7 +6,6 @@ export interface ITransaction extends Document {
   amount: number;
   currency: string;
   status: 'completed' | 'refunded' | 'failed';
-  receiptUrl: string;
   billedAt: Date;
   createdAt: Date;
   updatedAt: Date;
@@ -19,7 +18,6 @@ const TransactionSchema = new Schema<ITransaction>(
     amount: { type: Number, required: true },
     currency: { type: String, default: 'USD' },
     status: { type: String, required: true, default: 'completed' },
-    receiptUrl: { type: String },
     billedAt: { type: Date, required: true },
   },
   { timestamps: true }
