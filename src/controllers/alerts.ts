@@ -169,13 +169,23 @@ export const updateCondition = async (req: Request, res: Response, next: NextFun
     const { id } = req.params;
     const { name, target, query, threshold, frequency } = req.body;
 
+    const updatePayload: any = {};
+    if (name !== undefined) updatePayload.name = name;
+    if (target !== undefined) updatePayload.target = target;
+    if (query !== undefined) updatePayload.query = query;
+    if (threshold !== undefined) updatePayload.threshold = threshold;
+    if (frequency !== undefined) updatePayload.frequency = frequency;
+
     const condition = await AlertCondition.findOneAndUpdate(
       { _id: id, ownerId: uid },
-      { name, target, query, threshold, frequency },
+      { $set: updatePayload },
       { new: true }
     );
 
-    if (!condition) return res.status(404).json({ error: "Condition not found or access denied" });
+    if (!condition) {
+      return res.status(404).json({ error: "Condition not found or access denied" });
+    }
+
     res.json({ condition });
   } catch (error) { next(error); }
 };
