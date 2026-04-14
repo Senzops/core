@@ -193,7 +193,7 @@ apiRouter.get('/apm/:id/invocations', getInvocations);
 apiRouter.get('/apm/:id/trace/:traceId', getTraceDetail);
 
 // --- Database (Dashboard) ---
-apiRouter.post('/database/register', requireServiceQuota('Database', 'Database'), registerDatabase);
+apiRouter.post('/database/register', requireServiceQuota('DatabaseService', 'Database'), registerDatabase);
 apiRouter.get('/database/list', listDatabases);
 apiRouter.delete('/database/:id', deleteDatabase);
 apiRouter.get('/database/:id/stats', getDatabaseStats);
@@ -258,7 +258,7 @@ apiRouter.patch('/alerts/incidents/:id/status', updateIncidentStatus);
 
 // --- SAVED VIEWS (CUSTOM DASHBOARDS) ---
 apiRouter.get('/views/schema', getSchemaDictionary);
-apiRouter.post('/views', requireServiceQuota('View', 'Dashboard View'), createView);
+apiRouter.post('/views', requireServiceQuota('SavedView', 'Dashboard View'), createView);
 apiRouter.get('/views', listViews);
 apiRouter.get('/views/:id', getViewById);
 apiRouter.put('/views/:id', updateViewLayout);
