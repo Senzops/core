@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import mongoose from 'mongoose';
 import { AlertDestination, AlertPolicy, AlertCondition, AlertIncident } from '../models/Alert';
 
 // ============================================================================
@@ -169,25 +170,34 @@ export const updateCondition = async (req: Request, res: Response, next: NextFun
     const { id } = req.params;
     const { name, target, query, threshold, frequency } = req.body;
 
-    const condition = await AlertCondition.findOne({ _id: id, ownerId: uid });
+    // 1. Fetch using .lean() to get pure BSON (bypassing Mongoose wrappers)
+    const conditionRaw = await AlertCondition.findOne({ _id: id, ownerId: uid }).lean();
 
-    if (!condition) {
+    if (!conditionRaw) {
       return res.status(404).json({ error: "Condition not found or access denied" });
     }
 
-    const updatePayload: any = { updatedAt: new Date() };
-    if (name !== undefined) updatePayload.name = name;
-    if (target !== undefined) updatePayload.target = target;
-    if (query !== undefined) updatePayload.query = query;
-    if (threshold !== undefined) updatePayload.threshold = threshold;
-    if (frequency !== undefined) updatePayload.frequency = frequency;
+    // 2. Apply mutations directly to the plain JS object in memory
+    const rawDoc: any = { ...conditionRaw };
 
-    await AlertCondition.collection.updateOne(
-      { _id: condition._id },
-      { $set: updatePayload }
+    if (name !== undefined) rawDoc.name = name;
+    if (target !== undefined) rawDoc.target = target;
+    if (query !== undefined) rawDoc.query = query;
+    if (threshold !== undefined) rawDoc.threshold = threshold;
+    if (frequency !== undefined) rawDoc.frequency = frequency;
+    rawDoc.updatedAt = new Date();
+
+    // 3. CRITICAL: MongoDB strictly forbids modifying the immutable _id field during replacement.
+    // We must drop it from the payload. The filter query below identifies the document.
+    delete rawDoc._id;
+
+    // 4. Native Driver Document Replacement
+    await AlertCondition.collection.replaceOne(
+      { _id: new mongoose.Types.ObjectId(id) },
+      rawDoc
     );
 
-    // Fetch and return the fresh document
+    // 5. Fetch the freshly replaced document via Mongoose to return a compliant JSON schema to the frontend
     const updatedCondition = await AlertCondition.findById(id);
 
     res.json({ condition: updatedCondition });
