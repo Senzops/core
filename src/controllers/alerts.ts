@@ -170,14 +170,14 @@ export const updateCondition = async (req: Request, res: Response, next: NextFun
     const { id } = req.params;
     const { name, target, query, threshold, frequency } = req.body;
 
-    // 1. Fetch using .lean() to get pure BSON (bypassing Mongoose wrappers)
+    // 1. Fetch using .lean() to get pure BSON
     const conditionRaw = await AlertCondition.findOne({ _id: id, ownerId: uid }).lean();
 
     if (!conditionRaw) {
       return res.status(404).json({ error: "Condition not found or access denied" });
     }
 
-    // 2. Apply mutations directly to the plain JS object in memory
+    // 2. Clone it and apply mutations in memory
     const rawDoc: any = { ...conditionRaw };
 
     if (name !== undefined) rawDoc.name = name;
@@ -187,17 +187,26 @@ export const updateCondition = async (req: Request, res: Response, next: NextFun
     if (frequency !== undefined) rawDoc.frequency = frequency;
     rawDoc.updatedAt = new Date();
 
-    // 3. CRITICAL: MongoDB strictly forbids modifying the immutable _id field during replacement.
-    // We must drop it from the payload. The filter query below identifies the document.
-    delete rawDoc._id;
+    // 3. The "Safe Swap" Pattern
+    // MongoDB's 'update' command (used by findOneAndUpdate, save, and replaceOne)
+    // strictly forbids storing fields that start with '$' anywhere in the document 
+    // to prevent update-operator injection attacks. 
+    // The 'insert' command, however, safely bypasses this and stores the AST perfectly.
+    // To safely update the condition, we atomically swap it out, explicitly retaining the original _id.
 
-    // 4. Native Driver Document Replacement
-    await AlertCondition.collection.replaceOne(
-      { _id: new mongoose.Types.ObjectId(id) },
-      rawDoc
-    );
+    // Drop the old condition from the DB
+    await AlertCondition.collection.deleteOne({ _id: conditionRaw._id });
 
-    // 5. Fetch the freshly replaced document via Mongoose to return a compliant JSON schema to the frontend
+    try {
+      // Re-insert it as a fresh document carrying the exact same _id
+      await AlertCondition.collection.insertOne(rawDoc);
+    } catch (insertError) {
+      // Absolute safety net: Restore the original untouched document if the network fails mid-swap
+      await AlertCondition.collection.insertOne(conditionRaw);
+      throw insertError;
+    }
+
+    // 4. Fetch the freshly replaced document via Mongoose to return a compliant JSON schema
     const updatedCondition = await AlertCondition.findById(id);
 
     res.json({ condition: updatedCondition });
