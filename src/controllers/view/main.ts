@@ -17,8 +17,8 @@ const SYSTEM_SCHEMA_DICTIONARY = {
     { field: "serviceModel", type: "string", desc: "Originating service type" }
   ],
   vps: [
-    { field: "metrics.cpu.usage", type: "number", desc: "Total CPU utilization %" },
-    { field: "metrics.memory.usedPercent", type: "number", desc: "RAM utilization %" },
+    { field: "metrics.cpu.usagePercent", type: "number", desc: "Total CPU utilization %" },
+    { field: "metrics.memory.usagePercent", type: "number", desc: "RAM utilization %" },
     { field: "isOnline", type: "boolean", desc: "Agent heartbeat status" }
   ],
   database: [
