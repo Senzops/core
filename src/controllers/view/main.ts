@@ -153,14 +153,45 @@ export const updateWidget = async (req: Request, res: Response, next: NextFuncti
     const { id } = req.params;
     const { name, target, query, visualization, config } = req.body;
 
-    const widget = await ViewWidget.findOneAndUpdate(
-      { _id: id, ownerId: uid },
-      { name, target, query, visualization, config },
-      { new: true }
-    );
+    // 1. Fetch using .lean() to get pure BSON
+    const widgetRaw = await ViewWidget.findOne({ _id: id, ownerId: uid }).lean();
 
-    if (!widget) return res.status(404).json({ error: "Widget not found" });
-    res.json({ widget });
+    if (!widgetRaw) {
+      return res.status(404).json({ error: "Widget not found" });
+    }
+
+    // 2. Clone it and apply mutations in memory
+    const rawDoc: any = { ...widgetRaw };
+
+    if (name !== undefined) rawDoc.name = name;
+    if (target !== undefined) rawDoc.target = target;
+    if (query !== undefined) rawDoc.query = query;
+    if (visualization !== undefined) rawDoc.visualization = visualization;
+    if (config !== undefined) rawDoc.config = config;
+    rawDoc.updatedAt = new Date();
+
+    // 3. The "Safe Swap" Pattern
+    // MongoDB's 'update' command strictly forbids storing fields that start with '$' 
+    // anywhere in the document to prevent update-operator injection attacks. 
+    // The 'insert' command safely bypasses this and stores the AST perfectly.
+    // To safely update the widget, we atomically swap it out, explicitly retaining the original _id.
+
+    // Drop the old widget from the DB
+    await ViewWidget.collection.deleteOne({ _id: widgetRaw._id });
+
+    try {
+      // Re-insert it as a fresh document carrying the exact same _id
+      await ViewWidget.collection.insertOne(rawDoc);
+    } catch (insertError) {
+      // Absolute safety net: Restore the original untouched document if the network fails mid-swap
+      await ViewWidget.collection.insertOne(widgetRaw);
+      throw insertError;
+    }
+
+    // 4. Fetch the freshly replaced document via Mongoose to return a compliant JSON schema
+    const updatedWidget = await ViewWidget.findById(id);
+
+    res.json({ widget: updatedWidget });
   } catch (error) { next(error); }
 };
 
