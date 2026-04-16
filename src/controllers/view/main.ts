@@ -127,17 +127,15 @@ export const deleteView = async (req: Request, res: Response, next: NextFunction
 export const createWidget = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
-    const { viewId, name, target, query, visualization, config } = req.body;
+    const { viewId, name, target, query, config } = req.body;
 
     const view = await SavedView.findOne({ _id: viewId, ownerId: uid });
     if (!view) return res.status(403).json({ error: "Invalid View ID" });
 
     const widget = await ViewWidget.create({
-      ownerId: uid, viewId, name, target, query, visualization, config
+      ownerId: uid, viewId, name, target, query, config
     });
 
-    // THE FIX: Do not use Infinity (JSON.stringify converts it to null, crashing Mongoose)
-    // Safely calculate the bottom of the grid layout using maxY + 1
     const maxY = view.layout.reduce((max, item) => Math.max(max, item.y || 0), 0);
     view.layout.push({ i: widget._id.toString(), x: 0, y: maxY + 1, w: 4, h: 2 });
 
@@ -151,7 +149,7 @@ export const updateWidget = async (req: Request, res: Response, next: NextFuncti
   try {
     const { uid } = (req as any).user;
     const { id } = req.params;
-    const { name, target, query, visualization, config } = req.body;
+    const { name, target, query, config } = req.body;
 
     // 1. Fetch using .lean() to get pure BSON
     const widgetRaw = await ViewWidget.findOne({ _id: id, ownerId: uid }).lean();
@@ -166,7 +164,6 @@ export const updateWidget = async (req: Request, res: Response, next: NextFuncti
     if (name !== undefined) rawDoc.name = name;
     if (target !== undefined) rawDoc.target = target;
     if (query !== undefined) rawDoc.query = query;
-    if (visualization !== undefined) rawDoc.visualization = visualization;
     if (config !== undefined) rawDoc.config = config;
     rawDoc.updatedAt = new Date();
 

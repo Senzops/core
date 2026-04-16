@@ -25,9 +25,15 @@ const getTargetModel = (target: string) => {
   }
 };
 
+// ENTERPRISE SECURITY: Block malicious pipeline write operators
 const sanitizeMql = (userQuery: any) => {
   const jsonStr = JSON.stringify(userQuery || {});
-  if (jsonStr.includes('$where') || jsonStr.includes('$function')) {
+  if (
+    jsonStr.includes('$where') ||
+    jsonStr.includes('$function') ||
+    jsonStr.includes('$out') ||     // Block pipeline writes to collections
+    jsonStr.includes('$merge')      // Block pipeline merges to collections
+  ) {
     logger.warn(`[AggEngine] Blocked unsafe operators in query`);
     throw new Error('Unsafe operators detected in query');
   }
@@ -35,15 +41,13 @@ const sanitizeMql = (userQuery: any) => {
 };
 
 // ============================================================================
-// CORE PIPELINE BUILDER (Optimized MongoDB Pivot)
+// CORE PIPELINE BUILDER (Optimized for Native Pipelines & Service Joins)
 // ============================================================================
 const buildAndExecutePipeline = async (
   uid: string,
   target: string,
   range: string,
-  query: any,
-  visualization: string,
-  config: any
+  query: any
 ) => {
   const targetDef = getTargetModel(target);
   if (!targetDef) throw new Error('Unknown target telemetry');
@@ -66,7 +70,6 @@ const buildAndExecutePipeline = async (
   if (parentModel) {
     // If the telemetry relies on a parent service (APM, VPS, Tasks), 
     // fetch all service IDs owned by this user to verify access.
-    // Cast to any to bypass Mongoose Union Type signature complexities
     const ownedParents = await (parentModel as any).find({ ownerId: uid }).select('_id').lean();
     const ownedIds = ownedParents.map((p: any) => p._id);
     tenantIsolationMatch = { [foreignKey]: { $in: ownedIds } };
@@ -80,79 +83,46 @@ const buildAndExecutePipeline = async (
     [timeField]: { $gte: startDate }
   };
 
-  if (query && typeof query === 'object') {
-    Object.assign(safeMatch, sanitizeMql(query));
-  }
-
+  // 3. Pipeline Construction Base
   const pipeline: any[] = [{ $match: safeMatch }];
 
-  // 3. Accumulator Formatting
-  let accumulator: any = { $sum: 1 };
-  if (config.aggregate !== 'count' && config.aggregateField) {
-    const safeField = config.aggregateField.replace(/^\$/, ''); // Strip leading $
-    accumulator = { [`$${config.aggregate}`]: `$${safeField}` };
+  // 4. ENTERPRISE FIX: Dynamic Service Collection Join
+  // If the target has a parent model, we dynamically map the foreign key to the parent collection
+  // and unwind it into a `service` object. This makes `service.name` natively queryable in the MQL.
+  if (parentModel) {
+    pipeline.push({
+      $lookup: {
+        from: parentModel.collection.name,
+        localField: foreignKey,
+        foreignField: '_id',
+        as: 'service'
+      }
+    });
+    // Unwind converts the joined array into a single object, allowing direct dot-notation
+    pipeline.push({
+      $unwind: {
+        path: '$service',
+        preserveNullAndEmptyArrays: true // Prevents dropping events if the service was deleted
+      }
+    });
   }
 
-  // 4. Visualization Routing
-  if (visualization === 'billboard') {
-    pipeline.push({ $group: { _id: null, value: accumulator } });
-    pipeline.push({ $project: { _id: 0, value: 1 } });
-  }
-  else if (visualization === 'pie' || (visualization === 'table' && config.groupBy)) {
-    const groupByField = config.groupBy ? `$${config.groupBy.replace(/^\$/, '')}` : null;
-    if (!groupByField) throw new Error('groupBy is required for categorical charts');
+  // 5. User Pipeline/Query Execution
+  const sanitizedQuery = sanitizeMql(query);
 
-    pipeline.push({ $group: { _id: groupByField, value: accumulator } });
-    pipeline.push({ $sort: { value: -1 } });
-    pipeline.push({ $limit: 25 });
-    pipeline.push({ $project: { name: { $ifNull: [{ $toString: "$_id" }, "Unknown"] }, value: 1, _id: 0 } });
-  }
-  else if (visualization === 'table' && !config.groupBy) {
-    // Flat Table (Raw Documents List)
+  if (Array.isArray(sanitizedQuery)) {
+    // PIPELINE MODE: User supplied a custom aggregation pipeline array `[...]`
+    if (sanitizedQuery.length > 0) {
+      pipeline.push(...sanitizedQuery);
+    }
+  } else {
+    // SIMPLE QUERY MODE: Fallback for standard query objects `{...}`
+    if (sanitizedQuery && Object.keys(sanitizedQuery).length > 0) {
+      pipeline.push({ $match: sanitizedQuery });
+    }
+    // Apply standard sorts and bounds to prevent massive payloads for non-aggregated flat queries
     pipeline.push({ $sort: { [timeField]: -1 } });
     pipeline.push({ $limit: 100 });
-  }
-  else {
-    // Time-Series (Area, Line, Bar)
-    let timeFormat = "%Y-%m-%dT%H:00:00.000Z";
-    if (range === '1h') timeFormat = "%Y-%m-%dT%H:%M:00.000Z";
-    else if (range === '7d' || range === '30d') timeFormat = "%Y-%m-%d";
-
-    if (config.groupBy) {
-      const groupByField = `$${config.groupBy.replace(/^\$/, '')}`;
-      pipeline.push({
-        $group: {
-          _id: {
-            time: { $dateToString: { format: timeFormat, date: `$${timeField}` } },
-            category: groupByField
-          },
-          value: accumulator
-        }
-      });
-      pipeline.push({
-        $group: {
-          _id: "$_id.time",
-          groups: { $push: { k: { $ifNull: [{ $toString: "$_id.category" }, "Unknown"] }, v: "$value" } }
-        }
-      });
-      pipeline.push({ $sort: { "_id": 1 } });
-
-      // The optimized arrayToObject pivot
-      pipeline.push({
-        $replaceRoot: {
-          newRoot: { $mergeObjects: [{ time: "$_id" }, { $arrayToObject: "$groups" }] }
-        }
-      });
-    } else {
-      pipeline.push({
-        $group: {
-          _id: { $dateToString: { format: timeFormat, date: `$${timeField}` } },
-          value: accumulator
-        }
-      });
-      pipeline.push({ $sort: { "_id": 1 } });
-      pipeline.push({ $project: { time: "$_id", value: 1, _id: 0 } });
-    }
   }
 
   return await TargetModel.aggregate(pipeline);
@@ -170,8 +140,9 @@ export const getWidgetData = async (req: Request, res: Response, next: NextFunct
     const widget = await ViewWidget.findOne({ _id: id, ownerId: uid }).lean();
     if (!widget) return res.status(404).json({ error: "Widget not found" });
 
+    // Execute the unified pipeline execution engine
     const data = await buildAndExecutePipeline(
-      uid, widget.target, range, widget.query, widget.visualization, widget.config
+      uid, widget.target, range, widget.query
     );
 
     res.json({ data });
@@ -186,14 +157,14 @@ export const getWidgetData = async (req: Request, res: Response, next: NextFunct
 export const executeLivePreview = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
-    const { target, query, visualization, config, range = '24h' } = req.body;
+    const { target, query, range = '24h' } = req.body;
 
-    if (!target || !visualization || !config) {
+    if (!target) {
       return res.status(400).json({ error: "Missing required builder parameters" });
     }
 
     const data = await buildAndExecutePipeline(
-      uid, target, range, query, visualization, config
+      uid, target, range, query
     );
 
     res.json({ data });

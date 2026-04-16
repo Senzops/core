@@ -26,10 +26,12 @@ const sanitizeMql = (userQuery: any) => {
     jsonStr.includes('$where') ||
     jsonStr.includes('$function') ||
     jsonStr.includes('$accumulator') ||
-    jsonStr.includes('$expr')
+    jsonStr.includes('$expr') ||
+    jsonStr.includes('$out') ||    // Prevent pipeline write injections
+    jsonStr.includes('$merge')
   ) {
     logger.warn(`[Alerts] Blocked malicious MQL execution attempt: ${jsonStr}`);
-    return {};
+    return Array.isArray(userQuery) ? [] : {};
   }
 
   return userQuery || {};
@@ -98,30 +100,57 @@ export const runAlertWatchdogSweep = async () => {
         const { model: CollectionModel, parentModel, foreignKey, timeField } = targetDef;
         const windowStart = new Date(now.getTime() - (condition.threshold.windowMins * 60 * 1000));
 
-        // --- THE FIX: Robust Tenant Isolation ---
+        // --- Robust Tenant Isolation ---
         let tenantIsolationMatch: any = {};
 
         if (parentModel) {
-          // Fetch parent IDs and map them. Cast to 'any' fixes the TS Union Type error.
           const ownedParents = await (parentModel as any).find({ ownerId: condition.ownerId }).select('_id').lean();
           const ownedIds = ownedParents.map((p: any) => p._id);
           tenantIsolationMatch = { [foreignKey]: { $in: ownedIds } };
         } else {
-          // Fallback for native ownerId models (like Logs)
           tenantIsolationMatch = { [foreignKey]: condition.ownerId };
         }
 
-        // Construct the strictly isolated MQL Sandbox
-        const safeQuery = {
-          $and: [
-            tenantIsolationMatch,
-            { [timeField]: { $gte: windowStart } },
-            sanitizeMql(condition.query)
-          ]
+        const safeMatch = {
+          ...tenantIsolationMatch,
+          [timeField]: { $gte: windowStart }
         };
 
-        // Execute count
-        const count = await CollectionModel.countDocuments(safeQuery);
+        // --- ENTERPRISE FIX: Pipeline Builder for Alerts ---
+        const pipeline: any[] = [{ $match: safeMatch }];
+
+        // Join Parent Service Data
+        if (parentModel) {
+          pipeline.push({
+            $lookup: {
+              from: parentModel.collection.name,
+              localField: foreignKey,
+              foreignField: '_id',
+              as: 'service'
+            }
+          });
+          pipeline.push({
+            $unwind: {
+              path: '$service',
+              preserveNullAndEmptyArrays: true
+            }
+          });
+        }
+
+        // Apply User Query/Pipeline
+        const sanitizedQuery = sanitizeMql(condition.query);
+        if (Array.isArray(sanitizedQuery)) {
+          if (sanitizedQuery.length > 0) pipeline.push(...sanitizedQuery);
+        } else {
+          if (sanitizedQuery && Object.keys(sanitizedQuery).length > 0) {
+            pipeline.push({ $match: sanitizedQuery });
+          }
+        }
+
+        // Execute natively accelerated Count
+        pipeline.push({ $count: 'total' });
+        const aggResult = await CollectionModel.aggregate(pipeline);
+        const count = aggResult.length > 0 ? aggResult[0].total : 0;
 
         // Evaluate Threshold
         let isBreached = false;
