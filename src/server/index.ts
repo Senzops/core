@@ -77,6 +77,7 @@ import { requireIngestionQuota } from '../middlewares/ingestionLimiter';
 import { requireServiceQuota } from '../middlewares/serviceLimiter';
 import { cancelSubscription, getActivePlans, getCurrentSubscription, getStorageStats, getTransactionReceipt, getTransactions, handlePaddleWebhook } from '../controllers/billing';
 import { deleteAccount, syncUser } from '../controllers/user';
+import { getDynamicSchema } from '../controllers/schema';
 
 
 if (!process.env.MONGO_URI) {
@@ -257,7 +258,6 @@ apiRouter.delete('/alerts/conditions/:id', deleteCondition);
 apiRouter.patch('/alerts/incidents/:id/status', updateIncidentStatus);
 
 // --- SAVED VIEWS (CUSTOM DASHBOARDS) ---
-apiRouter.get('/views/schema', getSchemaDictionary);
 apiRouter.post('/views', requireServiceQuota('SavedView', 'Dashboard View'), createView);
 apiRouter.get('/views', listViews);
 apiRouter.get('/views/:id', getViewById);
@@ -308,6 +308,9 @@ billingRouter.get('/subscription', authenticateUser, getCurrentSubscription);
 // User Profile
 apiRouter.post('/user/sync', syncUser);
 apiRouter.delete('/user/account', deleteAccount);
+
+// Dynamic Schema Inference
+apiRouter.get('/schema', getDynamicSchema);
 
 
 // --- Mounting Routes (CRITICAL ORDER) ---
