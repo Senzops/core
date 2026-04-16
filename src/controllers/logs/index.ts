@@ -16,6 +16,37 @@ const getStartDate = (range: string) => {
   return date;
 };
 
+// ============================================================================
+// ENTERPRISE INGESTION CACHE
+// Validating an API key via MongoDB on every log ingestion request will 
+// instantly bottleneck the database under load. This TTL cache keeps validated
+// keys in blazing-fast Node.js RAM for 5 minutes.
+// ============================================================================
+const apiKeyCache = new Map<string, { ownerId: string; expiresAt: number }>();
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+const getOwnerIdFromKey = async (apiKey: string): Promise<string | null> => {
+  const now = Date.now();
+  const cached = apiKeyCache.get(apiKey);
+
+  // Return from RAM if valid
+  if (cached && cached.expiresAt > now) {
+    return cached.ownerId;
+  }
+
+  // Memory leak protection for the Map
+  if (apiKeyCache.size > 10000) apiKeyCache.clear();
+
+  // Fallback to DB and cache the result
+  const keyRecord = await LogApiKey.findOne({ key: apiKey }).lean();
+  if (!keyRecord) return null;
+
+  const ownerId = keyRecord.ownerId.toString();
+  apiKeyCache.set(apiKey, { ownerId, expiresAt: now + CACHE_TTL_MS });
+
+  return ownerId;
+};
+
 // --- 1. Dashboard: Fetch & Search Logs ---
 export const getDashboardLogs = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -95,41 +126,89 @@ export const getLogApiKey = async (req: Request, res: Response, next: NextFuncti
   }
 };
 
-// --- 4. Global Ingestion Endpoint (External Log Forwarders) ---
+// ============================================================================
+// 4. GLOBAL INGESTION ENDPOINT (External Log Forwarders)
+// Highly optimized for massive write throughput
+// ============================================================================
 export const ingestGlobalLogs = async (req: Request, res: Response) => {
   try {
     const apiKey = req.headers['x-log-api-key'] || req.query.apiKey;
-    if (!apiKey) return res.status(401).json({ error: 'Missing API Key' });
-
-    const keyRecord = await LogApiKey.findOne({ key: apiKey as string }).lean();
-    if (!keyRecord) return res.status(403).json({ error: 'Invalid API Key' });
-
-    // Support both single object and array of logs
-    const payloads = Array.isArray(req.body) ? req.body : [req.body];
-    
-    const logsToInsert = payloads.map((payload: any) => {
-      // Destructure standard fields, everything else goes to attributes
-      const { message, level, timestamp, traceId, spanId, ...attributes } = payload;
-      return {
-        ownerId: keyRecord.ownerId,
-        serviceModel: 'External',
-        message: message || JSON.stringify(payload) || 'Empty Log',
-        level: level || 'info',
-        traceId,
-        spanId,
-        attributes: attributes || {},
-        timestamp: timestamp ? new Date(timestamp) : new Date()
-      };
-    });
-
-    if (logsToInsert.length > 0) {
-      await LogEvent.insertMany(logsToInsert);
+    if (!apiKey || typeof apiKey !== 'string') {
+      return res.status(401).json({ error: 'Missing or invalid API Key' });
     }
 
-    res.status(202).json({ status: 'accepted', ingested: logsToInsert.length });
-  } catch (error) {
+    // 1. Authenticate via RAM Cache
+    const ownerId = await getOwnerIdFromKey(apiKey);
+    if (!ownerId) {
+      return res.status(403).json({ error: 'Invalid API Key' });
+    }
+
+    // 2. Normalize Payload to Array
+    const payloads = Array.isArray(req.body) ? req.body : [req.body];
+    if (payloads.length === 0) {
+      return res.status(400).json({ error: 'Empty payload' });
+    }
+
+    // 3. Batch Limiting (Protect against mega-arrays freezing Node's Event Loop)
+    const BATCH_LIMIT = 2000;
+    const processablePayloads = payloads.slice(0, BATCH_LIMIT);
+
+    // 4. Fire and Forget Response
+    // Send 202 Accepted immediately without waiting for index verifications and data sanitization
+    res.status(202).json({ 
+      status: 'accepted', 
+      queuedLogs: processablePayloads.length,
+      dropped: payloads.length - processablePayloads.length
+    });
+
+    // 5. Background Processing
+    setImmediate(async () => {
+      try {
+        // Safe Mapping & Data Sanitization
+        const logsToInsert = processablePayloads.map((payload: any) => {
+          // Failsafe for badly formatted strings sent as JSON
+          if (!payload || typeof payload !== 'object') {
+            payload = { message: String(payload) };
+          }
+
+          const { message, level, timestamp, traceId, spanId, service, ...attributes } = payload;
+
+          // Enterprise Security: Truncate massively bloated payloads (e.g. accidental base64 dumps)
+          const safeMessage = typeof message === 'string'
+            ? (message.length > 50000 ? message.substring(0, 50000) + '... [TRUNCATED]' : message)
+            : JSON.stringify(payload).substring(0, 50000);
+
+          return {
+            ownerId,
+            serviceModel: service || 'External',
+            message: safeMessage || 'Empty Log',
+            level: (level || 'info').toLowerCase(),
+            traceId: traceId ? String(traceId) : undefined,
+            spanId: spanId ? String(spanId) : undefined,
+            attributes: attributes || {},
+            timestamp: timestamp ? new Date(timestamp) : new Date()
+          };
+        });
+
+        if (logsToInsert.length > 0) {
+          // Unordered Bulk Insert
+          // { ordered: false } tells MongoDB to ignore failures of individual documents
+          // and continue inserting the rest of the valid logs in the batch.
+          await LogEvent.insertMany(logsToInsert, { ordered: false });
+        }
+      } catch (bgError: any) {
+        // If it's a BulkWriteError (e.g. duplicate key), the {ordered: false} still inserted the good ones. 
+        if (bgError.name !== 'BulkWriteError') {
+          logger.error('[LOGS] Background Global Ingest Error:', bgError);
+        }
+      }
+    });
+
+  } catch (error: any) {
     logger.error('[LOGS] Global Ingest Error', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Internal Server Error' });
+    }
   }
 };
 
