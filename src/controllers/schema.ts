@@ -26,6 +26,13 @@ const COLLECTION_MAP: Record<string, { event: string; service: string | null }> 
 };
 
 // ============================================================================
+// SECURITY & INFERENCE BLACKLISTS
+// Prevent sensitive or internal database fields from appearing in the UI schema
+// ============================================================================
+const SERVICE_BLACKLIST = ['_id', 'apiKey', 'ownerId', 'createdAt', 'updatedAt', '__v'];
+const EVENT_BLACKLIST = ['ownerId', '__v'];
+
+// ============================================================================
 // TTL CACHE SYSTEM
 // Prevents database DDoS if multiple users open the editor concurrently.
 // Schemas rarely change minute-to-minute, so a 15-minute TTL is highly optimal.
@@ -71,7 +78,7 @@ async function sampleCollection(collectionName: string | null, limit = 50): Prom
 /**
  * Deep recursive traversal to map JSON documents to MQL dot-notation paths.
  */
-function inferSchemaFromDocs(docs: any[], prefix = ''): { field: string; type: string; desc: string }[] {
+function inferSchemaFromDocs(docs: any[], prefix = '', blacklist: string[] = []): { field: string; type: string; desc: string }[] {
   const schemaMap = new Map<string, string>();
 
   function traverse(obj: any, currentPath: string) {
@@ -101,10 +108,13 @@ function inferSchemaFromDocs(docs: any[], prefix = ''): { field: string; type: s
       } else {
         // Standard Object
         for (const [key, value] of Object.entries(obj)) {
-          // Skip internal mongoose/mongo fields except _id at root
+          // Ignore internal MongoDB fields universally
           if (key === '__v') continue;
-          
-          const newPath = currentPath ? `${currentPath}.${key}` : key;
+
+          // Apply the security blacklist to root-level fields
+          if (currentPath === '' && blacklist.includes(key)) continue;
+
+          const newPath = currentPath ? `${currentPath}.${key}` : `${prefix}${key}`;
           traverse(value, newPath);
         }
       }
@@ -115,13 +125,17 @@ function inferSchemaFromDocs(docs: any[], prefix = ''): { field: string; type: s
     schemaMap.set(currentPath, typeof obj);
   }
 
-  // Scan all sampled docs to build a comprehensive map of all possible fields
+  // Scan all sampled docs to build a comprehensive map of all possible fields.
+  // FIX: Starting traversal with an empty string '' as the currentPath ensures 
+  // our prefix logic applies correctly without doubling up the dots (e.g. service.._id).
   for (const doc of docs) {
-    traverse(doc, prefix);
+    traverse(doc, '');
   }
 
   const result = [];
   for (const [field, type] of schemaMap.entries()) {
+    if (!field) continue; // Safety net for empty roots
+
     result.push({
       field,
       type,
@@ -148,7 +162,7 @@ export const getDynamicSchema = async (req: Request, res: Response, next: NextFu
 
     // 2. Concurrently scan all target domains
     const targetKeys = Object.keys(COLLECTION_MAP);
-    
+
     await Promise.all(targetKeys.map(async (target) => {
       const config = COLLECTION_MAP[target];
 
@@ -158,11 +172,11 @@ export const getDynamicSchema = async (req: Request, res: Response, next: NextFu
         sampleCollection(config.service, 10) // Automatically resolves to [] if config.service is null
       ]);
 
-      // 3. Infer standard event fields (Root level)
-      const eventSchema = inferSchemaFromDocs(eventDocs, '');
+      // 3. Infer standard event fields (Root level) with event blacklist
+      const eventSchema = inferSchemaFromDocs(eventDocs, '', EVENT_BLACKLIST);
 
-      // 4. Infer joined service fields (Prefixed with 'service.')
-      const serviceSchema = inferSchemaFromDocs(serviceDocs, 'service.');
+      // 4. Infer joined service fields (Prefixed with 'service.') securely filtering sensitive properties
+      const serviceSchema = inferSchemaFromDocs(serviceDocs, 'service.', SERVICE_BLACKLIST);
 
       // 5. Merge and save to dictionary
       dynamicSchema[target] = [...eventSchema, ...serviceSchema];
