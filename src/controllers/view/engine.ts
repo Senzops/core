@@ -25,19 +25,42 @@ const getTargetModel = (target: string) => {
   }
 };
 
-// ENTERPRISE SECURITY: Block malicious pipeline write operators
-const sanitizeMql = (userQuery: any) => {
-  const jsonStr = JSON.stringify(userQuery || {});
-  if (
-    jsonStr.includes('$where') ||
-    jsonStr.includes('$function') ||
-    jsonStr.includes('$out') ||     // Block pipeline writes to collections
-    jsonStr.includes('$merge')      // Block pipeline merges to collections
-  ) {
-    logger.warn(`[AggEngine] Blocked unsafe operators in query`);
-    throw new Error('Unsafe operators detected in query');
-  }
-  return userQuery || {};
+// SECURITY: Block malicious pipeline write operators
+const BLOCKED_OPERATORS = new Set([
+  '$where',
+  '$function',
+  '$out',
+  '$merge'
+]);
+
+export const sanitizeMql = (userQuery: any) => {
+  const query = userQuery || {};
+
+  const validate = (obj: any) => {
+    if (!obj) return;
+
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        validate(item);
+      }
+      return;
+    }
+
+    if (typeof obj === 'object') {
+      for (const key of Object.keys(obj)) {
+
+        if (key.startsWith('$') && BLOCKED_OPERATORS.has(key)) {
+          logger.warn(`[AggEngine] Blocked unsafe operator: ${key}`);
+          throw new Error(`Unsafe operators detected in query: ${key}`);
+        }
+
+        validate(obj[key]);
+      }
+    }
+  };
+
+  validate(query);
+  return query;
 };
 
 // ============================================================================
