@@ -19,6 +19,12 @@ import { listServices as listRumServices } from '../controllers/rum/main';
 import { getRumDashboard, getRumTraceDetail } from '../controllers/rum/stats';
 import { getDashboardLogs, getTraceLogs, getLogById } from '../controllers/logs';
 
+import { listDestinations, listPolicies, getPolicyDetails } from '../controllers/alerts';
+import { listViews, getViewById } from '../controllers/view/main';
+import { getWidgetData } from '../controllers/view/engine';
+import { getStorageStats, getTransactions, getTransactionReceipt, getCurrentSubscription, getActivePlans } from '../controllers/billing';
+import { getDynamicSchema } from '../controllers/schema';
+
 import { McpUsage } from "../models/Mcp";
 
 // --- 1. Mock Express Runtime (TypeScript Safe) ---
@@ -248,6 +254,86 @@ const MCP_TOOLS = [
     description: "Get database throughput and latency metrics.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "1h" } }, required: ["id"] },
     execute: (args: any, uid: string) => simulateExpressCall(getDatabaseStats, uid, { id: args.id }, { range: args.range })
+  },
+
+  // --- Alerts & Incident Tools ---
+  {
+    name: "alerts_list_destinations",
+    description: "List all configured alert destinations (channels) like Webhooks or Slack.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listDestinations, uid)
+  },
+  {
+    name: "alerts_list_policies",
+    description: "List all alert policies and their summary statistics including open incident counts.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listPolicies, uid)
+  },
+  {
+    name: "alerts_get_policy_details",
+    description: "Get detailed information about a specific alert policy, its evaluation conditions, and incident history.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getPolicyDetails, uid, { id: args.id })
+  },
+
+  // --- Saved Views (Canvas Dashboards) Tools ---
+  {
+    name: "views_list_dashboards",
+    description: "List all custom saved views (dashboards) and their layouts.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listViews, uid)
+  },
+  {
+    name: "views_get_dashboard",
+    description: "Get the layout and widget configurations for a specific custom dashboard.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getViewById, uid, { id: args.id })
+  },
+  {
+    name: "views_get_widget_data",
+    description: "Execute the aggregation pipeline for a specific dashboard widget and return the computed data.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getWidgetData, uid, { id: args.id }, { range: args.range })
+  },
+
+  // --- Dynamic Schema Explorer Tool ---
+  {
+    name: "schema_get_dynamic",
+    description: "Get the dynamically inferred schema map for all telemetry data types. Highly useful for generating precise MongoDB Aggregation Pipelines.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(getDynamicSchema, uid)
+  },
+
+  // --- Billing & Subscription Tools ---
+  {
+    name: "billing_get_storage_stats",
+    description: "Get current platform storage limits and actual usage statistics for the user.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(getStorageStats, uid)
+  },
+  {
+    name: "billing_get_subscription",
+    description: "Get the user's current active subscription details, tier, and status.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(getCurrentSubscription, uid)
+  },
+  {
+    name: "billing_get_transactions",
+    description: "Get the user's billing transaction and payment history.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(getTransactions, uid)
+  },
+  {
+    name: "billing_get_transaction_receipt",
+    description: "Get the downloadable receipt details or link for a specific billing transaction.",
+    inputSchema: { type: "object", properties: { transactionId: { type: "string" } }, required: ["transactionId"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getTransactionReceipt, uid, { transactionId: args.transactionId })
+  },
+  {
+    name: "billing_get_active_plans",
+    description: "List all currently available public pricing tiers and platform plans.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(getActivePlans, uid)
   }
 ];
 
