@@ -154,11 +154,6 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
               maxLatency: 1,
               minLatency: 1,
               codes2xx: 1, codes3xx: 1, codes4xx: 1, codes5xx: 1,
-              // Compress status breakdown array to counts: [200, 200, 404] -> [{code:200, count:2}, {code:404, count:1}]
-              // Doing this in nodejs post-process for simpler mongo query, passing raw array might be heavy but safe for drill-down volume
-              // Actually, for drill down, let's just push unique values in next stage if needed or keep it simple.
-              // Reverting to aggregation stage for efficiency:
-              // We'll skip complex array compression here and do simple counts in Stage 1
             }
           }
         ]),
@@ -175,11 +170,6 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
         ]),
         ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$userAgent", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }])
       ]);
-
-      // Post-Process for Graph Breakdown (since we didn't unwind in Aggregation for speed)
-      // For Drill-down, we might miss the specific code breakdown per hour unless we add it. 
-      // For now, let's rely on the global statusCodes aggregation for the detailed table, 
-      // and the 2xx/3xx buckets for the graph.
 
       const graph = fillTimeGaps(graphDataRaw, range as string || '24h', startDate);
       const safeOverview = overview[0] || { totalRequests: 0, totalErrors: 0, errorRate: 0, avgLatency: 0, maxLatency: 0, minLatency: 0 };
@@ -260,7 +250,18 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
         { $match: matchQuery },
         { $project: { routes: { $objectToArray: "$routes" } } },
         { $unwind: "$routes" },
-        { $group: { _id: "$routes.k", count: { $sum: "$routes.v" } } },
+        { $group: { 
+            _id: "$routes.k", 
+            count: { 
+              $sum: { $cond: [{ $isNumber: "$routes.v" }, "$routes.v", "$routes.v.count"] } 
+            },
+            errors: {
+              $sum: { $cond: [{ $isNumber: "$routes.v" }, 0, "$routes.v.errors"] }
+            },
+            durationSum: {
+              $sum: { $cond: [{ $isNumber: "$routes.v" }, 0, "$routes.v.duration"] }
+            }
+        } },
         { $sort: { count: -1 } },
         { $limit: 50 },
       ]),
@@ -315,10 +316,7 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
       let detailedBreakdown: any[] = [];
       const codeMap = new Map<number, number>();
 
-      // statusBreakdown is array of Maps (one per minute in the bucket if grouped)
-      // or just one Map if 1:1.
       point.statusBreakdown?.forEach((mapObj: any) => {
-        // mapObj is { "200": 5, "404": 1 }
         for (const [codeStr, count] of Object.entries(mapObj)) {
           const code = parseInt(codeStr);
           const val = count as number;
@@ -353,8 +351,8 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
         method: method || 'UNKNOWN',
         route: rest.join(' ') || r._id,
         count: r.count,
-        errorRate: 0, // Metric shortcut doesn't track per-route errors yet
-        avgLatency: 0 // Metric shortcut doesn't track per-route latency yet
+        errorRate: r.count > 0 ? (r.errors / r.count) * 100 : 0,
+        avgLatency: r.count > 0 ? r.durationSum / r.count : 0
       };
     });
 

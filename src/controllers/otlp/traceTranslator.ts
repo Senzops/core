@@ -100,7 +100,15 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
             m.durationSum += duration;
             if (duration > m.durationMax) m.durationMax = duration;
             const safeRoute = `${method} ${route}`.replace(/\./g, '_').replace(/\$/g, '');
-            m.routes[safeRoute] = (m.routes[safeRoute] || 0) + 1;
+            
+            // Enterprise Object tracking for routes
+            if (!m.routes[safeRoute]) {
+              m.routes[safeRoute] = { count: 0, errors: 0, duration: 0 };
+            }
+            m.routes[safeRoute].count += 1;
+            if (isError) m.routes[safeRoute].errors += 1;
+            m.routes[safeRoute].duration += duration;
+
             m.statusCodes[spanStatus] = (m.statusCodes[spanStatus] || 0) + 1;
 
           } else if (context.target === 'task') {
@@ -162,14 +170,12 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
             meta: { 'db.system': dbSystem, 'db.statement': dbStatement, 'http.url': httpUrl, 'error': errorMsg }
           };
 
-          // Enterprise Fix: Partial Trace Protection
-          // If a child span arrives before the root span, $setOnInsert provisions a valid stub trace
-          // to guarantee the UI never renders "empty" rows. Once the root arrives, $set overwrites it.
+          // Partial Trace Protection
           if (context.target === 'apm') {
-            apmTraceOps.push({
-              updateOne: {
-                filter: { traceId, serviceId: context.serviceId },
-                update: {
+            apmTraceOps.push({ 
+              updateOne: { 
+                filter: { traceId, serviceId: context.serviceId }, 
+                update: { 
                   $push: { spans: childSpan },
                   $setOnInsert: {
                     timestamp,
@@ -180,15 +186,15 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
                     status: 200,
                     hasErrors: isError
                   }
-                },
-                upsert: true
-              }
+                }, 
+                upsert: true 
+              } 
             });
           } else if (context.target === 'task') {
-            taskRunOps.push({
-              updateOne: {
-                filter: { runId: traceId, serviceId: context.serviceId },
-                update: {
+            taskRunOps.push({ 
+              updateOne: { 
+                filter: { runId: traceId, serviceId: context.serviceId }, 
+                update: { 
                   $push: { spans: childSpan },
                   $setOnInsert: {
                     timestamp,
@@ -198,15 +204,15 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
                     taskType: 'custom',
                     metadata: { source: 'opentelemetry' }
                   }
-                },
-                upsert: true
-              }
+                }, 
+                upsert: true 
+              } 
             });
           } else if (context.target === 'rum') {
-            rumTraceOps.push({
-              updateOne: {
-                filter: { traceId, serviceId: context.serviceId },
-                update: {
+            rumTraceOps.push({ 
+              updateOne: { 
+                filter: { traceId, serviceId: context.serviceId }, 
+                update: { 
                   $push: { spans: childSpan },
                   $setOnInsert: {
                     timestamp,
@@ -217,9 +223,9 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
                     sessionId: 'unknown',
                     ip: '0.0.0.0', country: 'Unknown', city: 'Unknown', userAgent: 'OTel-Agent', browser: 'Unknown', os: 'Unknown', device: 'Unknown'
                   }
-                },
-                upsert: true
-              }
+                }, 
+                upsert: true 
+              } 
             });
           }
         }
@@ -260,7 +266,11 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
   if (apmMetricsMap.size > 0) {
     const apmMetOps = Array.from(apmMetricsMap.values()).map(m => {
       const incUpdate: any = { requests: m.requests, errorCount: m.errorCount, durationSum: m.durationSum };
-      Object.entries(m.routes).forEach(([k, v]) => incUpdate[`routes.${k}`] = v);
+      Object.entries(m.routes).forEach(([k, v]: [string, any]) => {
+        incUpdate[`routes.${k}.count`] = v.count;
+        incUpdate[`routes.${k}.errors`] = v.errors;
+        incUpdate[`routes.${k}.duration`] = v.duration;
+      });
       Object.entries(m.statusCodes).forEach(([k, v]) => incUpdate[`statusCodes.${k}`] = v);
       return { updateOne: { filter: { serviceId: context.serviceId, timestamp: m.timestamp }, update: { $inc: incUpdate, $max: { durationMax: m.durationMax } }, upsert: true } };
     });

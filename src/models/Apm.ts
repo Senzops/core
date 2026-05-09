@@ -1,7 +1,7 @@
 import mongoose, { Schema, Document } from 'mongoose';
 /**
- *  Service
- *  */
+ * Service
+ * */
 // --- 1. Service Registry (Existing) ---
 export interface IApmService extends Document {
   ownerId: string;
@@ -35,8 +35,8 @@ export interface IError {
   stack?: String
 }
 /**
- *  Trace
- *  */
+ * Trace
+ * */
 // --- 3. Raw Trace Data ---
 export interface IApmTrace extends Document {
   serviceId: mongoose.Types.ObjectId;
@@ -124,8 +124,8 @@ ApmTraceSchema.index({ createdAt: 1 }, { expireAfterSeconds: 604800 });
 export const ApmTrace = mongoose.model<IApmTrace>('ApmTrace', ApmTraceSchema);
 
 /**
- *  Metric
- *  */
+ * Metric
+ * */
 export interface IApmMetric extends Document {
   serviceId: mongoose.Types.ObjectId;
   timestamp: Date; // Minute bucket (e.g. 10:00, 10:01)
@@ -137,8 +137,8 @@ export interface IApmMetric extends Document {
   durationMax: number;
 
   // Dimensions (Maps)
-  // We use Maps to store counts: { "GET /api": 50, "POST /login": 10 }
-  routes: Map<string, number>;
+  // Enterprise Evolution: 'routes' map now handles Objects to support robust dashboard aggregates
+  routes: Map<string, any>; 
   statusCodes: Map<string, number>;
 
   // Context
@@ -157,7 +157,8 @@ const ApmMetricSchema = new Schema<IApmMetric>({
   durationSum: { type: Number, default: 0 },
   durationMax: { type: Number, default: 0 },
 
-  routes: { type: Map, of: Number, default: {} },
+  // Using Mixed Type dynamically protects legacy "number only" records from failing Mongoose validation mapping
+  routes: { type: Map, of: Schema.Types.Mixed, default: {} },
   statusCodes: { type: Map, of: Number, default: {} },
 
   countries: { type: Map, of: Number, default: {} },

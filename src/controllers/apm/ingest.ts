@@ -175,7 +175,8 @@ const processBatchBackground = async (
 
     const m = metricsMap.get(bucketKey);
     m.requests++;
-    if (item.status >= 400) m.errorCount++;
+    const isError = item.status >= 400;
+    if (isError) m.errorCount++;
     m.durationSum += item.duration;
     if (item.duration > m.durationMax) m.durationMax = item.duration;
 
@@ -184,7 +185,16 @@ const processBatchBackground = async (
       obj[safeKey] = (obj[safeKey] || 0) + 1;
     };
 
-    inc(m.routes, `${item.method} ${item.route}`);
+    // Advanced Route Tracking (Supports dynamic metric extrapolation)
+    const incRoute = (obj: Record<string, any>, key: string, isErr: boolean, dur: number) => {
+      const safeKey = key.replace(/\./g, '_').replace(/\$/g, '');
+      if (!obj[safeKey]) obj[safeKey] = { count: 0, errors: 0, duration: 0 };
+      obj[safeKey].count += 1;
+      if (isErr) obj[safeKey].errors += 1;
+      obj[safeKey].duration += dur;
+    };
+
+    incRoute(m.routes, `${item.method} ${item.route}`, isError, item.duration);
     inc(m.statusCodes, item.status.toString());
     inc(m.countries, country);
     inc(m.browsers, browser);
@@ -284,13 +294,20 @@ const processBatchBackground = async (
       durationSum: m.durationSum,
     };
 
+    // Route Metrics Map Write optimization:
+    // Destructuring into explicit sub-keys protects Mongoose from rewriting the entire mapping structure
+    for (const [k, v] of Object.entries(m.routes)) {
+      incUpdate[`routes.${k}.count`] = (v as any).count;
+      incUpdate[`routes.${k}.errors`] = (v as any).errors;
+      incUpdate[`routes.${k}.duration`] = (v as any).duration;
+    }
+
     const addMapToInc = (prefix: string, obj: Record<string, number>) => {
       for (const [k, v] of Object.entries(obj)) {
         incUpdate[`${prefix}.${k}`] = v;
       }
     };
 
-    addMapToInc('routes', m.routes);
     addMapToInc('statusCodes', m.statusCodes);
     addMapToInc('countries', m.countries);
     addMapToInc('browsers', m.browsers);
