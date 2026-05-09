@@ -2,6 +2,27 @@ import { Request, Response, NextFunction } from 'express';
 import { logger } from '../../utils/logger';
 import { translateOtlpTraces } from './traceTranslator';
 import { translateOtlpLogs } from './logTranslator';
+import { ApmService } from '../../models/Apm';
+import { RumService } from '../../models/Rum';
+import { TaskService } from '../../models/Task';
+import { OtlpContext } from '../../middlewares/otlpAuth';
+
+// --- Enterprise Fix: Centralized Async Heartbeat ---
+// Updates the service's lastSeen timestamp without blocking the high-throughput OTLP pipeline.
+const updateLastSeen = async (context: OtlpContext) => {
+  const now = new Date();
+  try {
+    if (context.target === 'apm') {
+      await ApmService.findByIdAndUpdate(context.serviceId, { lastSeen: now });
+    } else if (context.target === 'rum') {
+      await RumService.findByIdAndUpdate(context.serviceId, { lastSeen: now });
+    } else if (context.target === 'task') {
+      await TaskService.findByIdAndUpdate(context.serviceId, { lastSeen: now });
+    }
+  } catch (error: any) {
+    logger.error(`[OTLP Gateway] Failed to update lastSeen for ${context.serviceName}: ${error.message}`);
+  }
+};
 
 /**
  * Handles incoming OpenTelemetry Trace Data (ResourceSpans)
@@ -23,6 +44,9 @@ export const ingestOtlpTraces = async (req: Request, res: Response, next: NextFu
     translateOtlpTraces(context, resourceSpans).catch(err => {
       logger.error(`[OTLP Traces] Translation failed for ${context.serviceName}: ${err.message}`);
     });
+
+    // Fire the heartbeat updater
+    updateLastSeen(context);
 
     logger.info(`[OTLP Gateway] Accepted Trace payload from ${context.target} service: ${context.serviceName}`);
 
@@ -53,6 +77,9 @@ export const ingestOtlpLogs = async (req: Request, res: Response, next: NextFunc
     translateOtlpLogs(context, resourceLogs).catch(err => {
       logger.error(`[OTLP Logs] Translation failed for ${context.serviceName}: ${err.message}`);
     });
+
+    // Fire the heartbeat updater
+    updateLastSeen(context);
 
     logger.info(`[OTLP Gateway] Accepted Logs payload from ${context.target} service: ${context.serviceName}`);
 

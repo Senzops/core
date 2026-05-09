@@ -38,9 +38,9 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
         const kind = span.kind; // 1: INTERNAL, 2: SERVER, 3: CLIENT, 4: PRODUCER, 5: CONSUMER
         const name = span.name || 'Unknown Operation';
 
-        // Convert Unix Nano to Milliseconds
-        const startTimeMs = Number(span.startTimeUnixNano) / 1000000;
-        const endTimeMs = Number(span.endTimeUnixNano) / 1000000;
+        // Convert Unix Nano to Milliseconds with safe fallback guarantees
+        const startTimeMs = span.startTimeUnixNano ? Number(span.startTimeUnixNano) / 1000000 : Date.now();
+        const endTimeMs = span.endTimeUnixNano ? Number(span.endTimeUnixNano) / 1000000 : startTimeMs;
         const duration = Math.max(0, endTimeMs - startTimeMs);
         const timestamp = new Date(startTimeMs);
 
@@ -70,9 +70,9 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
         if (isRoot) {
           // --- 1. ROOT SPAN REGISTRATION ---
           if (context.target === 'apm') {
-            const route = httpRoute || httpTarget || name;
-            const path = httpTarget || httpUrl || name;
-            const method = httpMethod || 'UNKNOWN';
+            const route = httpRoute || httpTarget || name || 'Unknown Route';
+            const path = httpTarget || httpUrl || name || 'Unknown Path';
+            const method = httpMethod || 'INTERNAL';
 
             apmTraceOps.push({
               updateOne: {
@@ -141,7 +141,7 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
                   $set: {
                     serviceId: context.serviceId, traceId,
                     sessionId: getAttribute(attributes, 'session.id') || 'unknown',
-                    traceType: 'route_change', url: httpUrl || 'unknown', path: httpTarget || name,
+                    traceType: 'route_change', url: httpUrl || 'unknown', path: httpTarget || name || 'Unknown Path',
                     duration, timestamp,
                     ip: '0.0.0.0', country: 'Unknown', city: 'Unknown', userAgent: 'OTel-Agent', browser: 'Unknown', os: 'Unknown', device: 'Unknown'
                   }
@@ -162,12 +162,65 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
             meta: { 'db.system': dbSystem, 'db.statement': dbStatement, 'http.url': httpUrl, 'error': errorMsg }
           };
 
+          // Enterprise Fix: Partial Trace Protection
+          // If a child span arrives before the root span, $setOnInsert provisions a valid stub trace
+          // to guarantee the UI never renders "empty" rows. Once the root arrives, $set overwrites it.
           if (context.target === 'apm') {
-            apmTraceOps.push({ updateOne: { filter: { traceId, serviceId: context.serviceId }, update: { $push: { spans: childSpan } }, upsert: true } });
+            apmTraceOps.push({
+              updateOne: {
+                filter: { traceId, serviceId: context.serviceId },
+                update: {
+                  $push: { spans: childSpan },
+                  $setOnInsert: {
+                    timestamp,
+                    duration: 0,
+                    method: 'INTERNAL',
+                    route: name || 'Internal Operation',
+                    path: name || 'Internal Operation',
+                    status: 200,
+                    hasErrors: isError
+                  }
+                },
+                upsert: true
+              }
+            });
           } else if (context.target === 'task') {
-            taskRunOps.push({ updateOne: { filter: { runId: traceId, serviceId: context.serviceId }, update: { $push: { spans: childSpan } }, upsert: true } });
+            taskRunOps.push({
+              updateOne: {
+                filter: { runId: traceId, serviceId: context.serviceId },
+                update: {
+                  $push: { spans: childSpan },
+                  $setOnInsert: {
+                    timestamp,
+                    duration: 0,
+                    taskName: name || 'Internal Task',
+                    status: isError ? 'failed' : 'success',
+                    taskType: 'custom',
+                    metadata: { source: 'opentelemetry' }
+                  }
+                },
+                upsert: true
+              }
+            });
           } else if (context.target === 'rum') {
-            rumTraceOps.push({ updateOne: { filter: { traceId, serviceId: context.serviceId }, update: { $push: { spans: childSpan } }, upsert: true } });
+            rumTraceOps.push({
+              updateOne: {
+                filter: { traceId, serviceId: context.serviceId },
+                update: {
+                  $push: { spans: childSpan },
+                  $setOnInsert: {
+                    timestamp,
+                    duration: 0,
+                    url: 'unknown',
+                    path: name || 'Internal',
+                    traceType: 'resource',
+                    sessionId: 'unknown',
+                    ip: '0.0.0.0', country: 'Unknown', city: 'Unknown', userAgent: 'OTel-Agent', browser: 'Unknown', os: 'Unknown', device: 'Unknown'
+                  }
+                },
+                upsert: true
+              }
+            });
           }
         }
 
