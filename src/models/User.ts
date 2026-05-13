@@ -32,6 +32,8 @@ UserSchema.post('save', async function (doc) {
       planId: 'starter',
       status: 'active',
       provider: 'none',
+      billingInterval: 'monthly',
+      startedAt: new Date(), // Explicit start date tracking
       currentMonthBytes: 0,
       billingCycleReset: nextMonth
     });

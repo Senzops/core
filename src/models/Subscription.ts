@@ -1,13 +1,17 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
 export interface ISubscription extends Document {
-  ownerId: string; // Changed to match Firebase UID typing universally
+  ownerId: string;
   planId: string;
   status: 'active' | 'past_due' | 'canceled' | 'trialing';
   provider: 'paddle' | 'stripe' | 'none';
 
   providerCustomerId?: string;
   providerSubscriptionId?: string;
+
+  // Enterprise Billing Additions
+  billingInterval: 'monthly' | 'annual';
+  startedAt: Date;
 
   currentMonthBytes: number;
   billingCycleReset: Date;
@@ -18,7 +22,6 @@ export interface ISubscription extends Document {
 
 const SubscriptionSchema = new Schema<ISubscription>(
   {
-    // CRITICAL FIX: type is now String to match the Firebase UID schema used platform-wide
     ownerId: { type: String, required: true, unique: true, index: true },
     planId: { type: String, required: true, default: 'starter' },
     status: { type: String, required: true, default: 'active' },
@@ -26,6 +29,9 @@ const SubscriptionSchema = new Schema<ISubscription>(
 
     providerCustomerId: { type: String },
     providerSubscriptionId: { type: String, index: true },
+
+    billingInterval: { type: String, enum: ['monthly', 'annual'], default: 'monthly' },
+    startedAt: { type: Date, default: Date.now },
 
     currentMonthBytes: { type: Number, default: 0, min: 0 },
     billingCycleReset: { type: Date, required: true },

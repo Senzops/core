@@ -36,19 +36,15 @@ export const getActivePlans = async (req: Request, res: Response) => {
  */
 export const getCurrentSubscription = async (req: Request, res: Response) => {
   try {
-    // Force the use of the Firebase UID string to maintain parity across the platform
     const ownerId = (req as any).user?.uid;
 
     if (!ownerId) {
       return res.status(401).json({ error: "Unauthorized. Missing user context." });
     }
 
-    // Explicitly type as 'any' to bypass Mongoose's strict union types between .lean() and .toObject()
     let sub: any = await Subscription.findOne({ ownerId }).lean();
 
     // --- ENTERPRISE FIX: JIT Legacy User Auto-Provisioning ---
-    // If the user registered before the billing system was deployed, they won't 
-    // have a Subscription document. We silently create their free tier here.
     if (!sub) {
       logger.info(`[Billing] Legacy user detected (${ownerId}). Auto-provisioning Starter plan.`);
 
@@ -60,11 +56,12 @@ export const getCurrentSubscription = async (req: Request, res: Response) => {
         planId: 'starter',
         status: 'active',
         provider: 'none',
+        billingInterval: 'monthly',
+        startedAt: new Date(),
         currentMonthBytes: 0,
         billingCycleReset: nextMonth
       });
 
-      // Convert the Mongoose document back to a plain object to match the `.lean()` format
       sub = newSub.toObject();
     }
 
@@ -85,15 +82,10 @@ export const getCurrentSubscription = async (req: Request, res: Response) => {
 };
 
 
-/**
- * PRODUCTION FIX: Estimate DB Footprint safely.
- * Resolves service IDs first, then uses indexed $in arrays for blazing-fast counts.
- */
 export const getStorageStats = async (req: Request, res: Response) => {
   try {
     const ownerId = (req as any).user?.uid;
 
-    // 1. Instantly resolve all Service IDs owned by this tenant
     const [apmServices, rumServices, taskServices] = await Promise.all([
       mongoose.models.ApmService ? mongoose.models.ApmService.find({ ownerId }).select('_id').lean() : [],
       mongoose.models.RumService ? mongoose.models.RumService.find({ ownerId }).select('_id').lean() : [],
@@ -104,7 +96,6 @@ export const getStorageStats = async (req: Request, res: Response) => {
     const rumIds = rumServices.map(s => s._id);
     const taskIds = taskServices.map(s => s._id);
 
-    // 2. Parallel execution of ultra-fast index scans using the resolved IDs
     const [apmCount, logsCount, rumCount, taskCount] = await Promise.all([
       apmIds.length > 0 && mongoose.models.ApmTrace ? mongoose.models.ApmTrace.countDocuments({ serviceId: { $in: apmIds } }) : 0,
       mongoose.models.LogEvent ? mongoose.models.LogEvent.countDocuments({ ownerId }) : 0,
@@ -112,17 +103,16 @@ export const getStorageStats = async (req: Request, res: Response) => {
       taskIds.length > 0 && mongoose.models.TaskRun ? mongoose.models.TaskRun.countDocuments({ serviceId: { $in: taskIds } }) : 0,
     ]);
 
-    // Enterprise Heuristics (Average bytes per document type)
-    const APM_TRACE_BYTES = 2500;   // ~2.5KB per complex trace
-    const LOG_BYTES = 800;          // ~0.8KB per log line
-    const RUM_EVENT_BYTES = 1200;   // ~1.2KB per RUM payload
-    const TASK_RUN_BYTES = 1500;    // ~1.5KB per background job record
+    const APM_TRACE_BYTES = 2500;
+    const LOG_BYTES = 800;
+    const RUM_EVENT_BYTES = 1200;
+    const TASK_RUN_BYTES = 1500;
 
     const stats = [
-      { service: 'APM Traces', bytes: apmCount * APM_TRACE_BYTES, count: apmCount, color: '#f97316' }, // Orange
-      { service: 'Logs', bytes: logsCount * LOG_BYTES, count: logsCount, color: '#3b82f6' },           // Blue
-      { service: 'RUM Events', bytes: rumCount * RUM_EVENT_BYTES, count: rumCount, color: '#ec4899' }, // Pink
-      { service: 'Tasks', bytes: taskCount * TASK_RUN_BYTES, count: taskCount, color: '#6366f1' },     // Indigo
+      { service: 'APM Traces', bytes: apmCount * APM_TRACE_BYTES, count: apmCount, color: '#f97316' },
+      { service: 'Logs', bytes: logsCount * LOG_BYTES, count: logsCount, color: '#3b82f6' },
+      { service: 'RUM Events', bytes: rumCount * RUM_EVENT_BYTES, count: rumCount, color: '#ec4899' },
+      { service: 'Tasks', bytes: taskCount * TASK_RUN_BYTES, count: taskCount, color: '#6366f1' },
     ];
 
     res.json({ stats, totalCalculatedBytes: stats.reduce((acc, curr) => acc + curr.bytes, 0) });
@@ -132,16 +122,13 @@ export const getStorageStats = async (req: Request, res: Response) => {
   }
 };
 
-/**
- * Fetch Billing History
- */
 export const getTransactions = async (req: Request, res: Response) => {
   try {
     const ownerId = (req as any).user?.uid;
     const transactions = await Transaction.find({ ownerId })
       .select('paddleTransactionId amount currency status receiptUrl billedAt')
       .sort({ billedAt: -1 })
-      .limit(24) // Last 2 years
+      .limit(24)
       .lean();
 
     res.json({ transactions });
@@ -150,14 +137,11 @@ export const getTransactions = async (req: Request, res: Response) => {
   }
 };
 
-/**
- * Cancel Subscription Workflow
- */
 export const cancelSubscription = async (req: Request, res: Response) => {
   try {
     const ownerId = (req as any).user?.uid;
     const sub = await Subscription.findOne({ ownerId });
-    
+
     if (!sub || sub.planId === 'starter') {
       return res.status(400).json({ error: "No active paid subscription to cancel." });
     }
@@ -166,18 +150,16 @@ export const cancelSubscription = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Subscription is already scheduled for cancellation." });
     }
 
-    // 1. Communicate with Paddle via Server-to-Server API
     if (sub.provider === 'paddle' && sub.providerSubscriptionId) {
       const isSandbox = process.env.PADDLE_ENV === 'sandbox';
       const paddleApiUrl = isSandbox ? 'https://sandbox-api.paddle.com' : 'https://api.paddle.com';
-      const paddleApiKey = process.env.PADDLE_API_KEY; // Must be added to your backend .env
+      const paddleApiKey = process.env.PADDLE_API_KEY;
 
       if (!paddleApiKey) {
-         logger.error(`[Billing] CRITICAL: Missing PADDLE_API_KEY environment variable.`);
-         return res.status(500).json({ error: "Internal payment gateway misconfiguration." });
+        logger.error(`[Billing] CRITICAL: Missing PADDLE_API_KEY environment variable.`);
+        return res.status(500).json({ error: "Internal payment gateway misconfiguration." });
       }
 
-      // Call Paddle v2 API to cancel the subscription
       const response = await fetch(`${paddleApiUrl}/subscriptions/${sub.providerSubscriptionId}/cancel`, {
         method: 'POST',
         headers: {
@@ -185,8 +167,7 @@ export const cancelSubscription = async (req: Request, res: Response) => {
           'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          // 'next_billing_period' ensures they keep access until the end of the month they paid for
-          effective_from: 'next_billing_period' 
+          effective_from: 'next_billing_period'
         })
       });
 
@@ -196,13 +177,12 @@ export const cancelSubscription = async (req: Request, res: Response) => {
         return res.status(400).json({ error: "Failed to communicate cancellation to payment provider. Please contact support." });
       }
     }
-    
-    // 2. Update local database state to reflect intention
+
     sub.status = 'canceled';
     await sub.save();
 
-    logger.info(`[Billing] User ${ownerId} successfully scheduled subscription cancellation via Paddle.`);
-    
+    logger.info(`[Billing] User ${ownerId} successfully scheduled subscription cancellation.`);
+
     res.json({ message: "Subscription scheduled for cancellation. You will be downgraded to the Starter plan at the end of your current cycle." });
   } catch (error: any) {
     logger.error(`[Billing Cancel] Error: ${error.message}`);
@@ -210,10 +190,8 @@ export const cancelSubscription = async (req: Request, res: Response) => {
   }
 };
 
-
 /**
  * POST /api/billing/paddle-webhook
- * Zero-Trust Webhook Receiver. This is hit by Paddle's servers, NOT your frontend.
  */
 export const handlePaddleWebhook = async (req: Request, res: Response) => {
   try {
@@ -221,22 +199,20 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
     if (!signature) return res.status(401).send('Unauthorized');
 
     const event = req.body;
-    const eventType = event.event_type; 
+    const eventType = event.event_type;
     const payload = event.data;
-    const ownerId = payload.custom_data?.ownerId; 
+    const ownerId = payload.custom_data?.ownerId;
 
     if (!ownerId) {
       logger.error('[Billing Webhook] CRITICAL: Webhook received without custom_data.ownerId');
       return res.status(400).send('Missing ownerId');
     }
 
-    // 1. Handle Successful Payments & Invoice Generation
     if (eventType === 'transaction.completed' || eventType === 'transaction.paid') {
       const rawAmount = payload.details?.totals?.grand_total || payload.amount || "0";
 
-      // Use findOneAndUpdate with upsert: true to guarantee idempotency.
       await Transaction.findOneAndUpdate(
-        { paddleTransactionId: payload.id }, // Match condition
+        { paddleTransactionId: payload.id },
         {
           $set: {
             ownerId,
@@ -246,25 +222,41 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
             billedAt: new Date(payload.created_at || payload.billed_at || Date.now())
           }
         },
-        { upsert: true, new: true } // Create if missing, update if existing
+        { upsert: true, new: true }
       );
-      
+
       logger.info(`[Billing Webhook] Saved transaction receipt for ${ownerId}`);
     }
 
-    // 2. Handle Subscription Upgrades/Downgrades
+    // ENTERPRISE FIX: Infer Monthly/Annual Interval and preserve startedAt
     if (eventType === 'subscription.activated' || eventType === 'subscription.updated') {
       const incomingPriceId = payload.items?.[0]?.price?.id || payload.items?.[0]?.product?.id;
       const matchedPlan = Object.values(PLANS).find(p => p.paddlePriceIdMonthly === incomingPriceId || p.paddlePriceIdAnnual === incomingPriceId);
+
       const targetPlanId = matchedPlan ? matchedPlan.id : 'starter';
+      const isAnnual = matchedPlan && incomingPriceId === matchedPlan.paddlePriceIdAnnual;
       const nextBillingDate = new Date(payload.current_billing_period.ends_at);
 
       await Subscription.findOneAndUpdate(
         { ownerId },
-        { $set: { planId: targetPlanId, status: payload.status === 'active' ? 'active' : 'past_due', provider: 'paddle', providerCustomerId: payload.customer_id, providerSubscriptionId: payload.id, billingCycleReset: nextBillingDate } },
+        {
+          $set: {
+            planId: targetPlanId,
+            status: payload.status === 'active' ? 'active' : 'past_due',
+            provider: 'paddle',
+            providerCustomerId: payload.customer_id,
+            providerSubscriptionId: payload.id,
+            billingInterval: isAnnual ? 'annual' : 'monthly',
+            billingCycleReset: nextBillingDate
+          },
+          // Protects original start date if this is an update, populates it if brand new
+          $setOnInsert: {
+            startedAt: new Date(payload.created_at || Date.now())
+          }
+        },
         { upsert: true }
       );
-    } 
+    }
     else if (eventType === 'subscription.canceled' || eventType === 'subscription.past_due') {
       await Subscription.findOneAndUpdate({ ownerId }, { $set: { status: eventType === 'subscription.canceled' ? 'canceled' : 'past_due' } });
     }
@@ -276,41 +268,30 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
   }
 };
 
-/**
- * JIT Receipt Retrieval
- * Securely asks Paddle for a fresh invoice URL on-demand if the webhook missed it.
- */
 export const getTransactionReceipt = async (req: Request, res: Response) => {
   try {
     const ownerId = (req as any).user?.uid;
     const { transactionId } = req.params;
 
-    // 1. Verify ownership (Security Check)
     const tx = await Transaction.findOne({ paddleTransactionId: transactionId, ownerId });
     if (!tx) {
       return res.status(404).json({ error: "Transaction not found." });
     }
 
-    // 2. JIT Fetch: Ask Paddle API for the Invoice URL
     const isSandbox = process.env.PADDLE_ENV === 'sandbox';
     const paddleApiUrl = isSandbox ? 'https://sandbox-api.paddle.com' : 'https://api.paddle.com';
     const paddleApiKey = process.env.PADDLE_API_KEY;
 
     if (!paddleApiKey) {
-      logger.error(`[Billing] Missing PADDLE_API_KEY for receipt retrieval.`);
       return res.status(500).json({ error: "Internal payment configuration error." });
     }
 
     const response = await fetch(`${paddleApiUrl}/transactions/${transactionId}/invoice`, {
       method: 'GET',
-      headers: {
-        'Authorization': `Bearer ${paddleApiKey}`,
-        'Content-Type': 'application/json'
-      }
+      headers: { 'Authorization': `Bearer ${paddleApiKey}`, 'Content-Type': 'application/json' }
     });
 
     if (!response.ok) {
-      logger.error(`[Billing] Paddle API failed to generate invoice for ${transactionId}`);
       return res.status(404).json({ error: "Invoice is still generating. Please try again in a few minutes." });
     }
 
@@ -324,7 +305,6 @@ export const getTransactionReceipt = async (req: Request, res: Response) => {
     return res.status(404).json({ error: "Invoice unavailable." });
 
   } catch (error: any) {
-    logger.error(`[Billing Receipt] Error: ${error.message}`);
     res.status(500).json({ error: "Failed to retrieve receipt." });
   }
 };
