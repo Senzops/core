@@ -6,6 +6,7 @@ import { startDatabaseWorker } from './database';
 import { startWatchdogWorker } from './watchdog';
 import { startDemoWorker } from './demo';
 import { startAlertWatchdog } from './alertWatchdog';
+import { startBillingCron } from './billing';
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/senzor';
 
@@ -21,6 +22,7 @@ const initWorker = async () => {
     startDatabaseWorker();
     startWatchdogWorker();
     startDemoWorker(); // Demo worker
+    startBillingCron();
 
     // Boot up the Alert Evaluation Engine
     startAlertWatchdog();

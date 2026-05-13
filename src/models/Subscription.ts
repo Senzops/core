@@ -9,12 +9,13 @@ export interface ISubscription extends Document {
   providerCustomerId?: string;
   providerSubscriptionId?: string;
 
-  // Enterprise Billing Additions
+  // Enterprise Billing Mechanics
   billingInterval: 'monthly' | 'annual';
   startedAt: Date;
 
   currentMonthBytes: number;
-  billingCycleReset: Date;
+  quotaResetAt: Date;        // Strict monthly data cycle
+  billingCycleReset: Date;   // Payment/Renewal cycle
 
   createdAt: Date;
   updatedAt: Date;
@@ -34,12 +35,14 @@ const SubscriptionSchema = new Schema<ISubscription>(
     startedAt: { type: Date, default: Date.now },
 
     currentMonthBytes: { type: Number, default: 0, min: 0 },
+    quotaResetAt: { type: Date, required: true },
     billingCycleReset: { type: Date, required: true },
   },
   { timestamps: true }
 );
 
-// Indexes for fast lookup during ingestion and background resets
+// Indexes for ultra-fast background cron evaluation
+SubscriptionSchema.index({ quotaResetAt: 1 });
 SubscriptionSchema.index({ billingCycleReset: 1 });
 
 export const Subscription = mongoose.model<ISubscription>('Subscription', SubscriptionSchema);

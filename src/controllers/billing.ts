@@ -5,10 +5,6 @@ import { Subscription } from '../models/Subscription';
 import { Transaction } from '../models/Transaction';
 import { logger } from '../utils/logger';
 
-/**
- * GET /api/billing/plans
- * Exposes the active plans and limits to the Frontend Pricing Page.
- */
 export const getActivePlans = async (req: Request, res: Response) => {
   try {
     const publicPlans = Object.values(PLANS).map(plan => ({
@@ -29,11 +25,6 @@ export const getActivePlans = async (req: Request, res: Response) => {
   }
 };
 
-/**
- * GET /api/billing/subscription
- * Returns the active user's current subscription and usage.
- * Features JIT (Just-In-Time) provisioning for legacy users.
- */
 export const getCurrentSubscription = async (req: Request, res: Response) => {
   try {
     const ownerId = (req as any).user?.uid;
@@ -44,7 +35,6 @@ export const getCurrentSubscription = async (req: Request, res: Response) => {
 
     let sub: any = await Subscription.findOne({ ownerId }).lean();
 
-    // --- ENTERPRISE FIX: JIT Legacy User Auto-Provisioning ---
     if (!sub) {
       logger.info(`[Billing] Legacy user detected (${ownerId}). Auto-provisioning Starter plan.`);
 
@@ -59,6 +49,7 @@ export const getCurrentSubscription = async (req: Request, res: Response) => {
         billingInterval: 'monthly',
         startedAt: new Date(),
         currentMonthBytes: 0,
+        quotaResetAt: nextMonth,
         billingCycleReset: nextMonth
       });
 
@@ -80,7 +71,6 @@ export const getCurrentSubscription = async (req: Request, res: Response) => {
     res.status(500).json({ error: "Failed to fetch subscription." });
   }
 };
-
 
 export const getStorageStats = async (req: Request, res: Response) => {
   try {
@@ -190,9 +180,6 @@ export const cancelSubscription = async (req: Request, res: Response) => {
   }
 };
 
-/**
- * POST /api/billing/paddle-webhook
- */
 export const handlePaddleWebhook = async (req: Request, res: Response) => {
   try {
     const signature = req.headers['paddle-signature'];
@@ -228,7 +215,6 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
       logger.info(`[Billing Webhook] Saved transaction receipt for ${ownerId}`);
     }
 
-    // ENTERPRISE FIX: Infer Monthly/Annual Interval and preserve startedAt
     if (eventType === 'subscription.activated' || eventType === 'subscription.updated') {
       const incomingPriceId = payload.items?.[0]?.price?.id || payload.items?.[0]?.product?.id;
       const matchedPlan = Object.values(PLANS).find(p => p.paddlePriceIdMonthly === incomingPriceId || p.paddlePriceIdAnnual === incomingPriceId);
@@ -237,19 +223,28 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
       const isAnnual = matchedPlan && incomingPriceId === matchedPlan.paddlePriceIdAnnual;
       const nextBillingDate = new Date(payload.current_billing_period.ends_at);
 
+      const updatePayload: any = {
+        planId: targetPlanId,
+        status: payload.status === 'active' ? 'active' : 'past_due',
+        provider: 'paddle',
+        providerCustomerId: payload.customer_id,
+        providerSubscriptionId: payload.id,
+        billingInterval: isAnnual ? 'annual' : 'monthly',
+        billingCycleReset: nextBillingDate
+      };
+
+      // Ensure fresh quota cycles explicitly when a brand new subscription is triggered
+      if (eventType === 'subscription.activated') {
+        const nextQuota = new Date(payload.created_at || Date.now());
+        nextQuota.setMonth(nextQuota.getMonth() + 1);
+        updatePayload.quotaResetAt = nextQuota;
+        updatePayload.currentMonthBytes = 0;
+      }
+
       await Subscription.findOneAndUpdate(
         { ownerId },
         {
-          $set: {
-            planId: targetPlanId,
-            status: payload.status === 'active' ? 'active' : 'past_due',
-            provider: 'paddle',
-            providerCustomerId: payload.customer_id,
-            providerSubscriptionId: payload.id,
-            billingInterval: isAnnual ? 'annual' : 'monthly',
-            billingCycleReset: nextBillingDate
-          },
-          // Protects original start date if this is an update, populates it if brand new
+          $set: updatePayload,
           $setOnInsert: {
             startedAt: new Date(payload.created_at || Date.now())
           }

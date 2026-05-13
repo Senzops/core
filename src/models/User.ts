@@ -19,11 +19,9 @@ const UserSchema = new Schema<IUser>({
 // ============================================================================
 UserSchema.post('save', async function (doc) {
   try {
-    // Check if subscription already exists using the Firebase UID string
     const exists = await Subscription.exists({ ownerId: doc.firebaseUid });
     if (exists) return;
 
-    // Set the billing cycle reset to exactly 1 month from now
     const nextMonth = new Date();
     nextMonth.setMonth(nextMonth.getMonth() + 1);
 
@@ -33,9 +31,10 @@ UserSchema.post('save', async function (doc) {
       status: 'active',
       provider: 'none',
       billingInterval: 'monthly',
-      startedAt: new Date(), // Explicit start date tracking
+      startedAt: new Date(),
       currentMonthBytes: 0,
-      billingCycleReset: nextMonth
+      quotaResetAt: nextMonth,       // Populates the Quota Cycle
+      billingCycleReset: nextMonth   // Populates the Renewal Cycle
     });
 
     logger.info(`[Billing] Provisioned 'starter' subscription for new user: ${doc.firebaseUid}`);
