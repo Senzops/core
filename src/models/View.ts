@@ -38,7 +38,7 @@ export interface IViewWidget extends Document {
   name: string;
   target: 'apm' | 'rum' | 'logs' | 'task' | 'vps' | 'database' | 'uptime';
   query: any; // The Safe MQL filter
-  visualization: 'area' | 'line' | 'bar' | 'pie' | 'billboard' | 'table';
+  visualization: 'area' | 'line' | 'bar' | 'pie' | 'billboard' | 'table' | 'gauge' | 'radar' | 'map' | 'json';
   config: {
     aggregate: 'count' | 'avg' | 'sum' | 'max' | 'min'; // Math function
     aggregateField?: string; // Field to do math on (e.g. 'duration')
@@ -52,10 +52,10 @@ const ViewWidgetSchema = new Schema<IViewWidget>({
   name: { type: String, required: true },
   target: { type: String, required: true },
   query: { type: Schema.Types.Mixed, required: true, default: {} },
-  visualization: {
+  visualization: { 
     type: String,
-    enum: ['area', 'line', 'bar', 'pie', 'billboard', 'table'],
-    required: true
+    enum: ['area', 'line', 'bar', 'pie', 'billboard', 'table', 'gauge', 'radar', 'map', 'json'], 
+    required: true 
   },
   config: {
     aggregate: { type: String, enum: ['count', 'avg', 'sum', 'max', 'min'], required: true, default: 'count' },
