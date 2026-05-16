@@ -4,8 +4,6 @@ export const RegisterVpsSchema = z.object({
   name: z.string().min(1).max(50),
 });
 
-// Integration Sub-Schemas
-
 const NginxStatsSchema = z.object({
   activeConnections: z.number(),
   accepts: z.number(),
@@ -29,14 +27,35 @@ const TraefikStatsSchema = z.object({
   middlewares: TraefikComponentSchema,
 }).nullable().optional();
 
+// --- HARDWARE SCHEMAS ---
+const DiskSchema = z.object({
+  total: z.number(),
+  used: z.number(),
+  usagePercent: z.number(),
+  name: z.string(),
+}).passthrough();
 
-// Matches the Agent's TelemetryPayload interface
+const HardwareSchema = z.object({
+  temperature: z.number().default(0),
+  powerDraw: z.number().default(0),
+}).passthrough();
+
+const GpuSchema = z.object({
+  id: z.string(),
+  model: z.string(),
+  utilization: z.number(),
+  temperature: z.number(),
+  powerDraw: z.number(),
+  vramUsed: z.number(),
+  vramTotal: z.number(),
+}).passthrough();
+
 export const TelemetrySchema = z.object({
   os: z.object({
     platform: z.string(),
     distro: z.string(),
     hostname: z.string(),
-  }).passthrough(), // Allow extra OS fields
+  }).passthrough(),
   cpu: z.object({
     usagePercent: z.number(),
     cores: z.number(),
@@ -46,11 +65,12 @@ export const TelemetrySchema = z.object({
     used: z.number(),
     usagePercent: z.number(),
   }).passthrough(),
-  disk: z.object({
-    total: z.number(),
-    used: z.number(),
-    usagePercent: z.number(),
-  }).passthrough(),
+  
+  // Upgraded Structures
+  disk: z.array(DiskSchema).default([]),
+  hardware: HardwareSchema.default({ temperature: 0, powerDraw: 0 }),
+  gpus: z.array(GpuSchema).default([]),
+  
   network: z.object({
     bytesRecvSec: z.number(),
     bytesSentSec: z.number(),

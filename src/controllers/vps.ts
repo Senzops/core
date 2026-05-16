@@ -122,12 +122,10 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
   const filled = [];
   const now = new Date();
 
-  // Start AFTER first minute
   let current = new Date(startDate);
   current.setSeconds(0, 0);
   current.setMinutes(current.getMinutes() + 1);
 
-  // End at CURRENT minute (not +1)
   const end = new Date(now);
   end.setSeconds(0, 0);
 
@@ -145,7 +143,7 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
     if (item) {
       filled.push({ ...item, isOnline: true });
     } else {
-      // Missing minute = Offline state
+      // Safe, compliant empty structure
       filled.push({
         _id: 'gap-' + key,
         createdAt: current.toISOString(),
@@ -153,7 +151,9 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
         metrics: {
           cpu: { usagePercent: 0, cores: 0, brand: '' },
           memory: { used: 0, total: 0, free: 0, active: 0, usagePercent: 0 },
-          disk: { used: 0, total: 0, usagePercent: 0, name: '/' },
+          disk: [], 
+          hardware: { temperature: 0, powerDraw: 0 },
+          gpus: [],
           network: { bytesRecvSec: 0, bytesSentSec: 0, latencyMs: 0 },
           processes: { running: 0, sleeping: 0, blocked: 0, total: 0 },
           uptimeSeconds: 0,
@@ -164,7 +164,7 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
       });
     }
 
-    current.setMinutes(current.getMinutes() + 1); // Step exactly 1 minute, unconditionally
+    current.setMinutes(current.getMinutes() + 1);
   }
 
   return filled;
@@ -177,7 +177,6 @@ export const getVpsStats = async (req: Request, res: Response, next: NextFunctio
     const { uid } = (req as any).user;
     const { range = '1h' } = req.query;
 
-    // Verify ownership
     const vps = await Vps.findOne({ _id: id, ownerId: uid });
     if (!vps) return res.status(404).json({ error: "VPS not found" });
 
@@ -193,7 +192,6 @@ export const getVpsStats = async (req: Request, res: Response, next: NextFunctio
       default: startDate.setHours(now.getHours() - 24); break;
     }
 
-    // Retrieve all raw runs inside the time window (No aggregation applied)
     const runs = await VpsRun.find({
       vpsId: id,
       createdAt: { $gte: startDate }
@@ -201,10 +199,8 @@ export const getVpsStats = async (req: Request, res: Response, next: NextFunctio
       .sort({ createdAt: 1 })
       .lean();
 
-    // Map zero-filled chronological history
     const history = fillTimeGaps(runs, range as string, startDate);
 
-    // Only return vps and history. Frontend handles the rest.
     res.json({ vps, history });
   } catch (error) {
     next(error);
