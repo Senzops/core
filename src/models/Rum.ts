@@ -40,7 +40,7 @@ export interface IRumTrace extends Document {
   serviceId: mongoose.Types.ObjectId;
   traceId: string;    // W3C Traceparent ID
   sessionId: string;
-  traceType: 'initial_load' | 'route_change';
+  traceType: 'initial_load' | 'route_change' | 'span_update';
 
   url: string;
   path: string;
@@ -105,7 +105,7 @@ const RumTraceSchema = new Schema<IRumTrace>({
   serviceId: { type: Schema.Types.ObjectId, ref: 'RumService', required: true, index: true },
   traceId: { type: String, required: true, index: true },
   sessionId: { type: String, required: true, index: true },
-  traceType: { type: String, enum: ['initial_load', 'route_change'], required: true },
+  traceType: { type: String, enum: ['initial_load', 'route_change', 'span_update'], required: true },
 
   url: { type: String, required: true },
   path: { type: String, required: true, index: true },

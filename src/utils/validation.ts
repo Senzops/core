@@ -284,7 +284,7 @@ export const RegisterRumSchema = z.object({
 const RumSpanSchema = z.object({
   spanId: z.string(),
   name: z.string(),
-  type: z.enum(['fetch', 'xhr', 'http', 'resource', 'long-task', 'click', 'custom']),
+  type: z.enum(['fetch', 'xhr', 'http', 'resource', 'long-task', 'click', 'custom', 'visibility']),
   method: z.string().optional(),
   status: z.number().optional(),
   size: z.number().optional(),
@@ -318,7 +318,7 @@ const FrustrationSchema = z.object({
 const RumTraceItem = z.object({
   traceId: z.string(),   // W3C Traceparent ID
   sessionId: z.string(),
-  traceType: z.enum(['initial_load', 'route_change']),
+  traceType: z.enum(['initial_load', 'route_change', 'span_update']),
 
   url: z.string().url(),
   path: z.string(),
