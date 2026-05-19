@@ -139,8 +139,9 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
         const incUpdate: Record<string, number> = { views: 1 };
 
         const addMap = (prefix: string, key: string) => {
-          // Sanitise keys: MongoDB disallows '.' and '$' in field names
-          const safeKey = key.replace(/\./g, "_").replace(/\$/g, "");
+          // Sanitise keys: MongoDB disallows '$' in field names.
+          // Dots are allowed in MongoDB 5.0+ and are preserved here as requested.
+          const safeKey = key.replace(/\$/g, "");
           incUpdate[`${prefix}.${safeKey}`] = 1;
         };
 
