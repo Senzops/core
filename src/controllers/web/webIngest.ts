@@ -136,27 +136,51 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
         const bucketTime = new Date(timestamp);
         bucketTime.setSeconds(0, 0);
 
-        const incUpdate: Record<string, number> = { views: 1 };
+        // We use an update pipeline to handle literal dots in field names.
+        // Standard $inc: { "referrers.reddit.com": 1 } would create nested objects.
+        // Update pipeline with $setField treats the key as a literal string.
+        const pipeline: any[] = [
+          {
+            $set: {
+              views: { $add: [{ $ifNull: ["$views", 0] }, 1] }
+            }
+          }
+        ];
 
-        const addMap = (prefix: string, key: string) => {
+        const addMapToPipeline = (prefix: string, key: string) => {
           // Sanitise keys: MongoDB disallows '$' in field names.
-          // Dots are allowed in MongoDB 5.0+ and are preserved here as requested.
           const safeKey = key.replace(/\$/g, "");
-          incUpdate[`${prefix}.${safeKey}`] = 1;
+          
+          pipeline.push({
+            $set: {
+              [prefix]: {
+                $setField: {
+                  field: safeKey,
+                  input: { $ifNull: [`$${prefix}`, {}] },
+                  value: { 
+                    $add: [
+                      { $ifNull: [{ $getField: { field: safeKey, input: `$${prefix}` } }, 0] }, 
+                      1
+                    ] 
+                  }
+                }
+              }
+            }
+          });
         };
 
-        addMap("paths", path);
-        addMap("referrers", referrer || "Direct");
-        addMap("channels", channel);
-        addMap("countries", country);
-        addMap("cities", city);
-        addMap("browsers", browser);
-        addMap("os", os);
-        addMap("devices", device);
+        addMapToPipeline("paths", path);
+        addMapToPipeline("referrers", referrer || "Direct");
+        addMapToPipeline("channels", channel);
+        addMapToPipeline("countries", country);
+        addMapToPipeline("cities", city);
+        addMapToPipeline("browsers", browser);
+        addMapToPipeline("os", os);
+        addMapToPipeline("devices", device);
 
         await WebMetric.updateOne(
           { webId, timestamp: bucketTime },
-          { $inc: incUpdate },
+          pipeline,
           { upsert: true }
         );
       } catch (bgError) {
