@@ -36,7 +36,7 @@ export const EMAIL_HOST_HINTS = [
 ];
 
 export const KNOWN_PAYMENT_GATEWAYS = [
-  'paypal.', 'stripe.', 'paddle.', 'checkout.', 'authorize.net'
+  'paypal.', 'stripe.', 'paddle.', 'checkout.', 'authorize.net', 'dodopayments.'
 ];
 
 // If UTM indicates paid campaign: utm_medium contains 'cpc', 'paid', 'ppc', 'paidsearch' etc.

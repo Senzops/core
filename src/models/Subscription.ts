@@ -4,7 +4,7 @@ export interface ISubscription extends Document {
   ownerId: string;
   planId: string;
   status: 'active' | 'past_due' | 'canceled' | 'trialing';
-  provider: 'paddle' | 'stripe' | 'none';
+  provider: 'paddle' | 'dodo' | 'stripe' | 'none';
 
   providerCustomerId?: string;
   providerSubscriptionId?: string;
@@ -26,7 +26,7 @@ const SubscriptionSchema = new Schema<ISubscription>(
     ownerId: { type: String, required: true, unique: true, index: true },
     planId: { type: String, required: true, default: 'starter' },
     status: { type: String, required: true, default: 'active' },
-    provider: { type: String, enum: ['paddle', 'stripe', 'none'], default: 'none' },
+    provider: { type: String, enum: ['paddle', 'dodo', 'stripe', 'none'], default: 'none' },
 
     providerCustomerId: { type: String },
     providerSubscriptionId: { type: String, index: true },

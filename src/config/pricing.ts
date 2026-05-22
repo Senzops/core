@@ -13,6 +13,8 @@ export interface PlanConfig {
   retentionDays: number;
   paddlePriceIdMonthly: string | null;
   paddlePriceIdAnnual: string | null;
+  dodoProductIdMonthly: string | null;
+  dodoProductIdAnnual: string | null;
 }
 
 export const PLANS: Record<PlanId, PlanConfig> = {
@@ -26,6 +28,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     retentionDays: 3,
     paddlePriceIdMonthly: null,
     paddlePriceIdAnnual: null,
+    dodoProductIdMonthly: null,
+    dodoProductIdAnnual: null,
   },
   pro: {
     id: 'pro',
@@ -37,6 +41,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     retentionDays: 15,
     paddlePriceIdMonthly: 'pri_01knfdyzk9gsjwfh4vq3hfg2q0',
     paddlePriceIdAnnual: 'pri_01knfe0d96abaf790xead78y0m',  
+    dodoProductIdMonthly: 'pdt_0NfOCqR7Jh4KxjWipmxdi',
+    dodoProductIdAnnual: 'pdt_0NfOCqHOShtUikkTy0h87',
   },
   business: {
     id: 'business',
@@ -48,6 +54,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     retentionDays: 30,
     paddlePriceIdMonthly: 'pri_01knfe2b0s6yycykn1y4x2mrrk',
     paddlePriceIdAnnual: 'pri_01knfe3g8941dyr18vvy9tc2qy',
+    dodoProductIdMonthly: 'pdt_0NfOCpyjpqRvf5QvCdVqn',
+    dodoProductIdAnnual: 'pdt_0NfOCpozTewfGT6bjez95',
   },
   enterprise: {
     id: 'enterprise',
@@ -59,6 +67,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     retentionDays: 90,
     paddlePriceIdMonthly: null,
     paddlePriceIdAnnual: null,
+    dodoProductIdMonthly: null,
+    dodoProductIdAnnual: null,
   }
 };
 
