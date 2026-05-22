@@ -121,7 +121,12 @@ app.use(cors({
   origin: true, // Reflects the request origin (Allows all)
   credentials: true,
 }));
-app.use(express.json({ limit: '1mb' })); // Body parser
+app.use(express.json({
+  limit: '1mb',
+  verify: (req: any, res, buf) => {
+    req.rawBody = buf;
+  }
+})); // Body parser
 app.use(morgan('tiny')); // Logging
 
 // --- Rate Limiters ---
@@ -301,8 +306,8 @@ const billingRouter = express.Router();
 
 // Public/Webhook Routes (NO User Auth)
 billingRouter.get('/plans', getActivePlans);
-billingRouter.post('/paddle-webhook', express.raw({ type: 'application/json' }), handlePaddleWebhook);
-billingRouter.post('/dodo-webhook', express.raw({ type: 'application/json' }), handleDodoWebhook);
+billingRouter.post('/paddle-webhook', handlePaddleWebhook);
+billingRouter.post('/dodo-webhook', handleDodoWebhook);
 
 // Protected Billing Routes (Requires User Auth)
 billingRouter.get('/subscription', authenticateUser, getCurrentSubscription);

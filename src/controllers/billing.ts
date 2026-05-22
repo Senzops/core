@@ -513,7 +513,14 @@ export const handleDodoWebhook = async (req: Request, res: Response) => {
       return res.status(401).send('Unauthorized: Missing webhook headers');
     }
 
-    const rawBody = req.body.toString('utf8');
+    let rawBody = '';
+    if ((req as any).rawBody) {
+      rawBody = (req as any).rawBody.toString('utf8');
+    } else if (Buffer.isBuffer(req.body)) {
+      rawBody = req.body.toString('utf8');
+    } else if (typeof req.body === 'string') {
+      rawBody = req.body;
+    }
     const secret = process.env.DODO_WEBHOOK_SECRET;
 
     if (!secret) {
