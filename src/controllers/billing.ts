@@ -89,7 +89,9 @@ export const getStorageStats = async (req: Request, res: Response) => {
     const ownerId = (req as any).user?.uid;
     const mongoose = await import('mongoose');
 
-    const [apmServices, rumServices, taskServices] = await Promise.all([
+    // Fetch subscription (authoritative ingestion counter) and service IDs in parallel
+    const [sub, apmServices, rumServices, taskServices] = await Promise.all([
+      Subscription.findOne({ ownerId }).select('planId currentMonthBytes').lean(),
       mongoose.default.models.ApmService ? mongoose.default.models.ApmService.find({ ownerId }).select('_id').lean() : [],
       mongoose.default.models.RumService ? mongoose.default.models.RumService.find({ ownerId }).select('_id').lean() : [],
       mongoose.default.models.TaskService ? mongoose.default.models.TaskService.find({ ownerId }).select('_id').lean() : [],
@@ -106,19 +108,22 @@ export const getStorageStats = async (req: Request, res: Response) => {
       taskIds.length > 0 && mongoose.default.models.TaskRun ? mongoose.default.models.TaskRun.countDocuments({ serviceId: { $in: taskIds } }) : 0,
     ]);
 
-    const APM_TRACE_BYTES = 2500;
-    const LOG_BYTES = 800;
-    const RUM_EVENT_BYTES = 1200;
-    const TASK_RUN_BYTES = 1500;
-
     const stats = [
-      { service: 'APM Traces', bytes: apmCount * APM_TRACE_BYTES, count: apmCount, color: '#f97316' },
-      { service: 'Logs', bytes: logsCount * LOG_BYTES, count: logsCount, color: '#3b82f6' },
-      { service: 'RUM Events', bytes: rumCount * RUM_EVENT_BYTES, count: rumCount, color: '#ec4899' },
-      { service: 'Tasks', bytes: taskCount * TASK_RUN_BYTES, count: taskCount, color: '#6366f1' },
+      { service: 'APM Traces', count: apmCount, color: '#f97316' },
+      { service: 'Logs', count: logsCount, color: '#3b82f6' },
+      { service: 'RUM Events', count: rumCount, color: '#ec4899' },
+      { service: 'Tasks', count: taskCount, color: '#6366f1' },
     ];
 
-    res.json({ stats, totalCalculatedBytes: stats.reduce((acc, curr) => acc + curr.bytes, 0) });
+    const totalCount = apmCount + logsCount + rumCount + taskCount;
+    const plan = getPlanConfig(sub?.planId || 'starter');
+
+    res.json({
+      stats,
+      totalCount,
+      currentMonthBytes: sub?.currentMonthBytes || 0,
+      maxIngestionBytes: plan.maxIngestionBytes,
+    });
   } catch (error: any) {
     logger.error(`[Storage Stats] Error: ${error.message}`);
     res.status(500).json({ error: "Failed to calculate storage footprint." });
