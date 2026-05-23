@@ -603,9 +603,10 @@ export const handleDodoWebhook = async (req: Request, res: Response) => {
       return res.status(401).send('Unauthorized: Invalid signature');
     }
 
-    // Idempotency: skip already-processed events
-    const existingEvent = await WebhookEvent.findOne({ webhookId }).select('_id').lean();
-    if (existingEvent) {
+    // Idempotency: skip events that were already handled successfully.
+    // Failed events are allowed through so provider retries can be reprocessed.
+    const existingEvent = await WebhookEvent.findOne({ webhookId }).select('status').lean();
+    if (existingEvent && existingEvent.status !== 'failed') {
       logger.info(`[Dodo Webhook] Skipping duplicate event: ${webhookId}`);
       return res.status(200).send('OK');
     }
@@ -637,19 +638,33 @@ export const handleDodoWebhook = async (req: Request, res: Response) => {
       processingError = err.message;
       logger.error(`[Dodo Webhook] Processing error for ${eventType}: ${err.message}`);
     } finally {
-      // Persist audit log regardless of processing outcome
-      await WebhookEvent.create({
-        webhookId,
-        provider: 'dodo',
-        eventType,
-        status: processingStatus,
-        ownerId,
-        payload: event,
-        error: processingError,
-        processedAt: new Date(),
-      }).catch(auditErr => {
+      // Persist audit log regardless of processing outcome.
+      // Uses upsert so retries of failed events update the existing record
+      // rather than throwing a duplicate key error on webhookId.
+      await WebhookEvent.findOneAndUpdate(
+        { webhookId },
+        {
+          $set: {
+            provider: 'dodo',
+            eventType,
+            status: processingStatus,
+            ownerId,
+            payload: event,
+            error: processingError,
+            processedAt: new Date(),
+          },
+        },
+        { upsert: true },
+      ).catch(auditErr => {
         logger.error(`[Dodo Webhook] Failed to persist audit log: ${(auditErr as Error).message}`);
       });
+    }
+
+    // Return 500 on processing failure so the provider retries delivery.
+    // Returning 200 on failure silently swallows the event — the provider
+    // considers it delivered and never retries, causing data loss.
+    if (processingStatus === 'failed') {
+      return res.status(500).send('Webhook processing failed');
     }
 
     res.status(200).send('OK');
@@ -966,85 +981,104 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
       return res.status(400).send('Missing ownerId');
     }
 
-    // Idempotency via webhook event ID
+    // Idempotency via webhook event ID — allow retries for previously failed events
     const paddleEventId = event.event_id || `paddle_${eventType}_${Date.now()}`;
-    const existingEvent = await WebhookEvent.findOne({ webhookId: paddleEventId }).select('_id').lean();
-    if (existingEvent) {
+    const existingPaddleEvent = await WebhookEvent.findOne({ webhookId: paddleEventId }).select('status').lean();
+    if (existingPaddleEvent && existingPaddleEvent.status !== 'failed') {
       return res.status(200).send('OK');
     }
 
-    if (eventType === 'transaction.completed' || eventType === 'transaction.paid') {
-      const rawAmount = payload.details?.totals?.grand_total || payload.amount || "0";
+    let paddleProcessingStatus: 'processed' | 'failed' = 'processed';
+    let paddleProcessingError: string | undefined;
 
-      await Transaction.findOneAndUpdate(
-        { paddleTransactionId: payload.id },
-        {
-          $set: {
-            ownerId,
-            provider: 'paddle',
-            amount: parseFloat(rawAmount) / 100,
-            currency: payload.currency_code || 'USD',
-            status: 'completed',
-            billedAt: new Date(payload.created_at || payload.billed_at || Date.now()),
+    try {
+      if (eventType === 'transaction.completed' || eventType === 'transaction.paid') {
+        const rawAmount = payload.details?.totals?.grand_total || payload.amount || "0";
+
+        await Transaction.findOneAndUpdate(
+          { paddleTransactionId: payload.id },
+          {
+            $set: {
+              ownerId,
+              provider: 'paddle',
+              amount: parseFloat(rawAmount) / 100,
+              currency: payload.currency_code || 'USD',
+              status: 'completed',
+              billedAt: new Date(payload.created_at || payload.billed_at || Date.now()),
+            },
           },
-        },
-        { upsert: true, new: true },
-      );
-    }
-
-    if (eventType === 'subscription.activated' || eventType === 'subscription.updated') {
-      const incomingPriceId = payload.items?.[0]?.price?.id || payload.items?.[0]?.product?.id;
-      const matchedPlan = Object.values(PLANS).find(
-        p => p.paddlePriceIdMonthly === incomingPriceId || p.paddlePriceIdAnnual === incomingPriceId,
-      );
-
-      const targetPlanId = matchedPlan ? matchedPlan.id : 'starter';
-      const isAnnual = matchedPlan && incomingPriceId === matchedPlan.paddlePriceIdAnnual;
-      const nextBillingDate = new Date(payload.current_billing_period.ends_at);
-
-      const updatePayload: any = {
-        planId: targetPlanId,
-        status: payload.status === 'active' ? 'active' : 'past_due',
-        provider: 'paddle',
-        providerCustomerId: payload.customer_id,
-        providerSubscriptionId: payload.id,
-        billingInterval: isAnnual ? 'annual' : 'monthly',
-        billingCycleReset: nextBillingDate,
-      };
-
-      if (eventType === 'subscription.activated') {
-        const nextQuota = new Date(payload.created_at || Date.now());
-        nextQuota.setMonth(nextQuota.getMonth() + 1);
-        updatePayload.quotaResetAt = nextQuota;
-        updatePayload.currentMonthBytes = 0;
+          { upsert: true, new: true },
+        );
       }
 
-      await Subscription.findOneAndUpdate(
-        { ownerId },
-        {
-          $set: updatePayload,
-          $setOnInsert: { startedAt: new Date(payload.created_at || Date.now()) },
-        },
-        { upsert: true },
-      );
-    } else if (eventType === 'subscription.canceled' || eventType === 'subscription.past_due') {
-      await Subscription.findOneAndUpdate(
-        { ownerId },
-        { $set: { status: eventType === 'subscription.canceled' ? 'canceled' : 'past_due' } },
-      );
+      if (eventType === 'subscription.activated' || eventType === 'subscription.updated') {
+        const incomingPriceId = payload.items?.[0]?.price?.id || payload.items?.[0]?.product?.id;
+        const matchedPlan = Object.values(PLANS).find(
+          p => p.paddlePriceIdMonthly === incomingPriceId || p.paddlePriceIdAnnual === incomingPriceId,
+        );
+
+        const targetPlanId = matchedPlan ? matchedPlan.id : 'starter';
+        const isAnnual = matchedPlan && incomingPriceId === matchedPlan.paddlePriceIdAnnual;
+        const nextBillingDate = new Date(payload.current_billing_period.ends_at);
+
+        const updatePayload: any = {
+          planId: targetPlanId,
+          status: payload.status === 'active' ? 'active' : 'past_due',
+          provider: 'paddle',
+          providerCustomerId: payload.customer_id,
+          providerSubscriptionId: payload.id,
+          billingInterval: isAnnual ? 'annual' : 'monthly',
+          billingCycleReset: nextBillingDate,
+        };
+
+        if (eventType === 'subscription.activated') {
+          const nextQuota = new Date(payload.created_at || Date.now());
+          nextQuota.setMonth(nextQuota.getMonth() + 1);
+          updatePayload.quotaResetAt = nextQuota;
+          updatePayload.currentMonthBytes = 0;
+        }
+
+        await Subscription.findOneAndUpdate(
+          { ownerId },
+          {
+            $set: updatePayload,
+            $setOnInsert: { startedAt: new Date(payload.created_at || Date.now()) },
+          },
+          { upsert: true },
+        );
+      } else if (eventType === 'subscription.canceled' || eventType === 'subscription.past_due') {
+        await Subscription.findOneAndUpdate(
+          { ownerId },
+          { $set: { status: eventType === 'subscription.canceled' ? 'canceled' : 'past_due' } },
+        );
+      }
+    } catch (err: any) {
+      paddleProcessingStatus = 'failed';
+      paddleProcessingError = err.message;
+      logger.error(`[Paddle Webhook] Processing error for ${eventType}: ${err.message}`);
     }
 
-    await WebhookEvent.create({
-      webhookId: paddleEventId,
-      provider: 'paddle',
-      eventType,
-      status: 'processed',
-      ownerId,
-      payload: event,
-      processedAt: new Date(),
-    }).catch(auditErr => {
+    await WebhookEvent.findOneAndUpdate(
+      { webhookId: paddleEventId },
+      {
+        $set: {
+          provider: 'paddle',
+          eventType,
+          status: paddleProcessingStatus,
+          ownerId,
+          payload: event,
+          error: paddleProcessingError,
+          processedAt: new Date(),
+        },
+      },
+      { upsert: true },
+    ).catch(auditErr => {
       logger.error(`[Paddle Webhook] Failed to persist audit log: ${(auditErr as Error).message}`);
     });
+
+    if (paddleProcessingStatus === 'failed') {
+      return res.status(500).send('Webhook processing failed');
+    }
 
     res.status(200).send('OK');
   } catch (error: any) {
