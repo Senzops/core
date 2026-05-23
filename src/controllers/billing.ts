@@ -231,6 +231,16 @@ export const createCheckoutSession = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Unauthorized." });
     }
 
+    // Guard: prevent duplicate subscriptions for users who already have an active paid plan
+    const existingSub = await Subscription.findOne({ ownerId }).select('planId status provider').lean();
+    if (existingSub && existingSub.planId !== 'starter' && existingSub.provider === 'dodo' &&
+        existingSub.status === 'active') {
+      return res.status(409).json({
+        error: "You already have an active subscription. Use the plan change option in your profile to switch plans.",
+        code: "ACTIVE_SUBSCRIPTION_EXISTS",
+      });
+    }
+
     const frontendUrl = process.env.FRONTEND_URL;
     if (!frontendUrl) {
       logger.error('[Billing] CRITICAL: FRONTEND_URL env variable is not configured.');
@@ -284,11 +294,19 @@ export const cancelSubscription = async (req: Request, res: Response) => {
       return res.status(400).json({ error: "Subscription is already scheduled for cancellation." });
     }
 
+    const isOnHold = sub.status === 'on_hold';
+
     if (sub.provider === 'dodo' && sub.providerSubscriptionId) {
       try {
+        // On-hold subscriptions: cancel immediately — no paid service period to honor.
+        // Active subscriptions: defer to end of billing cycle so user keeps access.
+        const cancelPayload = isOnHold
+          ? { status: 'cancelled' }
+          : { cancel_at_next_billing_date: true };
+
         await dodoRequest(`/subscriptions/${sub.providerSubscriptionId}`, {
           method: 'PATCH',
-          body: JSON.stringify({ cancel_at_next_billing_date: true }),
+          body: JSON.stringify(cancelPayload),
         });
       } catch (err) {
         logger.error(`[Billing] Dodo cancel API error for ${sub.providerSubscriptionId}: ${(err as Error).message}`);
@@ -320,7 +338,35 @@ export const cancelSubscription = async (req: Request, res: Response) => {
       }
     }
 
-    // Record the cancellation request — actual status change happens via webhook
+    if (isOnHold) {
+      // On-hold: payment already failed, no service period remaining.
+      // Downgrade to starter immediately — don't wait for webhook/cron.
+      const nextMonth = new Date();
+      nextMonth.setMonth(nextMonth.getMonth() + 1);
+
+      sub.status = 'canceled';
+      sub.planId = 'starter';
+      sub.provider = 'none';
+      sub.providerSubscriptionId = undefined;
+      sub.providerCustomerId = undefined;
+      sub.billingInterval = 'monthly';
+      sub.cancelRequestedAt = new Date();
+      sub.cancelEffectiveAt = new Date();
+      sub.onHoldSince = undefined;
+      sub.currentMonthBytes = 0;
+      sub.billingCycleReset = nextMonth;
+      await sub.save();
+
+      logger.info(`[Billing] User ${ownerId} canceled on-hold subscription. Immediate downgrade to starter.`);
+
+      return res.json({
+        message: "Subscription canceled and downgraded to the Free Starter plan. You can re-subscribe at any time.",
+        cancelEffectiveAt: sub.cancelEffectiveAt,
+        immediateDowngrade: true,
+      });
+    }
+
+    // Active subscriptions: defer downgrade to end of billing cycle
     sub.cancelRequestedAt = new Date();
     sub.cancelEffectiveAt = sub.billingCycleReset;
     await sub.save();
@@ -334,6 +380,104 @@ export const cancelSubscription = async (req: Request, res: Response) => {
   } catch (error: any) {
     logger.error(`[Billing Cancel] Error: ${error.message}`);
     res.status(500).json({ error: "Failed to cancel subscription." });
+  }
+};
+
+// ============================================================================
+// PLAN CHANGE / UPGRADE / DOWNGRADE
+// ============================================================================
+
+export const changePlan = async (req: Request, res: Response) => {
+  try {
+    const ownerId = (req as any).user?.uid;
+    const { productId } = req.body;
+
+    if (!productId) {
+      return res.status(400).json({ error: "Product ID is required." });
+    }
+
+    if (!ownerId) {
+      return res.status(401).json({ error: "Unauthorized." });
+    }
+
+    const sub = await Subscription.findOne({ ownerId });
+    if (!sub) {
+      return res.status(400).json({ error: "No subscription found. Please subscribe first." });
+    }
+
+    if (sub.provider !== 'dodo' || !sub.providerSubscriptionId) {
+      return res.status(400).json({ error: "Plan changes are only supported for active Dodo subscriptions. Please contact support." });
+    }
+
+    if (sub.status === 'on_hold') {
+      return res.status(409).json({
+        error: "Plan changes are not available while your subscription is on hold. Please cancel your current subscription first, then re-subscribe to the desired plan.",
+        code: "SUBSCRIPTION_ON_HOLD",
+      });
+    }
+
+    if (sub.status !== 'active') {
+      return res.status(400).json({ error: "Plan changes require an active subscription." });
+    }
+
+    // Validate the target product maps to a known plan
+    const targetPlan = Object.values(PLANS).find(
+      p => p.dodoProductIdMonthly === productId || p.dodoProductIdAnnual === productId,
+    );
+
+    if (!targetPlan || targetPlan.id === 'starter' || targetPlan.id === 'enterprise') {
+      return res.status(400).json({ error: "Invalid target plan." });
+    }
+
+    // Prevent no-op changes (same plan + same interval)
+    const isTargetAnnual = productId === targetPlan.dodoProductIdAnnual;
+    if (targetPlan.id === sub.planId) {
+      const sameInterval = (isTargetAnnual && sub.billingInterval === 'annual') ||
+                           (!isTargetAnnual && sub.billingInterval === 'monthly');
+      if (sameInterval) {
+        return res.status(400).json({ error: "You are already on this plan and billing interval." });
+      }
+    }
+
+    const currentPlan = getPlanConfig(sub.planId);
+    const isUpgrade = targetPlan.priceMonthly > currentPlan.priceMonthly;
+
+    try {
+      await dodoRequest(`/subscriptions/${sub.providerSubscriptionId}/change-plan`, {
+        method: 'POST',
+        body: JSON.stringify({
+          product_id: productId,
+          quantity: 1,
+          proration_billing_mode: isUpgrade ? 'prorated_immediately' : 'difference_immediately',
+        }),
+      });
+    } catch (err) {
+      if (err instanceof DodoApiError) {
+        logger.error(`[Billing] Plan change failed for ${ownerId}: ${JSON.stringify(err.body)}`);
+        return res.status(400).json({ error: "Failed to process plan change. Please try again or contact support." });
+      }
+      throw err;
+    }
+
+    // Clear pending cancellation — user is actively choosing to stay
+    if (sub.cancelRequestedAt) {
+      sub.cancelRequestedAt = undefined;
+      sub.cancelEffectiveAt = undefined;
+      await sub.save();
+    }
+
+    logger.info(`[Billing] Plan change initiated: ${ownerId} ${currentPlan.id} → ${targetPlan.id} (${isUpgrade ? 'upgrade' : 'downgrade'})`);
+
+    res.json({
+      message: `Plan change to ${targetPlan.name} (${isTargetAnnual ? 'annual' : 'monthly'}) initiated successfully.`,
+      targetPlan: targetPlan.id,
+      targetPlanName: targetPlan.name,
+      billingInterval: isTargetAnnual ? 'annual' : 'monthly',
+      isUpgrade,
+    });
+  } catch (error: any) {
+    logger.error(`[Billing Plan Change] Error: ${error.message}`);
+    res.status(500).json({ error: "Failed to change plan." });
   }
 };
 

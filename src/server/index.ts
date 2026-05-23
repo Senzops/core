@@ -75,7 +75,7 @@ import { authenticateOtlp } from '../middlewares/otlpAuth';
 import { ingestOtlpLogs, ingestOtlpTraces } from '../controllers/otlp/gateway';
 import { requireIngestionQuota } from '../middlewares/ingestionLimiter';
 import { requireServiceQuota } from '../middlewares/serviceLimiter';
-import { cancelSubscription, getActivePlans, getCurrentSubscription, getStorageStats, getTransactionReceipt, getTransactions, handlePaddleWebhook, handleDodoWebhook, createCheckoutSession } from '../controllers/billing';
+import { cancelSubscription, changePlan, getActivePlans, getCurrentSubscription, getStorageStats, getTransactionReceipt, getTransactions, handlePaddleWebhook, handleDodoWebhook, createCheckoutSession } from '../controllers/billing';
 import { deleteAccount, syncUser } from '../controllers/user';
 import { getDynamicSchema } from '../controllers/schema';
 
@@ -307,6 +307,7 @@ apiRouter.get('/billing/storage-stats', getStorageStats);
 apiRouter.get('/billing/transactions', getTransactions);
 apiRouter.get('/billing/transactions/:transactionId/receipt', getTransactionReceipt); 
 apiRouter.post('/billing/cancel', cancelSubscription);
+apiRouter.post('/billing/change-plan', changePlan);
 apiRouter.post('/billing/checkout-session', createCheckoutSession);
 
 const billingRouter = express.Router();
