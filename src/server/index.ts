@@ -131,8 +131,15 @@ app.use(morgan('tiny')); // Logging
 
 // --- Rate Limiters ---
 const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 requests per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const webhookLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 300,
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -306,8 +313,8 @@ const billingRouter = express.Router();
 
 // Public/Webhook Routes (NO User Auth)
 billingRouter.get('/plans', getActivePlans);
-billingRouter.post('/paddle-webhook', handlePaddleWebhook);
-billingRouter.post('/dodo-webhook', handleDodoWebhook);
+billingRouter.post('/paddle-webhook', webhookLimiter, handlePaddleWebhook);
+billingRouter.post('/dodo-webhook', webhookLimiter, handleDodoWebhook);
 
 // Protected Billing Routes (Requires User Auth)
 billingRouter.get('/subscription', authenticateUser, getCurrentSubscription);

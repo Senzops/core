@@ -1,10 +1,21 @@
 import { Request, Response } from 'express';
-import mongoose from 'mongoose';
 import crypto from 'crypto';
 import { PLANS, getPlanConfig } from '../config/pricing';
 import { Subscription } from '../models/Subscription';
 import { Transaction } from '../models/Transaction';
+import { WebhookEvent } from '../models/WebhookEvent';
+import { dodoRequest, DodoApiError } from '../utils/dodoClient';
 import { logger } from '../utils/logger';
+
+// ============================================================================
+// CONSTANTS
+// ============================================================================
+
+const WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS = 300; // 5 minutes
+
+// ============================================================================
+// PUBLIC API ENDPOINTS
+// ============================================================================
 
 export const getActivePlans = async (req: Request, res: Response) => {
   try {
@@ -16,10 +27,8 @@ export const getActivePlans = async (req: Request, res: Response) => {
       maxServicesPerType: plan.maxServicesPerType,
       maxIngestionBytes: plan.maxIngestionBytes,
       retentionDays: plan.retentionDays,
-      paddlePriceIdMonthly: plan.paddlePriceIdMonthly,
-      paddlePriceIdAnnual: plan.paddlePriceIdAnnual,
       dodoProductIdMonthly: plan.dodoProductIdMonthly,
-      dodoProductIdAnnual: plan.dodoProductIdAnnual
+      dodoProductIdAnnual: plan.dodoProductIdAnnual,
     }));
 
     res.json({ plans: publicPlans });
@@ -45,7 +54,7 @@ export const getCurrentSubscription = async (req: Request, res: Response) => {
       nextMonth.setMonth(nextMonth.getMonth() + 1);
 
       const newSub = await Subscription.create({
-        ownerId: ownerId,
+        ownerId,
         planId: 'starter',
         status: 'active',
         provider: 'none',
@@ -53,7 +62,7 @@ export const getCurrentSubscription = async (req: Request, res: Response) => {
         startedAt: new Date(),
         currentMonthBytes: 0,
         quotaResetAt: nextMonth,
-        billingCycleReset: nextMonth
+        billingCycleReset: nextMonth,
       });
 
       sub = newSub.toObject();
@@ -66,8 +75,8 @@ export const getCurrentSubscription = async (req: Request, res: Response) => {
       plan: {
         name: plan.name,
         maxIngestionBytes: plan.maxIngestionBytes,
-        maxServicesPerType: plan.maxServicesPerType
-      }
+        maxServicesPerType: plan.maxServicesPerType,
+      },
     });
   } catch (error: any) {
     logger.error(`[Billing] Failed to fetch/provision subscription: ${error.message}`);
@@ -78,22 +87,23 @@ export const getCurrentSubscription = async (req: Request, res: Response) => {
 export const getStorageStats = async (req: Request, res: Response) => {
   try {
     const ownerId = (req as any).user?.uid;
+    const mongoose = await import('mongoose');
 
     const [apmServices, rumServices, taskServices] = await Promise.all([
-      mongoose.models.ApmService ? mongoose.models.ApmService.find({ ownerId }).select('_id').lean() : [],
-      mongoose.models.RumService ? mongoose.models.RumService.find({ ownerId }).select('_id').lean() : [],
-      mongoose.models.TaskService ? mongoose.models.TaskService.find({ ownerId }).select('_id').lean() : [],
+      mongoose.default.models.ApmService ? mongoose.default.models.ApmService.find({ ownerId }).select('_id').lean() : [],
+      mongoose.default.models.RumService ? mongoose.default.models.RumService.find({ ownerId }).select('_id').lean() : [],
+      mongoose.default.models.TaskService ? mongoose.default.models.TaskService.find({ ownerId }).select('_id').lean() : [],
     ]);
 
-    const apmIds = apmServices.map(s => s._id);
-    const rumIds = rumServices.map(s => s._id);
-    const taskIds = taskServices.map(s => s._id);
+    const apmIds = apmServices.map((s: any) => s._id);
+    const rumIds = rumServices.map((s: any) => s._id);
+    const taskIds = taskServices.map((s: any) => s._id);
 
     const [apmCount, logsCount, rumCount, taskCount] = await Promise.all([
-      apmIds.length > 0 && mongoose.models.ApmTrace ? mongoose.models.ApmTrace.countDocuments({ serviceId: { $in: apmIds } }) : 0,
-      mongoose.models.LogEvent ? mongoose.models.LogEvent.countDocuments({ ownerId }) : 0,
-      rumIds.length > 0 && mongoose.models.RumTrace ? mongoose.models.RumTrace.countDocuments({ serviceId: { $in: rumIds } }) : 0,
-      taskIds.length > 0 && mongoose.models.TaskRun ? mongoose.models.TaskRun.countDocuments({ serviceId: { $in: taskIds } }) : 0,
+      apmIds.length > 0 && mongoose.default.models.ApmTrace ? mongoose.default.models.ApmTrace.countDocuments({ serviceId: { $in: apmIds } }) : 0,
+      mongoose.default.models.LogEvent ? mongoose.default.models.LogEvent.countDocuments({ ownerId }) : 0,
+      rumIds.length > 0 && mongoose.default.models.RumTrace ? mongoose.default.models.RumTrace.countDocuments({ serviceId: { $in: rumIds } }) : 0,
+      taskIds.length > 0 && mongoose.default.models.TaskRun ? mongoose.default.models.TaskRun.countDocuments({ serviceId: { $in: taskIds } }) : 0,
     ]);
 
     const APM_TRACE_BYTES = 2500;
@@ -123,181 +133,19 @@ export const getTransactions = async (req: Request, res: Response) => {
       .limit(24)
       .lean();
 
-    // Map to a unified format that ensures the frontend gets a unique transaction ID identifier under paddleTransactionId
     const formattedTransactions = transactions.map(tx => ({
-      paddleTransactionId: tx.paddleTransactionId || tx.dodoTransactionId,
+      transactionId: tx.dodoTransactionId || tx.paddleTransactionId,
+      provider: tx.provider,
       amount: tx.amount,
       currency: tx.currency,
       status: tx.status,
       receiptUrl: tx.receiptUrl,
-      billedAt: tx.billedAt
+      billedAt: tx.billedAt,
     }));
 
     res.json({ transactions: formattedTransactions });
   } catch (error) {
     res.status(500).json({ error: "Failed to fetch billing history." });
-  }
-};
-
-export const cancelSubscription = async (req: Request, res: Response) => {
-  try {
-    const ownerId = (req as any).user?.uid;
-    const sub = await Subscription.findOne({ ownerId });
-
-    if (!sub || sub.planId === 'starter') {
-      return res.status(400).json({ error: "No active paid subscription to cancel." });
-    }
-
-    if (sub.status === 'canceled') {
-      return res.status(400).json({ error: "Subscription is already scheduled for cancellation." });
-    }
-
-    if (sub.provider === 'paddle' && sub.providerSubscriptionId) {
-      const isSandbox = process.env.PADDLE_ENV === 'sandbox';
-      const paddleApiUrl = isSandbox ? 'https://sandbox-api.paddle.com' : 'https://api.paddle.com';
-      const paddleApiKey = process.env.PADDLE_API_KEY;
-
-      if (!paddleApiKey) {
-        logger.error(`[Billing] CRITICAL: Missing PADDLE_API_KEY environment variable.`);
-        return res.status(500).json({ error: "Internal payment gateway misconfiguration." });
-      }
-
-      const response = await fetch(`${paddleApiUrl}/subscriptions/${sub.providerSubscriptionId}/cancel`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${paddleApiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          effective_from: 'next_billing_period'
-        })
-      });
-
-      if (!response.ok) {
-        const errData = await response.json();
-        logger.error(`[Billing] Paddle API Error cancelling subscription ${sub.providerSubscriptionId}: ${JSON.stringify(errData)}`);
-        return res.status(400).json({ error: "Failed to communicate cancellation to payment provider. Please contact support." });
-      }
-    } else if (sub.provider === 'dodo' && sub.providerSubscriptionId) {
-      const isSandbox = process.env.DODO_ENV !== 'live';
-      const dodoApiUrl = isSandbox ? 'https://test.dodopayments.com' : 'https://live.dodopayments.com';
-      const dodoApiKey = process.env.DODO_API_KEY;
-
-      if (!dodoApiKey) {
-        logger.error(`[Billing] CRITICAL: Missing DODO_API_KEY environment variable.`);
-        return res.status(500).json({ error: "Internal payment gateway misconfiguration." });
-      }
-
-      const response = await fetch(`${dodoApiUrl}/subscriptions/${sub.providerSubscriptionId}`, {
-        method: 'PATCH',
-        headers: {
-          'Authorization': `Bearer ${dodoApiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          cancel_at_next_billing_date: true
-        })
-      });
-
-      if (!response.ok) {
-        const errData = await response.json().catch(() => ({}));
-        logger.error(`[Billing] Dodo API Error cancelling subscription ${sub.providerSubscriptionId}: ${JSON.stringify(errData)}`);
-        return res.status(400).json({ error: "Failed to communicate cancellation to payment provider. Please contact support." });
-      }
-    }
-
-    sub.status = 'canceled';
-    await sub.save();
-
-    logger.info(`[Billing] User ${ownerId} successfully scheduled subscription cancellation.`);
-
-    res.json({ message: "Subscription scheduled for cancellation. You will be downgraded to the Starter plan at the end of your current cycle." });
-  } catch (error: any) {
-    logger.error(`[Billing Cancel] Error: ${error.message}`);
-    res.status(500).json({ error: "Failed to cancel subscription." });
-  }
-};
-
-export const handlePaddleWebhook = async (req: Request, res: Response) => {
-  try {
-    const signature = req.headers['paddle-signature'];
-    if (!signature) return res.status(401).send('Unauthorized');
-
-    const event = req.body;
-    const eventType = event.event_type;
-    const payload = event.data;
-    const ownerId = payload.custom_data?.ownerId;
-
-    if (!ownerId) {
-      logger.error('[Billing Webhook] CRITICAL: Webhook received without custom_data.ownerId');
-      return res.status(400).send('Missing ownerId');
-    }
-
-    if (eventType === 'transaction.completed' || eventType === 'transaction.paid') {
-      const rawAmount = payload.details?.totals?.grand_total || payload.amount || "0";
-
-      await Transaction.findOneAndUpdate(
-        { paddleTransactionId: payload.id },
-        {
-          $set: {
-            ownerId,
-            amount: parseFloat(rawAmount) / 100,
-            currency: payload.currency_code || 'USD',
-            status: 'completed',
-            billedAt: new Date(payload.created_at || payload.billed_at || Date.now())
-          }
-        },
-        { upsert: true, new: true }
-      );
-
-      logger.info(`[Billing Webhook] Saved transaction receipt for ${ownerId}`);
-    }
-
-    if (eventType === 'subscription.activated' || eventType === 'subscription.updated') {
-      const incomingPriceId = payload.items?.[0]?.price?.id || payload.items?.[0]?.product?.id;
-      const matchedPlan = Object.values(PLANS).find(p => p.paddlePriceIdMonthly === incomingPriceId || p.paddlePriceIdAnnual === incomingPriceId);
-
-      const targetPlanId = matchedPlan ? matchedPlan.id : 'starter';
-      const isAnnual = matchedPlan && incomingPriceId === matchedPlan.paddlePriceIdAnnual;
-      const nextBillingDate = new Date(payload.current_billing_period.ends_at);
-
-      const updatePayload: any = {
-        planId: targetPlanId,
-        status: payload.status === 'active' ? 'active' : 'past_due',
-        provider: 'paddle',
-        providerCustomerId: payload.customer_id,
-        providerSubscriptionId: payload.id,
-        billingInterval: isAnnual ? 'annual' : 'monthly',
-        billingCycleReset: nextBillingDate
-      };
-
-      // Ensure fresh quota cycles explicitly when a brand new subscription is triggered
-      if (eventType === 'subscription.activated') {
-        const nextQuota = new Date(payload.created_at || Date.now());
-        nextQuota.setMonth(nextQuota.getMonth() + 1);
-        updatePayload.quotaResetAt = nextQuota;
-        updatePayload.currentMonthBytes = 0;
-      }
-
-      await Subscription.findOneAndUpdate(
-        { ownerId },
-        {
-          $set: updatePayload,
-          $setOnInsert: {
-            startedAt: new Date(payload.created_at || Date.now())
-          }
-        },
-        { upsert: true }
-      );
-    }
-    else if (eventType === 'subscription.canceled' || eventType === 'subscription.past_due') {
-      await Subscription.findOneAndUpdate({ ownerId }, { $set: { status: eventType === 'subscription.canceled' ? 'canceled' : 'past_due' } });
-    }
-
-    res.status(200).send('OK');
-  } catch (error: any) {
-    logger.error(`[Billing Webhook] Error: ${error.message}`);
-    res.status(500).send('Webhook Failed');
   }
 };
 
@@ -308,48 +156,35 @@ export const getTransactionReceipt = async (req: Request, res: Response) => {
 
     const tx = await Transaction.findOne({
       $or: [{ paddleTransactionId: transactionId }, { dodoTransactionId: transactionId }],
-      ownerId
+      ownerId,
     });
+
     if (!tx) {
       return res.status(404).json({ error: "Transaction not found." });
     }
 
-    // Handle Dodo transaction receipt retrieval
     if (tx.dodoTransactionId) {
       if (tx.receiptUrl) {
         return res.json({ url: tx.receiptUrl });
       }
 
-      const isSandbox = process.env.DODO_ENV !== 'live';
-      const dodoApiUrl = isSandbox ? 'https://test.dodopayments.com' : 'https://live.dodopayments.com';
-      const dodoApiKey = process.env.DODO_API_KEY;
+      try {
+        const data = await dodoRequest(`/payments/${tx.dodoTransactionId}`, { method: 'GET' });
+        const invoiceUrl = data.invoice_url;
 
-      if (!dodoApiKey) {
-        return res.status(500).json({ error: "Internal payment configuration error." });
+        if (invoiceUrl) {
+          tx.receiptUrl = invoiceUrl;
+          await tx.save();
+          return res.json({ url: invoiceUrl });
+        }
+      } catch (err) {
+        logger.error(`[Billing Receipt] Failed to fetch Dodo invoice: ${(err as Error).message}`);
       }
 
-      const response = await fetch(`${dodoApiUrl}/payments/${tx.dodoTransactionId}`, {
-        method: 'GET',
-        headers: { 'Authorization': `Bearer ${dodoApiKey}`, 'Content-Type': 'application/json' }
-      });
-
-      if (!response.ok) {
-        return res.status(404).json({ error: "Invoice is unavailable. Please try again later." });
-      }
-
-      const data = await response.json();
-      const invoiceUrl = data.invoice_url;
-
-      if (invoiceUrl) {
-        tx.receiptUrl = invoiceUrl;
-        await tx.save();
-        return res.json({ url: invoiceUrl });
-      }
-
-      return res.status(404).json({ error: "Invoice unavailable." });
+      return res.status(404).json({ error: "Invoice is unavailable. Please try again later." });
     }
 
-    // Handle Paddle transaction receipt retrieval
+    // Paddle receipt fallback
     const isSandbox = process.env.PADDLE_ENV === 'sandbox';
     const paddleApiUrl = isSandbox ? 'https://sandbox-api.paddle.com' : 'https://api.paddle.com';
     const paddleApiKey = process.env.PADDLE_API_KEY;
@@ -360,7 +195,7 @@ export const getTransactionReceipt = async (req: Request, res: Response) => {
 
     const response = await fetch(`${paddleApiUrl}/transactions/${transactionId}/invoice`, {
       method: 'GET',
-      headers: { 'Authorization': `Bearer ${paddleApiKey}`, 'Content-Type': 'application/json' }
+      headers: { 'Authorization': `Bearer ${paddleApiKey}`, 'Content-Type': 'application/json' },
     });
 
     if (!response.ok) {
@@ -370,20 +205,17 @@ export const getTransactionReceipt = async (req: Request, res: Response) => {
     const data = await response.json();
     const invoiceUrl = data.data?.url;
 
-    if (invoiceUrl) {
-      return res.json({ url: invoiceUrl });
-    }
-
+    if (invoiceUrl) return res.json({ url: invoiceUrl });
     return res.status(404).json({ error: "Invoice unavailable." });
-
   } catch (error: any) {
     res.status(500).json({ error: "Failed to retrieve receipt." });
   }
 };
 
-/**
- * Creates a checkout session with Dodo Payments on the backend to avoid exposing secret keys
- */
+// ============================================================================
+// CHECKOUT SESSION (SERVER-SIDE)
+// ============================================================================
+
 export const createCheckoutSession = async (req: Request, res: Response) => {
   try {
     const ownerId = (req as any).user?.uid;
@@ -399,60 +231,116 @@ export const createCheckoutSession = async (req: Request, res: Response) => {
       return res.status(401).json({ error: "Unauthorized." });
     }
 
-    const isSandbox = process.env.DODO_ENV !== 'live';
-    const dodoApiUrl = isSandbox ? 'https://test.dodopayments.com' : 'https://live.dodopayments.com';
-    const dodoApiKey = process.env.DODO_API_KEY;
-
-    if (!dodoApiKey) {
-      logger.error(`[Billing] createCheckoutSession: Missing DODO_API_KEY env variable.`);
+    const frontendUrl = process.env.FRONTEND_URL;
+    if (!frontendUrl) {
+      logger.error('[Billing] CRITICAL: FRONTEND_URL env variable is not configured.');
       return res.status(500).json({ error: "Payment gateway is not configured." });
     }
 
-    const response = await fetch(`${dodoApiUrl}/checkouts`, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${dodoApiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        product_cart: [
-          {
-            product_id: productId,
-            quantity: 1
-          }
-        ],
-        customer: {
-          email: userEmail,
-          name: userName || userEmail.split('@')[0]
-        },
-        feature_flags: { allow_discount_code: true },
-        return_url: `${req.headers.origin || 'http://localhost:3000'}/checkout/success`,
-        metadata: {
-          ownerId: ownerId
-        },
-        customization: {
-          theme: themeMode || 'system'
-        }
-      })
-    });
+    try {
+      const data = await dodoRequest('/checkouts', {
+        method: 'POST',
+        body: JSON.stringify({
+          product_cart: [{ product_id: productId, quantity: 1 }],
+          customer: {
+            email: userEmail,
+            name: userName || userEmail.split('@')[0],
+          },
+          feature_flags: { allow_discount_code: true },
+          return_url: `${frontendUrl}/checkout/success`,
+          metadata: { ownerId },
+          customization: { theme: themeMode || 'system' },
+        }),
+      });
 
-    if (!response.ok) {
-      const errData = await response.json().catch(() => ({}));
-      logger.error(`[Billing] Dodo Payments checkout session creation failed: ${JSON.stringify(errData)}`);
-      return res.status(400).json({ error: "Failed to create checkout session with payment provider." });
+      return res.json({ checkoutUrl: data.checkout_url });
+    } catch (err) {
+      if (err instanceof DodoApiError) {
+        logger.error(`[Billing] Dodo checkout session creation failed: ${JSON.stringify(err.body)}`);
+        return res.status(400).json({ error: "Failed to create checkout session with payment provider." });
+      }
+      throw err;
     }
-
-    const data = await response.json();
-    return res.json({ checkoutUrl: data.checkout_url });
   } catch (error: any) {
     logger.error(`[Billing Checkout Session] Error: ${error.message}`);
     res.status(500).json({ error: "Internal server error creating checkout session." });
   }
 };
 
-/**
- * Standard Webhooks Signature Verification Helper
- */
+// ============================================================================
+// SUBSCRIPTION CANCELLATION
+// ============================================================================
+
+export const cancelSubscription = async (req: Request, res: Response) => {
+  try {
+    const ownerId = (req as any).user?.uid;
+    const sub = await Subscription.findOne({ ownerId });
+
+    if (!sub || sub.planId === 'starter') {
+      return res.status(400).json({ error: "No active paid subscription to cancel." });
+    }
+
+    if (sub.status === 'canceled') {
+      return res.status(400).json({ error: "Subscription is already scheduled for cancellation." });
+    }
+
+    if (sub.provider === 'dodo' && sub.providerSubscriptionId) {
+      try {
+        await dodoRequest(`/subscriptions/${sub.providerSubscriptionId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ cancel_at_next_billing_date: true }),
+        });
+      } catch (err) {
+        logger.error(`[Billing] Dodo cancel API error for ${sub.providerSubscriptionId}: ${(err as Error).message}`);
+        return res.status(400).json({ error: "Failed to communicate cancellation to payment provider. Please contact support." });
+      }
+    } else if (sub.provider === 'paddle' && sub.providerSubscriptionId) {
+      const isSandbox = process.env.PADDLE_ENV === 'sandbox';
+      const paddleApiUrl = isSandbox ? 'https://sandbox-api.paddle.com' : 'https://api.paddle.com';
+      const paddleApiKey = process.env.PADDLE_API_KEY;
+
+      if (!paddleApiKey) {
+        logger.error(`[Billing] CRITICAL: Missing PADDLE_API_KEY environment variable.`);
+        return res.status(500).json({ error: "Internal payment gateway misconfiguration." });
+      }
+
+      const response = await fetch(`${paddleApiUrl}/subscriptions/${sub.providerSubscriptionId}/cancel`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${paddleApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ effective_from: 'next_billing_period' }),
+      });
+
+      if (!response.ok) {
+        const errData = await response.json();
+        logger.error(`[Billing] Paddle cancel API error for ${sub.providerSubscriptionId}: ${JSON.stringify(errData)}`);
+        return res.status(400).json({ error: "Failed to communicate cancellation to payment provider. Please contact support." });
+      }
+    }
+
+    // Record the cancellation request — actual status change happens via webhook
+    sub.cancelRequestedAt = new Date();
+    sub.cancelEffectiveAt = sub.billingCycleReset;
+    await sub.save();
+
+    logger.info(`[Billing] User ${ownerId} requested subscription cancellation. Effective: ${sub.cancelEffectiveAt}`);
+
+    res.json({
+      message: "Subscription cancellation requested. Your plan remains active until the end of your current billing cycle.",
+      cancelEffectiveAt: sub.cancelEffectiveAt,
+    });
+  } catch (error: any) {
+    logger.error(`[Billing Cancel] Error: ${error.message}`);
+    res.status(500).json({ error: "Failed to cancel subscription." });
+  }
+};
+
+// ============================================================================
+// WEBHOOK SIGNATURE VERIFICATION
+// ============================================================================
+
 export const verifyDodoSignature = ({
   webhookId,
   webhookTimestamp,
@@ -486,8 +374,10 @@ export const verifyDodoSignature = ({
         const signatureBuffer = Buffer.from(signatureVal, 'base64');
         const expectedBuffer = Buffer.from(expectedSignature, 'base64');
 
-        if (signatureBuffer.length === expectedBuffer.length &&
-            crypto.timingSafeEqual(signatureBuffer, expectedBuffer)) {
+        if (
+          signatureBuffer.length === expectedBuffer.length &&
+          crypto.timingSafeEqual(signatureBuffer, expectedBuffer)
+        ) {
           return true;
         }
       }
@@ -499,9 +389,35 @@ export const verifyDodoSignature = ({
   }
 };
 
-/**
- * Webhook handler for Dodo Payments events
- */
+function verifyPaddleSignature(rawBody: string, signature: string, secret: string): boolean {
+  try {
+    const parts = signature.split(';');
+    const tsStr = parts.find(p => p.startsWith('ts='))?.split('=')[1];
+    const h1 = parts.find(p => p.startsWith('h1='))?.split('=')[1];
+
+    if (!tsStr || !h1) return false;
+
+    const signedPayload = `${tsStr}:${rawBody}`;
+    const expectedSignature = crypto
+      .createHmac('sha256', secret)
+      .update(signedPayload)
+      .digest('hex');
+
+    const expectedBuffer = Buffer.from(expectedSignature, 'hex');
+    const receivedBuffer = Buffer.from(h1, 'hex');
+
+    if (expectedBuffer.length !== receivedBuffer.length) return false;
+    return crypto.timingSafeEqual(expectedBuffer, receivedBuffer);
+  } catch (error: any) {
+    logger.error(`[Paddle Webhook Signature Verification Error]: ${error.message}`);
+    return false;
+  }
+}
+
+// ============================================================================
+// DODO WEBHOOK HANDLER
+// ============================================================================
+
 export const handleDodoWebhook = async (req: Request, res: Response) => {
   try {
     const webhookId = req.headers['webhook-id'] as string;
@@ -513,6 +429,15 @@ export const handleDodoWebhook = async (req: Request, res: Response) => {
       return res.status(401).send('Unauthorized: Missing webhook headers');
     }
 
+    // Replay protection: reject events older than tolerance window
+    const timestampSeconds = parseInt(webhookTimestamp, 10);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    if (isNaN(timestampSeconds) || Math.abs(nowSeconds - timestampSeconds) > WEBHOOK_TIMESTAMP_TOLERANCE_SECONDS) {
+      logger.error(`[Dodo Webhook] Timestamp outside tolerance: ${webhookTimestamp}`);
+      return res.status(401).send('Unauthorized: Timestamp too old or too new');
+    }
+
+    // Extract raw body for signature verification
     let rawBody = '';
     if ((req as any).rawBody) {
       rawBody = (req as any).rawBody.toString('utf8');
@@ -521,24 +446,24 @@ export const handleDodoWebhook = async (req: Request, res: Response) => {
     } else if (typeof req.body === 'string') {
       rawBody = req.body;
     }
-    const secret = process.env.DODO_WEBHOOK_SECRET;
 
+    const secret = process.env.DODO_WEBHOOK_SECRET;
     if (!secret) {
       logger.error('[Dodo Webhook] CRITICAL: DODO_WEBHOOK_SECRET is not configured');
       return res.status(500).send('Internal Server Error');
     }
 
-    const isValid = verifyDodoSignature({
-      webhookId,
-      webhookTimestamp,
-      signatureHeader,
-      rawBody,
-      secret,
-    });
-
+    const isValid = verifyDodoSignature({ webhookId, webhookTimestamp, signatureHeader, rawBody, secret });
     if (!isValid) {
       logger.error('[Dodo Webhook] Invalid signature');
       return res.status(401).send('Unauthorized: Invalid signature');
+    }
+
+    // Idempotency: skip already-processed events
+    const existingEvent = await WebhookEvent.findOne({ webhookId }).select('_id').lean();
+    if (existingEvent) {
+      logger.info(`[Dodo Webhook] Skipping duplicate event: ${webhookId}`);
+      return res.status(200).send('OK');
     }
 
     const event = JSON.parse(rawBody);
@@ -546,51 +471,404 @@ export const handleDodoWebhook = async (req: Request, res: Response) => {
     const payload = event.data;
     const ownerId = payload.metadata?.ownerId;
 
-    if (!ownerId) {
-      logger.error('[Dodo Webhook] CRITICAL: Webhook received without metadata.ownerId');
-      return res.status(400).send('Missing ownerId');
+    let processingStatus: 'processed' | 'failed' | 'skipped' = 'processed';
+    let processingError: string | undefined;
+
+    try {
+      if (!ownerId) {
+        // Some events like dispute.* may not carry ownerId — log and skip gracefully
+        if (eventType.startsWith('subscription.') || eventType.startsWith('payment.')) {
+          logger.error(`[Dodo Webhook] CRITICAL: ${eventType} received without metadata.ownerId`);
+          processingStatus = 'failed';
+          processingError = 'Missing ownerId in metadata';
+          return res.status(400).send('Missing ownerId');
+        }
+        processingStatus = 'skipped';
+        return res.status(200).send('OK');
+      }
+
+      await processDodoEvent(eventType, payload, ownerId);
+    } catch (err: any) {
+      processingStatus = 'failed';
+      processingError = err.message;
+      logger.error(`[Dodo Webhook] Processing error for ${eventType}: ${err.message}`);
+    } finally {
+      // Persist audit log regardless of processing outcome
+      await WebhookEvent.create({
+        webhookId,
+        provider: 'dodo',
+        eventType,
+        status: processingStatus,
+        ownerId,
+        payload: event,
+        error: processingError,
+        processedAt: new Date(),
+      }).catch(auditErr => {
+        logger.error(`[Dodo Webhook] Failed to persist audit log: ${(auditErr as Error).message}`);
+      });
     }
 
-    if (eventType === 'payment.succeeded') {
-      const rawAmount = payload.amount || 0;
+    res.status(200).send('OK');
+  } catch (error: any) {
+    logger.error(`[Dodo Webhook] Error: ${error.message}`);
+    res.status(500).send('Webhook Failed');
+  }
+};
 
+async function processDodoEvent(eventType: string, payload: any, ownerId: string): Promise<void> {
+  switch (eventType) {
+    // ---- Payment Events ----
+    case 'payment.succeeded': {
+      const rawAmount = payload.total_amount || payload.amount || 0;
       await Transaction.findOneAndUpdate(
         { dodoTransactionId: payload.payment_id },
         {
           $set: {
             ownerId,
+            provider: 'dodo',
             amount: rawAmount / 100,
             currency: payload.currency || 'USD',
             status: 'completed',
             billedAt: new Date(payload.created_at || Date.now()),
-            receiptUrl: payload.invoice_url
-          }
+            receiptUrl: payload.invoice_url,
+          },
         },
-        { upsert: true, new: true }
+        { upsert: true, new: true },
       );
-
-      logger.info(`[Dodo Webhook] Saved transaction receipt for ${ownerId}`);
+      logger.info(`[Dodo Webhook] payment.succeeded recorded for ${ownerId}`);
+      break;
     }
 
-    if (eventType === 'subscription.active' || eventType === 'subscription.updated') {
-      const incomingPriceId = payload.product_id || payload.plan_id;
-      const matchedPlan = Object.values(PLANS).find(p => p.dodoProductIdMonthly === incomingPriceId || p.dodoProductIdAnnual === incomingPriceId);
+    case 'payment.failed': {
+      const rawAmount = payload.total_amount || payload.amount || 0;
+      await Transaction.findOneAndUpdate(
+        { dodoTransactionId: payload.payment_id },
+        {
+          $set: {
+            ownerId,
+            provider: 'dodo',
+            amount: rawAmount / 100,
+            currency: payload.currency || 'USD',
+            status: 'failed',
+            billedAt: new Date(payload.created_at || Date.now()),
+          },
+        },
+        { upsert: true, new: true },
+      );
+      logger.info(`[Dodo Webhook] payment.failed recorded for ${ownerId}`);
+      break;
+    }
 
-      const targetPlanId = matchedPlan ? matchedPlan.id : 'starter';
-      const isAnnual = matchedPlan && incomingPriceId === matchedPlan.dodoProductIdAnnual;
-      const nextBillingDate = payload.next_billing_date ? new Date(payload.next_billing_date) : new Date();
+    case 'payment.refunded': {
+      await Transaction.findOneAndUpdate(
+        { dodoTransactionId: payload.payment_id },
+        { $set: { status: 'refunded' } },
+      );
+      logger.info(`[Dodo Webhook] payment.refunded recorded for ${ownerId}`);
+      break;
+    }
 
-      const updatePayload: any = {
+    // ---- Subscription Events ----
+    case 'subscription.created': {
+      // Initial creation — subscription may not be active yet
+      logger.info(`[Dodo Webhook] subscription.created for ${ownerId}, awaiting activation`);
+      break;
+    }
+
+    case 'subscription.active': {
+      await handleDodoSubscriptionActivation(payload, ownerId);
+      break;
+    }
+
+    case 'subscription.renewed': {
+      await handleDodoSubscriptionRenewal(payload, ownerId);
+      break;
+    }
+
+    case 'subscription.updated': {
+      await handleDodoSubscriptionUpdate(payload, ownerId);
+      break;
+    }
+
+    case 'subscription.on_hold': {
+      await Subscription.findOneAndUpdate(
+        { ownerId },
+        {
+          $set: {
+            status: 'on_hold',
+            onHoldSince: new Date(),
+          },
+        },
+      );
+      logger.warn(`[Dodo Webhook] subscription.on_hold for ${ownerId} — renewal payment failed, dunning in progress`);
+      break;
+    }
+
+    case 'subscription.failed': {
+      await Subscription.findOneAndUpdate(
+        { ownerId },
+        { $set: { status: 'past_due' } },
+      );
+      logger.error(`[Dodo Webhook] subscription.failed for ${ownerId} — mandate creation failed`);
+      break;
+    }
+
+    case 'subscription.cancelled': {
+      await handleDodoSubscriptionCancelled(payload, ownerId);
+      break;
+    }
+
+    // ---- Dispute Events ----
+    case 'dispute.created':
+    case 'dispute.updated': {
+      if (payload.payment_id) {
+        await Transaction.findOneAndUpdate(
+          { dodoTransactionId: payload.payment_id },
+          { $set: { status: 'disputed' } },
+        );
+      }
+      logger.warn(`[Dodo Webhook] ${eventType} for ${ownerId} — payment_id: ${payload.payment_id}`);
+      break;
+    }
+
+    case 'dispute.won': {
+      if (payload.payment_id) {
+        await Transaction.findOneAndUpdate(
+          { dodoTransactionId: payload.payment_id },
+          { $set: { status: 'completed' } },
+        );
+      }
+      logger.info(`[Dodo Webhook] dispute.won for ${ownerId}`);
+      break;
+    }
+
+    case 'dispute.lost': {
+      if (payload.payment_id) {
+        await Transaction.findOneAndUpdate(
+          { dodoTransactionId: payload.payment_id },
+          { $set: { status: 'refunded' } },
+        );
+      }
+      logger.warn(`[Dodo Webhook] dispute.lost for ${ownerId}`);
+      break;
+    }
+
+    default:
+      logger.info(`[Dodo Webhook] Unhandled event type: ${eventType}`);
+  }
+}
+
+async function handleDodoSubscriptionActivation(payload: any, ownerId: string): Promise<void> {
+  const matchedPlan = resolveDodonPlan(payload.product_id);
+  const targetPlanId = matchedPlan ? matchedPlan.id : 'starter';
+  const isAnnual = matchedPlan ? payload.product_id === matchedPlan.dodoProductIdAnnual : false;
+  const nextBillingDate = payload.next_billing_date ? new Date(payload.next_billing_date) : new Date();
+
+  const nextQuota = new Date(payload.created_at || Date.now());
+  nextQuota.setMonth(nextQuota.getMonth() + 1);
+
+  await Subscription.findOneAndUpdate(
+    { ownerId },
+    {
+      $set: {
         planId: targetPlanId,
-        status: payload.status === 'active' ? 'active' : 'past_due',
+        status: 'active',
         provider: 'dodo',
         providerCustomerId: payload.customer?.customer_id,
         providerSubscriptionId: payload.subscription_id,
         billingInterval: isAnnual ? 'annual' : 'monthly',
-        billingCycleReset: nextBillingDate
+        billingCycleReset: nextBillingDate,
+        quotaResetAt: nextQuota,
+        currentMonthBytes: 0,
+        onHoldSince: null,
+        cancelRequestedAt: null,
+        cancelEffectiveAt: null,
+      },
+      $setOnInsert: {
+        startedAt: new Date(payload.created_at || Date.now()),
+      },
+    },
+    { upsert: true },
+  );
+
+  logger.info(`[Dodo Webhook] subscription.active — ${ownerId} upgraded to ${targetPlanId}`);
+}
+
+async function handleDodoSubscriptionRenewal(payload: any, ownerId: string): Promise<void> {
+  const nextBillingDate = payload.next_billing_date ? new Date(payload.next_billing_date) : new Date();
+
+  const nextQuota = new Date();
+  nextQuota.setMonth(nextQuota.getMonth() + 1);
+
+  await Subscription.findOneAndUpdate(
+    { ownerId },
+    {
+      $set: {
+        status: 'active',
+        billingCycleReset: nextBillingDate,
+        quotaResetAt: nextQuota,
+        currentMonthBytes: 0,
+        onHoldSince: null,
+      },
+    },
+  );
+
+  logger.info(`[Dodo Webhook] subscription.renewed for ${ownerId}, next billing: ${nextBillingDate.toISOString()}`);
+}
+
+async function handleDodoSubscriptionUpdate(payload: any, ownerId: string): Promise<void> {
+  const updateFields: Record<string, any> = {};
+
+  if (payload.product_id) {
+    const matchedPlan = resolveDodonPlan(payload.product_id);
+    if (matchedPlan) {
+      updateFields.planId = matchedPlan.id;
+      updateFields.billingInterval = payload.product_id === matchedPlan.dodoProductIdAnnual ? 'annual' : 'monthly';
+    }
+  }
+
+  if (payload.status) {
+    const statusMap: Record<string, string> = {
+      active: 'active',
+      on_hold: 'on_hold',
+      cancelled: 'canceled',
+      failed: 'past_due',
+    };
+    if (statusMap[payload.status]) {
+      updateFields.status = statusMap[payload.status];
+    }
+  }
+
+  if (payload.next_billing_date) {
+    updateFields.billingCycleReset = new Date(payload.next_billing_date);
+  }
+
+  if (payload.customer?.customer_id) {
+    updateFields.providerCustomerId = payload.customer.customer_id;
+  }
+
+  if (Object.keys(updateFields).length > 0) {
+    await Subscription.findOneAndUpdate({ ownerId }, { $set: updateFields });
+    logger.info(`[Dodo Webhook] subscription.updated for ${ownerId}: ${Object.keys(updateFields).join(', ')}`);
+  }
+}
+
+async function handleDodoSubscriptionCancelled(payload: any, ownerId: string): Promise<void> {
+  const nextMonth = new Date();
+  nextMonth.setMonth(nextMonth.getMonth() + 1);
+
+  await Subscription.findOneAndUpdate(
+    { ownerId },
+    {
+      $set: {
+        status: 'canceled',
+        planId: 'starter',
+        provider: 'none',
+        providerSubscriptionId: null,
+        providerCustomerId: null,
+        billingInterval: 'monthly',
+        cancelEffectiveAt: new Date(),
+        billingCycleReset: nextMonth,
+        onHoldSince: null,
+      },
+    },
+  );
+
+  logger.info(`[Dodo Webhook] subscription.cancelled — ${ownerId} downgraded to starter`);
+}
+
+function resolveDodonPlan(productId: string | undefined) {
+  if (!productId) return null;
+  return Object.values(PLANS).find(
+    p => p.dodoProductIdMonthly === productId || p.dodoProductIdAnnual === productId,
+  ) || null;
+}
+
+// ============================================================================
+// PADDLE WEBHOOK HANDLER (LEGACY — SIGNATURE VERIFICATION ADDED)
+// ============================================================================
+
+export const handlePaddleWebhook = async (req: Request, res: Response) => {
+  try {
+    const signature = req.headers['paddle-signature'] as string;
+    if (!signature) return res.status(401).send('Unauthorized');
+
+    const paddleWebhookSecret = process.env.PADDLE_WEBHOOK_SECRET;
+    if (paddleWebhookSecret) {
+      let rawBody = '';
+      if ((req as any).rawBody) {
+        rawBody = (req as any).rawBody.toString('utf8');
+      } else if (typeof req.body === 'string') {
+        rawBody = req.body;
+      } else {
+        rawBody = JSON.stringify(req.body);
+      }
+
+      if (!verifyPaddleSignature(rawBody, signature, paddleWebhookSecret)) {
+        logger.error('[Paddle Webhook] Invalid signature');
+        return res.status(401).send('Unauthorized: Invalid signature');
+      }
+    } else {
+      logger.warn('[Paddle Webhook] PADDLE_WEBHOOK_SECRET not configured — signature verification skipped');
+    }
+
+    const event = req.body;
+    const eventType = event.event_type;
+    const payload = event.data;
+    const ownerId = payload.custom_data?.ownerId;
+
+    if (!ownerId) {
+      logger.error('[Paddle Webhook] CRITICAL: Webhook received without custom_data.ownerId');
+      return res.status(400).send('Missing ownerId');
+    }
+
+    // Idempotency via webhook event ID
+    const paddleEventId = event.event_id || `paddle_${eventType}_${Date.now()}`;
+    const existingEvent = await WebhookEvent.findOne({ webhookId: paddleEventId }).select('_id').lean();
+    if (existingEvent) {
+      return res.status(200).send('OK');
+    }
+
+    if (eventType === 'transaction.completed' || eventType === 'transaction.paid') {
+      const rawAmount = payload.details?.totals?.grand_total || payload.amount || "0";
+
+      await Transaction.findOneAndUpdate(
+        { paddleTransactionId: payload.id },
+        {
+          $set: {
+            ownerId,
+            provider: 'paddle',
+            amount: parseFloat(rawAmount) / 100,
+            currency: payload.currency_code || 'USD',
+            status: 'completed',
+            billedAt: new Date(payload.created_at || payload.billed_at || Date.now()),
+          },
+        },
+        { upsert: true, new: true },
+      );
+    }
+
+    if (eventType === 'subscription.activated' || eventType === 'subscription.updated') {
+      const incomingPriceId = payload.items?.[0]?.price?.id || payload.items?.[0]?.product?.id;
+      const matchedPlan = Object.values(PLANS).find(
+        p => p.paddlePriceIdMonthly === incomingPriceId || p.paddlePriceIdAnnual === incomingPriceId,
+      );
+
+      const targetPlanId = matchedPlan ? matchedPlan.id : 'starter';
+      const isAnnual = matchedPlan && incomingPriceId === matchedPlan.paddlePriceIdAnnual;
+      const nextBillingDate = new Date(payload.current_billing_period.ends_at);
+
+      const updatePayload: any = {
+        planId: targetPlanId,
+        status: payload.status === 'active' ? 'active' : 'past_due',
+        provider: 'paddle',
+        providerCustomerId: payload.customer_id,
+        providerSubscriptionId: payload.id,
+        billingInterval: isAnnual ? 'annual' : 'monthly',
+        billingCycleReset: nextBillingDate,
       };
 
-      if (eventType === 'subscription.active') {
+      if (eventType === 'subscription.activated') {
         const nextQuota = new Date(payload.created_at || Date.now());
         nextQuota.setMonth(nextQuota.getMonth() + 1);
         updatePayload.quotaResetAt = nextQuota;
@@ -601,23 +879,32 @@ export const handleDodoWebhook = async (req: Request, res: Response) => {
         { ownerId },
         {
           $set: updatePayload,
-          $setOnInsert: {
-            startedAt: new Date(payload.created_at || Date.now())
-          }
+          $setOnInsert: { startedAt: new Date(payload.created_at || Date.now()) },
         },
-        { upsert: true }
+        { upsert: true },
       );
-    }
-    else if (eventType === 'subscription.cancelled' || eventType === 'subscription.failed') {
+    } else if (eventType === 'subscription.canceled' || eventType === 'subscription.past_due') {
       await Subscription.findOneAndUpdate(
         { ownerId },
-        { $set: { status: eventType === 'subscription.cancelled' ? 'canceled' : 'past_due' } }
+        { $set: { status: eventType === 'subscription.canceled' ? 'canceled' : 'past_due' } },
       );
     }
 
+    await WebhookEvent.create({
+      webhookId: paddleEventId,
+      provider: 'paddle',
+      eventType,
+      status: 'processed',
+      ownerId,
+      payload: event,
+      processedAt: new Date(),
+    }).catch(auditErr => {
+      logger.error(`[Paddle Webhook] Failed to persist audit log: ${(auditErr as Error).message}`);
+    });
+
     res.status(200).send('OK');
   } catch (error: any) {
-    logger.error(`[Dodo Webhook] Error: ${error.message}`);
+    logger.error(`[Paddle Webhook] Error: ${error.message}`);
     res.status(500).send('Webhook Failed');
   }
 };

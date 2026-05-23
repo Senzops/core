@@ -2,11 +2,12 @@ import mongoose, { Schema, Document } from 'mongoose';
 
 export interface ITransaction extends Document {
   ownerId: string;
+  provider: 'dodo' | 'paddle';
   paddleTransactionId?: string;
   dodoTransactionId?: string;
   amount: number;
   currency: string;
-  status: 'completed' | 'refunded' | 'failed';
+  status: 'completed' | 'refunded' | 'failed' | 'disputed';
   receiptUrl?: string;
   billedAt: Date;
   createdAt: Date;
@@ -16,11 +17,12 @@ export interface ITransaction extends Document {
 const TransactionSchema = new Schema<ITransaction>(
   {
     ownerId: { type: String, required: true, index: true },
+    provider: { type: String, enum: ['dodo', 'paddle'], required: true },
     paddleTransactionId: { type: String, unique: true, sparse: true },
     dodoTransactionId: { type: String, unique: true, sparse: true },
     amount: { type: Number, required: true },
     currency: { type: String, default: 'USD' },
-    status: { type: String, required: true, default: 'completed' },
+    status: { type: String, enum: ['completed', 'refunded', 'failed', 'disputed'], required: true, default: 'completed' },
     receiptUrl: { type: String },
     billedAt: { type: Date, required: true },
   },

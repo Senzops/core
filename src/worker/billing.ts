@@ -7,11 +7,11 @@ export const startBillingCron = () => {
     try {
       const now = new Date();
       
-      // Target subscriptions requiring EITHER a quota reset OR an internal plan renewal
       const cursor = Subscription.find({
         $or: [
           { quotaResetAt: { $lte: now } },
-          { billingCycleReset: { $lte: now }, provider: 'none' }
+          { billingCycleReset: { $lte: now }, provider: 'none' },
+          { status: 'canceled', cancelEffectiveAt: { $lte: now }, planId: { $ne: 'starter' } },
         ]
       }).cursor();
       
@@ -44,6 +44,21 @@ export const startBillingCron = () => {
           }
           updateFields.billingCycleReset = nextBilling;
           updateFields.status = 'active'; // Guarantee active status
+        }
+
+        // --- 3. Downgrade Canceled Subscriptions Past Their Effective Date ---
+        if (sub.status === 'canceled' && sub.cancelEffectiveAt && sub.cancelEffectiveAt <= now && sub.planId !== 'starter') {
+          updateFields.planId = 'starter';
+          updateFields.provider = 'none';
+          updateFields.billingInterval = 'monthly';
+          updateFields.providerSubscriptionId = null;
+          updateFields.providerCustomerId = null;
+          updateFields.currentMonthBytes = 0;
+          const nextBilling = new Date(now);
+          nextBilling.setMonth(nextBilling.getMonth() + 1);
+          updateFields.billingCycleReset = nextBilling;
+          updateFields.quotaResetAt = nextBilling;
+          logger.info(`[Worker] Downgrading canceled subscription for ${sub.ownerId} to starter`);
         }
 
         if (Object.keys(updateFields).length > 0) {
