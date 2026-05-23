@@ -234,14 +234,14 @@ export const createCheckoutSession = async (req: Request, res: Response) => {
     // Guard: prevent duplicate subscriptions for users who already have an active paid plan
     const existingSub = await Subscription.findOne({ ownerId }).select('planId status provider').lean();
     if (existingSub && existingSub.planId !== 'starter' && existingSub.provider === 'dodo' &&
-        existingSub.status === 'active') {
+      existingSub.status === 'active') {
       return res.status(409).json({
         error: "You already have an active subscription. Use the plan change option in your profile to switch plans.",
         code: "ACTIVE_SUBSCRIPTION_EXISTS",
       });
     }
 
-    const frontendUrl = process.env.FRONTEND_URL;
+    const frontendUrl = req.headers.origin || process.env.FRONTEND_URL;
     if (!frontendUrl) {
       logger.error('[Billing] CRITICAL: FRONTEND_URL env variable is not configured.');
       return res.status(500).json({ error: "Payment gateway is not configured." });
@@ -433,7 +433,7 @@ export const changePlan = async (req: Request, res: Response) => {
     const isTargetAnnual = productId === targetPlan.dodoProductIdAnnual;
     if (targetPlan.id === sub.planId) {
       const sameInterval = (isTargetAnnual && sub.billingInterval === 'annual') ||
-                           (!isTargetAnnual && sub.billingInterval === 'monthly');
+        (!isTargetAnnual && sub.billingInterval === 'monthly');
       if (sameInterval) {
         return res.status(400).json({ error: "You are already on this plan and billing interval." });
       }
