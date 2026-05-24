@@ -28,10 +28,11 @@ export const requireIngestionQuota = async (req: Request, res: Response, next: N
       const serviceApiKey = req.headers['x-service-api-key'] as string; // APM, Task
       const logApiKey = req.headers['x-log-api-key'] as string;         // Logs
       const vpsApiKey = req.headers['x-api-key'] as string;             // VPS
-      const queryApiKey = req.query.apiKey as string;                   // RUM, Logs
+      const queryApiKey = req.query.apiKey as string;                   // RUM, Logs (query param — legacy)
+      const bodyApiKey = req.body?.apiKey as string;                    // RUM (body — sendBeacon can't set headers)
       const bearerToken = req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.split(' ')[1] : null;
 
-      const possibleApiKey = serviceApiKey || logApiKey || vpsApiKey || queryApiKey || bearerToken;
+      const possibleApiKey = serviceApiKey || logApiKey || vpsApiKey || queryApiKey || bodyApiKey || bearerToken;
 
       // Web Analytics uses webId directly in body or query
       const webId = req.body?.webId || req.query?.webId;
