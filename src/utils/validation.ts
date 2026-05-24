@@ -112,6 +112,21 @@ export const WebStatsQuerySchema = z.object({
   range: z.enum(['24h', '7d', '30d']).default('24h'),
 });
 
+// --- Web Ingestion Schema ---
+export const WebIngestSchema = z.object({
+  webId: z.string().min(1).max(50),
+  visitorId: z.string().min(1).max(100),
+  sessionId: z.string().min(1).max(100),
+  type: z.enum(['pageview', 'ping']),
+  url: z.string().max(2048).optional().default(''),
+  path: z.string().max(512).optional().default('/'),
+  title: z.string().max(512).optional().default('Unknown'),
+  referrer: z.string().max(2048).optional().default('Direct'),
+  width: z.number().int().min(0).max(10000).optional(),
+  duration: z.number().int().min(0).max(86400).optional(),
+  timezone: z.string().max(100).optional(),
+});
+
 // --- Uptime Schemas ---
 export const RegisterMonitorSchema = z.object({
   name: z.string().min(1).max(50),

@@ -1,44 +1,26 @@
 import { Request, Response } from "express";
 import { UAParser } from "ua-parser-js";
+import mongoose from "mongoose";
 import { WebEvent, WebMetric, Website } from "../../models/Web";
 import { logger } from "../../utils/logger";
 import { getClientIp } from "../../utils/getClientIp";
 import { getGeoData } from "../../utils/getGeoData";
-import {
-  EMAIL_HOST_HINTS,
-  PAID_MEDIUM_HINTS,
-  SEARCH_HOSTS,
-  SOCIAL_HOSTS,
-} from "../../utils/categorizeReferrers";
+import { getChannel } from "../../utils/categorizeReferrers";
+import { WebIngestSchema } from "../../utils/validation";
 
 // ---------------------------------------------------------------------------
-// Traffic channel classifier
+// Bot detection — skip known crawlers to keep analytics clean
 // ---------------------------------------------------------------------------
 
-const getChannel = (referrer: string, url: string): string => {
-  if (!referrer || referrer === "Direct") return "Direct";
-  const ref = referrer.toLowerCase();
+const isBot = (uaString: string): boolean => {
+  if (!uaString) return false;
+  const parser = new UAParser(uaString);
+  const browserName = (parser.getBrowser().name || "").toLowerCase();
+  if (browserName.includes("bot") || browserName.includes("crawler") || browserName.includes("spider")) return true;
 
-  if (url) {
-    try {
-      const r = new URL(url);
-      const utmMedium = r.searchParams.get("utm_medium");
-      if (utmMedium) {
-        const mediumLower = utmMedium.toLowerCase();
-        if (PAID_MEDIUM_HINTS.some((h) => mediumLower.includes(h))) return "Paid";
-        if (mediumLower.includes("email")) return "Email";
-        if (mediumLower.includes("social")) return "Social";
-      }
-    } catch {
-      // Malformed URL — fall through to header-based classification
-    }
-  }
-
-  if (SEARCH_HOSTS.some((h) => ref.includes(h))) return "Search";
-  if (SOCIAL_HOSTS.some((h) => ref.includes(h))) return "Social";
-  if (EMAIL_HOST_HINTS.some((h) => ref.includes(h))) return "Email";
-
-  return "Referral";
+  const botPatterns =
+    /bot|crawl|spider|slurp|mediapartners|headless|phantom|puppeteer|playwright|lighthouse|pagespeed|gtmetrix|pingdom|uptimerobot|semrush|ahrefs|mj12bot|dotbot|baiduspider|yandexbot|sogou|exabot|facebot|ia_archiver|archive\.org/i;
+  return botPatterns.test(uaString);
 };
 
 // ---------------------------------------------------------------------------
@@ -47,6 +29,12 @@ const getChannel = (referrer: string, url: string): string => {
 
 export const ingestWebMetrics = async (req: Request, res: Response) => {
   try {
+    // --- Validate request body ---
+    const parsed = WebIngestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({ error: "Invalid payload", details: parsed.error.flatten().fieldErrors });
+    }
+
     const {
       webId,
       visitorId,
@@ -58,7 +46,18 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
       referrer,
       width,
       duration,
-    } = req.body;
+    } = parsed.data;
+
+    // --- Validate webId is a valid ObjectId ---
+    if (!mongoose.Types.ObjectId.isValid(webId)) {
+      return res.status(400).json({ error: "Invalid webId format" });
+    }
+
+    // --- Skip bots ---
+    const uaString = req.headers["user-agent"] || "";
+    if (isBot(uaString as string)) {
+      return res.status(200).send("ok");
+    }
 
     // Validate website exists before acknowledging the request
     const site = await Website.findOne({ _id: webId });
@@ -73,24 +72,20 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
     setImmediate(async () => {
       try {
         // --- A. IP extraction ---
-        // getClientIp checks all proxy headers in priority order and
-        // returns a clean, normalised IP string (or null).
         const clientIp = getClientIp(req);
 
         // --- B. Geo lookup ---
-        // Tries CDN headers first (free + instant), then local MaxMind DB.
-        // Never returns "Unknown" due to a private IP being passed to the DB.
-        const { country, city } = await getGeoData(clientIp);
+        const { country, city } = getGeoData(clientIp);
 
         // --- C. User-agent parsing ---
-        const uaString = req.headers["user-agent"] || "";
-        const parser = new UAParser(uaString);
+        const parser = new UAParser(uaString as string);
         const browser = parser.getBrowser().name || "Unknown";
         const os = parser.getOS().name || "Unknown";
         let device: string = parser.getDevice().type || "Desktop";
         if (device === "Desktop" && width && width < 768) device = "Mobile";
 
-        const channel = getChannel(referrer, url);
+        const channelInfo = getChannel(referrer, url);
+        const channel = channelInfo.channel;
         const timestamp = new Date();
 
         // --- D. Handle ping (duration heartbeat) ---
@@ -136,9 +131,6 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
         const bucketTime = new Date(timestamp);
         bucketTime.setSeconds(0, 0);
 
-        // We use an update pipeline to handle literal dots in field names.
-        // Standard $inc: { "referrers.reddit.com": 1 } would create nested objects.
-        // Update pipeline with $setField treats the key as a literal string.
         const pipeline: any[] = [
           {
             $set: {
@@ -148,20 +140,19 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
         ];
 
         const addMapToPipeline = (prefix: string, key: string) => {
-          // Sanitise keys: MongoDB disallows '$' in field names.
           const safeKey = key.replace(/\$/g, "");
-          
+
           pipeline.push({
             $set: {
               [prefix]: {
                 $setField: {
                   field: safeKey,
                   input: { $ifNull: [`$${prefix}`, {}] },
-                  value: { 
+                  value: {
                     $add: [
-                      { $ifNull: [{ $getField: { field: safeKey, input: `$${prefix}` } }, 0] }, 
+                      { $ifNull: [{ $getField: { field: safeKey, input: `$${prefix}` } }, 0] },
                       1
-                    ] 
+                    ]
                   }
                 }
               }

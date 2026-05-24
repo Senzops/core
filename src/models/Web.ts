@@ -108,8 +108,8 @@ const WebMetricSchema = new Schema<IWebMetric>({
   devices: { type: Map, of: Number, default: {} },
 });
 
-// Compound Index for fast range queries
-WebMetricSchema.index({ webId: 1, timestamp: 1 });
+// Compound unique index — prevents duplicate metric buckets under concurrency
+WebMetricSchema.index({ webId: 1, timestamp: 1 }, { unique: true });
 
 // TTL: Keep aggregated stats for 32 days
 WebMetricSchema.index({ timestamp: 1 }, { expireAfterSeconds: 2764800 });
