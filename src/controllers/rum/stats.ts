@@ -72,7 +72,8 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
     let rawStats: any = {};
 
     if (pathFilter) {
-      const matchQuery = { serviceId: serviceIdObj, path: pathFilter, timestamp: { $gte: startDate } };
+      // Exclude span_update traces — they are continuation flushes, not new page views
+      const matchQuery = { serviceId: serviceIdObj, path: pathFilter, timestamp: { $gte: startDate }, traceType: { $in: ['initial_load', 'route_change'] } };
 
       trendRaw = await RumTrace.aggregate([
         { $match: matchQuery },

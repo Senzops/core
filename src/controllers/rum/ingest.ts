@@ -124,40 +124,46 @@ const processRumBatchBackground = async (data: { traces: any[], errors: any[], l
     }
 
     const m = metricsMap.get(bucketKey);
-    m.pageViews++;
-    if (item.sessionId) m.sessionIds.add(item.sessionId);
+    const isNewPageView = item.traceType === 'initial_load' || item.traceType === 'route_change';
 
-    // Aggregate Vitals
-    const v = item.vitals || {};
-    if (v.lcp !== undefined) { m.vitalsSum.lcp += v.lcp; m.vitalsCount.lcp++; }
-    if (v.inp !== undefined) { m.vitalsSum.inp += v.inp; m.vitalsCount.inp++; }
-    if (v.cls !== undefined) { m.vitalsSum.cls += v.cls; m.vitalsCount.cls++; }
-    if (v.fcp !== undefined) { m.vitalsSum.fcp += v.fcp; m.vitalsCount.fcp++; }
+    // Only count actual page views, not span_update continuations
+    if (isNewPageView) {
+      m.pageViews++;
+      if (item.sessionId) m.sessionIds.add(item.sessionId);
+    }
 
-    // Aggregate Timings 
-    const t = item.timings || {};
-    if (t.dns !== undefined) { m.timingsSum.dns += t.dns; m.timingsCount.dns++; }
-    if (t.tcp !== undefined) { m.timingsSum.tcp += t.tcp; m.timingsCount.tcp++; }
-    if (t.ssl !== undefined) { m.timingsSum.ssl += t.ssl; m.timingsCount.ssl++; }
-    if (t.ttfb !== undefined) { m.timingsSum.ttfb += t.ttfb; m.timingsCount.ttfb++; }
-    if (t.domComplete !== undefined) { m.timingsSum.domComplete += t.domComplete; m.timingsCount.domComplete++; }
+    // Only aggregate vitals/timings/frustration from the first flush per trace
+    // (span_updates send empty vitals to avoid double-counting)
+    if (isNewPageView) {
+      const v = item.vitals || {};
+      if (v.lcp !== undefined) { m.vitalsSum.lcp += v.lcp; m.vitalsCount.lcp++; }
+      if (v.inp !== undefined) { m.vitalsSum.inp += v.inp; m.vitalsCount.inp++; }
+      if (v.cls !== undefined) { m.vitalsSum.cls += v.cls; m.vitalsCount.cls++; }
+      if (v.fcp !== undefined) { m.vitalsSum.fcp += v.fcp; m.vitalsCount.fcp++; }
 
-    // Aggregate Frustration
-    const f = item.frustration || {};
-    m.frustrationTotal.rageClicks += (f.rageClicks || 0);
-    m.frustrationTotal.deadClicks += (f.deadClicks || 0);
-    m.frustrationTotal.errors += (f.errorCount || 0);
+      const t = item.timings || {};
+      if (t.dns !== undefined) { m.timingsSum.dns += t.dns; m.timingsCount.dns++; }
+      if (t.tcp !== undefined) { m.timingsSum.tcp += t.tcp; m.timingsCount.tcp++; }
+      if (t.ssl !== undefined) { m.timingsSum.ssl += t.ssl; m.timingsCount.ssl++; }
+      if (t.ttfb !== undefined) { m.timingsSum.ttfb += t.ttfb; m.timingsCount.ttfb++; }
+      if (t.domComplete !== undefined) { m.timingsSum.domComplete += t.domComplete; m.timingsCount.domComplete++; }
 
-    const incrementMap = (mapObj: any, key: string) => {
-      const safeKey = key.replace(/\./g, '_').replace(/\$/g, '');
-      mapObj[safeKey] = (mapObj[safeKey] || 0) + 1;
-    };
+      const f = item.frustration || {};
+      m.frustrationTotal.rageClicks += (f.rageClicks || 0);
+      m.frustrationTotal.deadClicks += (f.deadClicks || 0);
+      m.frustrationTotal.errors += (f.errorCount || 0);
 
-    incrementMap(m.paths, item.path);
-    incrementMap(m.countries, country);
-    incrementMap(m.browsers, browser);
-    incrementMap(m.os, os);
-    incrementMap(m.devices, device);
+      const incrementMap = (mapObj: any, key: string) => {
+        const safeKey = key.replace(/\./g, '_').replace(/\$/g, '');
+        mapObj[safeKey] = (mapObj[safeKey] || 0) + 1;
+      };
+
+      incrementMap(m.paths, item.path);
+      incrementMap(m.countries, country);
+      incrementMap(m.browsers, browser);
+      incrementMap(m.os, os);
+      incrementMap(m.devices, device);
+    }
   }
 
   // --- 2. Process Frontend Errors (Universal Error Engine) ---
