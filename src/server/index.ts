@@ -9,32 +9,33 @@ import admin from 'firebase-admin';
 
 // Imports
 import { authenticateUser, authenticateAgent, errorHandler } from '../middlewares';
-import { registerVps, listVps, deleteVps, ingestMetrics, getVpsStats } from '../controllers/vps';
+import { registerVps, listVps, deleteVps, updateVps, ingestMetrics, getVpsStats } from '../controllers/vps';
 import { logger } from '../utils/logger';
 import { EnvUtils } from '../utils/envUtils';
 import { ingestWebMetrics } from '../controllers/web/webIngest';
-import { deleteWebsite, listWebsites, registerWebsite } from '../controllers/web/main';
+import { deleteWebsite, listWebsites, registerWebsite, updateWebsite } from '../controllers/web/main';
 import { getWebStats } from '../controllers/web/webStats';
-import { deleteMonitor, getMonitorStats, listMonitors, registerMonitor } from '../controllers/monitor';
+import { deleteMonitor, getMonitorStats, listMonitors, registerMonitor, updateMonitor } from '../controllers/monitor';
 import { getRandomStatus } from '../controllers/demo';
 import { createServer } from 'http';
 import { initSocketServer } from '../services/socket';
 import { ingestApmBatch } from '../controllers/apm/ingest';
-import { deleteService, listServices, registerService } from '../controllers/apm/main';
+import { deleteService, listServices, registerService, updateService } from '../controllers/apm/main';
 import { getApmStats } from '../controllers/apm/stats';
 import { getRuntimeStats } from '../controllers/apm/runtimeStats';
 import { getInvocations, getTraceDetail } from '../controllers/apm/traces';
-import { registerDatabase, listDatabases, deleteDatabase } from '../controllers/database/main';
+import { registerDatabase, listDatabases, deleteDatabase, updateDatabase } from '../controllers/database/main';
 import { getDatabaseStats } from '../controllers/database/stats';
 import { ingestTaskBatch } from '../controllers/task/ingest';
-import { deleteTaskService, listTaskServices, registerTaskService } from '../controllers/task/main';
+import { deleteTaskService, listTaskServices, registerTaskService, updateTaskService } from '../controllers/task/main';
 import { getTaskEntityDetail, getTaskRunDetail, getTaskServiceDashboard } from '../controllers/task/stats';
 import { getErrorGroupDetails, getGlobalErrors, getTraceErrors, updateErrorStatus } from '../controllers/error';
 import { ingestRumBatch } from '../controllers/rum/ingest';
 import {
   registerService as registerRumService,
   listServices as listRumServices,
-  deleteService as deleteRumService
+  deleteService as deleteRumService,
+  updateRumService
 } from '../controllers/rum/main';
 import { getRumDashboard, getRumTraceDetail } from '../controllers/rum/stats';
 import { ingestGlobalLogs, getDashboardLogs, getTraceLogs, getLogApiKey, getLogById } from '../controllers/logs';
@@ -183,24 +184,28 @@ const apiRouter = express.Router();
 apiRouter.use(authenticateUser);
 apiRouter.post('/vps/register', apiLimiter, requireServiceQuota('Vps', 'Server'), registerVps);
 apiRouter.get('/vps/list', listVps);
+apiRouter.put('/vps/:id', updateVps);
 apiRouter.delete('/vps/:id', deleteVps);
 apiRouter.get('/vps/:id/stats', getVpsStats);
 
 // 3. Web Analytics API
 apiRouter.post('/web/register', requireServiceQuota('Website', 'Web Analytics'), registerWebsite);
 apiRouter.get('/web/list', listWebsites);
+apiRouter.put('/web/:id', updateWebsite);
 apiRouter.delete('/web/:id', deleteWebsite);
 apiRouter.get('/web/:id/stats', getWebStats);
 
 // 4. Uptime Monitor API
 apiRouter.post('/uptime/register', requireServiceQuota('Monitor', 'Uptime Monitor'), registerMonitor);
 apiRouter.get('/uptime/list', listMonitors);
+apiRouter.put('/uptime/:id', updateMonitor);
 apiRouter.delete('/uptime/:id', deleteMonitor);
 apiRouter.get('/uptime/:id/stats', getMonitorStats);
 
 // --- APM (Dashboard) ---
 apiRouter.post('/apm/register', requireServiceQuota('ApmService', 'APM Component'), registerService);
 apiRouter.get('/apm/list', listServices);
+apiRouter.put('/apm/:id', updateService);
 apiRouter.delete('/apm/:id', deleteService);
 apiRouter.get('/apm/:id/stats', getApmStats);
 apiRouter.get('/apm/:id/runtime', getRuntimeStats);
@@ -210,6 +215,7 @@ apiRouter.get('/apm/:id/trace/:traceId', getTraceDetail);
 // --- Database (Dashboard) ---
 apiRouter.post('/database/register', requireServiceQuota('DatabaseService', 'Database'), registerDatabase);
 apiRouter.get('/database/list', listDatabases);
+apiRouter.put('/database/:id', updateDatabase);
 apiRouter.delete('/database/:id', deleteDatabase);
 apiRouter.get('/database/:id/stats', getDatabaseStats);
 
@@ -225,6 +231,7 @@ apiRouter.get('/apm/:id/trace/:traceId/errors', getTraceErrors);
 // Task Services Management
 apiRouter.post('/task/register', requireServiceQuota('TaskService', 'Background Task'), registerTaskService);
 apiRouter.get('/task/list', listTaskServices);
+apiRouter.put('/task/:id', updateTaskService);
 apiRouter.delete('/task/:id', deleteTaskService);
 
 // Task Dashboards & Analytics
@@ -235,6 +242,7 @@ apiRouter.get('/task/:id/run/:runId', getTaskRunDetail);
 // --- RUM / WEB APM (Dashboard) ---
 apiRouter.post('/rum/register', requireServiceQuota('RumService', 'RUM Application'), registerRumService);
 apiRouter.get('/rum/list', listRumServices);
+apiRouter.put('/rum/:id', updateRumService);
 apiRouter.delete('/rum/:id', deleteRumService);
 apiRouter.get('/rum/:id/dashboard', getRumDashboard);
 apiRouter.get('/rum/:id/trace/:traceId', getRumTraceDetail);

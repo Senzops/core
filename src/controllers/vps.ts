@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { Vps, VpsRun } from '../models/Vps';
 import { User } from '../models/User';
-import { RegisterVpsSchema, TelemetrySchema } from '../utils/validation';
+import { RegisterVpsSchema, UpdateVpsSchema, TelemetrySchema } from '../utils/validation';
 import { logger } from '../utils/logger';
 
 // --- VPS Controller ---
@@ -54,6 +54,25 @@ export const deleteVps = async (req: Request, res: Response, next: NextFunction)
     await VpsRun.deleteMany({ vpsId: id });
 
     res.json({ message: 'VPS Deleted' });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateVps = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { uid } = (req as any).user;
+    const { id } = req.params;
+    const { name } = UpdateVpsSchema.parse(req.body);
+
+    const updated = await Vps.findOneAndUpdate(
+      { _id: id, ownerId: uid },
+      { name },
+      { new: true, runValidators: true }
+    );
+    if (!updated) return res.status(404).json({ error: 'VPS not found' });
+
+    res.json({ message: 'VPS Updated', vps: updated });
   } catch (error) {
     next(error);
   }

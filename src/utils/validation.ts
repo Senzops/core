@@ -4,6 +4,10 @@ export const RegisterVpsSchema = z.object({
   name: z.string().min(1).max(50),
 });
 
+export const UpdateVpsSchema = z.object({
+  name: z.string().min(1).max(50),
+});
+
 const NginxStatsSchema = z.object({
   activeConnections: z.number(),
   accepts: z.number(),
@@ -108,6 +112,14 @@ export const RegisterWebsiteSchema = z.object({
   )
 });
 
+export const UpdateWebsiteSchema = z.object({
+  name: z.string().min(1).max(50).optional(),
+  domain: z.string().min(3).max(253).regex(
+    /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/,
+    "Invalid domain or subdomain format"
+  ).optional(),
+}).refine(data => data.name || data.domain, { message: 'At least one field must be provided' });
+
 export const WebStatsQuerySchema = z.object({
   range: z.enum(['24h', '7d', '30d']).default('24h'),
 });
@@ -135,6 +147,12 @@ export const RegisterMonitorSchema = z.object({
 });
 
 
+export const UpdateMonitorSchema = z.object({
+  name: z.string().min(1).max(50).optional(),
+  url: z.string().url().optional(),
+  interval: z.enum(['15', '30', '60']).transform(Number).optional(),
+}).refine(data => data.name || data.url || data.interval !== undefined, { message: 'At least one field must be provided' });
+
 // Log Payload
 export const LogPayloadSchema = z.object({
   level: z.string().default('info'),
@@ -151,6 +169,11 @@ export const RegisterApmSchema = z.object({
   name: z.string().min(1).max(50),
   framework: z.string().optional(),
 });
+
+export const UpdateApmSchema = z.object({
+  name: z.string().min(1).max(50).optional(),
+  framework: z.string().optional(),
+}).refine(data => data.name || data.framework, { message: 'At least one field must be provided' });
 
 const ApmSpanSchema = z.object({
   spanId: z.string().optional(),
@@ -259,6 +282,13 @@ export const RegisterDbSchema = z.object({
   interval: z.number().min(1).max(60).default(5)
 });
 
+export const UpdateDbSchema = z.object({
+  name: z.string().min(1).max(50).optional(),
+  type: z.enum(['mongodb', 'postgresql', 'mysql', 'redis']).optional(),
+  uri: z.string().optional(),
+  interval: z.number().min(1).max(60).optional(),
+}).refine(data => data.name || data.type || data.uri || data.interval !== undefined, { message: 'At least one field must be provided' });
+
 // --- APM Error Ingest Validation ---
 export const ApmErrorIngestSchema = z.object({
   namespace: z.string().default('default'),
@@ -334,6 +364,18 @@ export const TaskBatchSchema = z.object({
 // ============================================================================
 // --- RUM (WEB APM) MONITORING SCHEMAS ---
 // ============================================================================
+
+export const UpdateTaskSchema = z.object({
+  name: z.string().min(1).max(50),
+});
+
+export const UpdateRumSchema = z.object({
+  name: z.string().min(1).max(50).optional(),
+  domains: z.string().min(3).max(253).regex(
+    /^(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/,
+    "Invalid domain or subdomain format"
+  ).optional(),
+}).refine(data => data.name || data.domains, { message: 'At least one field must be provided' });
 
 export const RegisterRumSchema = z.object({
   name: z.string().min(1).max(50),

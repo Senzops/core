@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { ApmService, ApmTrace } from '../../models/Apm';
-import { RegisterApmSchema } from '../../utils/validation';
+import { RegisterApmSchema, UpdateApmSchema } from '../../utils/validation';
 
 // --- Register New Service ---
 export const registerService = async (req: Request, res: Response, next: NextFunction) => {
@@ -35,6 +35,26 @@ export const listServices = async (req: Request, res: Response, next: NextFuncti
     const { uid } = (req as any).user;
     const services = await ApmService.find({ ownerId: uid }).sort({ createdAt: -1 });
     res.json(services);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// --- Update Service ---
+export const updateService = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { uid } = (req as any).user;
+    const { id } = req.params;
+    const updates = UpdateApmSchema.parse(req.body);
+
+    const updated = await ApmService.findOneAndUpdate(
+      { _id: id, ownerId: uid },
+      updates,
+      { new: true, runValidators: true }
+    );
+    if (!updated) return res.status(404).json({ error: 'Service not found' });
+
+    res.json({ message: 'Service Updated', service: updated });
   } catch (error) {
     next(error);
   }

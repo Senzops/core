@@ -29,6 +29,27 @@ export const listTaskServices = async (req: Request, res: Response, next: NextFu
   }
 };
 
+export const updateTaskService = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { uid } = (req as any).user;
+    const { id } = req.params;
+    const { name } = req.body;
+    if (!name) return res.status(400).json({ error: 'Service name is required' });
+    if (name.length > 50) return res.status(400).json({ error: 'Name must be at most 50 characters' });
+
+    const updated = await TaskService.findOneAndUpdate(
+      { _id: id, ownerId: uid },
+      { name },
+      { new: true, runValidators: true }
+    );
+    if (!updated) return res.status(404).json({ error: 'Service not found' });
+
+    res.json({ message: 'Task Service Updated', service: updated });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const deleteTaskService = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;

@@ -3,6 +3,7 @@ import { MongoClient } from 'mongodb';
 import Redis from 'ioredis';
 import { DatabaseService, DbMetric, DbCollectionStat } from '../../models/Database';
 import { encrypt } from '../../utils/crypto';
+import { UpdateDbSchema } from '../../utils/validation';
 import { z } from 'zod';
 
 const RegisterDbSchema = z.object({
@@ -67,6 +68,68 @@ export const listDatabases = async (req: Request, res: Response, next: NextFunct
     const { uid } = (req as any).user;
     const dbs = await DatabaseService.find({ ownerId: uid }).select('-encryptedUri').sort({ createdAt: -1 });
     res.json(dbs);
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateDatabase = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { uid } = (req as any).user;
+    const { id } = req.params;
+    const updates = UpdateDbSchema.parse(req.body);
+
+    const existing = await DatabaseService.findOne({ _id: id, ownerId: uid });
+    if (!existing) return res.status(404).json({ error: 'Database not found' });
+
+    const updateFields: Record<string, any> = {};
+    if (updates.name !== undefined) updateFields.name = updates.name;
+    if (updates.interval !== undefined) updateFields.interval = updates.interval;
+
+    const effectiveType = updates.type || existing.type;
+    if (updates.type !== undefined) updateFields.type = updates.type;
+
+    if (updates.uri !== undefined) {
+      if (effectiveType === 'mongodb') {
+        try {
+          const client = new MongoClient(updates.uri, { serverSelectionTimeoutMS: 5000 });
+          await client.connect();
+          const adminDb = client.db('admin');
+          await adminDb.command({ serverStatus: 1 });
+          await client.close();
+        } catch (err: any) {
+          return res.status(400).json({ error: 'MongoDB Connection Failed', details: err.message });
+        }
+      } else if (effectiveType === 'redis') {
+        try {
+          const redis = new Redis(updates.uri, {
+            maxRetriesPerRequest: 1,
+            connectTimeout: 5000,
+            lazyConnect: true,
+          });
+          await redis.connect();
+          await redis.ping();
+          await redis.quit();
+        } catch (err: any) {
+          return res.status(400).json({ error: 'Redis Connection Failed', details: err.message });
+        }
+      } else {
+        return res.status(400).json({ error: `Adapter for ${effectiveType} is not yet implemented.` });
+      }
+
+      updateFields.encryptedUri = encrypt(updates.uri);
+      updateFields.status = 'online';
+      updateFields.lastCheck = new Date();
+      updateFields.errorMessage = undefined;
+    }
+
+    const updated = await DatabaseService.findOneAndUpdate(
+      { _id: id, ownerId: uid },
+      updateFields,
+      { new: true, runValidators: true }
+    ).select('-encryptedUri');
+
+    res.json({ message: 'Database Updated', database: updated });
   } catch (error) {
     next(error);
   }

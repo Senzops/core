@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { Website, WebEvent } from '../../models/Web';
 import { User } from '../../models/User';
-import { RegisterWebsiteSchema } from '../../utils/validation';
+import { RegisterWebsiteSchema, UpdateWebsiteSchema } from '../../utils/validation';
 
 // --- Register a new Website ---
 export const registerWebsite = async (req: Request, res: Response, next: NextFunction) => {
@@ -36,6 +36,26 @@ export const listWebsites = async (req: Request, res: Response, next: NextFuncti
     const sites = await Website.find({ ownerId: uid }).sort({ createdAt: -1 });
 
     res.json(sites);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// --- Update Website ---
+export const updateWebsite = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { uid } = (req as any).user;
+    const { id } = req.params;
+    const updates = UpdateWebsiteSchema.parse(req.body);
+
+    const updated = await Website.findOneAndUpdate(
+      { _id: id, ownerId: uid },
+      updates,
+      { new: true, runValidators: true }
+    );
+    if (!updated) return res.status(404).json({ error: 'Website not found' });
+
+    res.json({ message: 'Website Updated', website: updated });
   } catch (error) {
     next(error);
   }

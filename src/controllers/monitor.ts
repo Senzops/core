@@ -1,7 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { Monitor, MonitorRun } from '../models/Monitor';
 import { User } from '../models/User';
-import { RegisterMonitorSchema } from '../utils/validation';
+import { RegisterMonitorSchema, UpdateMonitorSchema } from '../utils/validation';
 
 // --- Register ---
 export const registerMonitor = async (req: Request, res: Response, next: NextFunction) => {
@@ -29,6 +29,31 @@ export const listMonitors = async (req: Request, res: Response, next: NextFuncti
     const { uid } = (req as any).user;
     const list = await Monitor.find({ ownerId: uid }).sort({ createdAt: -1 });
     res.json(list);
+  } catch (error) {
+    next(error);
+  }
+};
+
+// --- Update ---
+export const updateMonitor = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { uid } = (req as any).user;
+    const { id } = req.params;
+    const updates = UpdateMonitorSchema.parse(req.body);
+
+    const updateFields: Record<string, any> = {};
+    if (updates.name !== undefined) updateFields.name = updates.name;
+    if (updates.url !== undefined) updateFields.url = updates.url;
+    if (updates.interval !== undefined) updateFields.interval = updates.interval;
+
+    const updated = await Monitor.findOneAndUpdate(
+      { _id: id, ownerId: uid },
+      updateFields,
+      { new: true, runValidators: true }
+    );
+    if (!updated) return res.status(404).json({ error: 'Monitor not found' });
+
+    res.json({ message: 'Monitor Updated', monitor: updated });
   } catch (error) {
     next(error);
   }
