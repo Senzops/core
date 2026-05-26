@@ -22,6 +22,7 @@ import { initSocketServer } from '../services/socket';
 import { ingestApmBatch } from '../controllers/apm/ingest';
 import { deleteService, listServices, registerService } from '../controllers/apm/main';
 import { getApmStats } from '../controllers/apm/stats';
+import { getRuntimeStats } from '../controllers/apm/runtimeStats';
 import { getInvocations, getTraceDetail } from '../controllers/apm/traces';
 import { registerDatabase, listDatabases, deleteDatabase } from '../controllers/database/main';
 import { getDatabaseStats } from '../controllers/database/stats';
@@ -202,6 +203,7 @@ apiRouter.post('/apm/register', requireServiceQuota('ApmService', 'APM Component
 apiRouter.get('/apm/list', listServices);
 apiRouter.delete('/apm/:id', deleteService);
 apiRouter.get('/apm/:id/stats', getApmStats);
+apiRouter.get('/apm/:id/runtime', getRuntimeStats);
 apiRouter.get('/apm/:id/invocations', getInvocations);
 apiRouter.get('/apm/:id/trace/:traceId', getTraceDetail);
 

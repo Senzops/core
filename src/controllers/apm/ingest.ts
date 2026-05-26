@@ -3,6 +3,7 @@ import { UAParser } from 'ua-parser-js';
 import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
 import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/Error';
 import { LogEvent } from '../../models/Log';
+import { RuntimeMetric } from '../../models/RuntimeMetric';
 import { logger } from '../../utils/logger';
 import { ApmBatchSchema } from '../../utils/validation';
 import { normaliseIP, isPrivateOrLoopback } from '../../utils/getClientIp';
@@ -65,6 +66,7 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
       queuedTraces: batch.data.traces.length,
       queuedErrors: batch.data.errors.length,
       queuedLogs: batch.data.logs.length,
+      queuedRuntimeMetrics: batch.data.runtimeMetrics?.length ?? 0,
     });
 
     setImmediate(() => {
@@ -85,7 +87,7 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 const processBatchBackground = async (
-  data: { traces: any[]; errors: any[]; logs: any[] },
+  data: { traces: any[]; errors: any[]; logs: any[]; runtimeMetrics?: any[] },
   service: any
 ) => {
   await ApmService.findByIdAndUpdate(service._id, { lastSeen: new Date() });
@@ -345,5 +347,55 @@ const processBatchBackground = async (
 
     // ordered: false — one malformed log doc must not abort the whole batch
     await LogEvent.insertMany(logsToInsert, { ordered: false });
+  }
+
+  // -------------------------------------------------------------------------
+  // 5. Process Runtime Metrics
+  // -------------------------------------------------------------------------
+  if (data.runtimeMetrics && data.runtimeMetrics.length > 0) {
+    const runtimeBulkOps = data.runtimeMetrics.map((rm: any) => {
+      const ts = new Date(rm.timestamp);
+      const bucketTime = new Date(ts);
+      bucketTime.setSeconds(0, 0);
+
+      const m = rm.metrics;
+
+      return {
+        updateOne: {
+          filter: { serviceId: service._id, timestamp: bucketTime },
+          update: {
+            $inc: {
+              sampleCount: 1,
+              gcTotalDurationMs: m.gc?.totalDurationMs ?? 0,
+              gcTotalCount: m.gc?.totalCount ?? 0,
+              gcMajorCount: m.gc?.majorCount ?? 0,
+              gcMinorCount: m.gc?.minorCount ?? 0,
+              cpuUserUs: m.process?.cpuUserUs ?? 0,
+              cpuSystemUs: m.process?.cpuSystemUs ?? 0,
+            },
+            $max: {
+              eventLoopLagMs: m.eventLoop?.lagMs ?? 0,
+              eventLoopLagP50Ms: m.eventLoop?.lagP50Ms ?? 0,
+              eventLoopLagP99Ms: m.eventLoop?.lagP99Ms ?? 0,
+              eventLoopUtilizationPercent: m.eventLoop?.utilizationPercent ?? 0,
+              heapUsedBytes: m.memory?.heapUsedBytes ?? 0,
+              heapTotalBytes: m.memory?.heapTotalBytes ?? 0,
+              heapUsedPercent: m.memory?.heapUsedPercent ?? 0,
+              rssBytes: m.memory?.rssBytes ?? 0,
+              externalBytes: m.memory?.externalBytes ?? 0,
+              arrayBuffersBytes: m.memory?.arrayBuffersBytes ?? 0,
+              activeHandles: m.process?.activeHandles ?? 0,
+              activeRequests: m.process?.activeRequests ?? 0,
+              uptimeSeconds: m.process?.uptimeSeconds ?? 0,
+            },
+          },
+          upsert: true,
+        },
+      };
+    });
+
+    if (runtimeBulkOps.length > 0) {
+      await RuntimeMetric.bulkWrite(runtimeBulkOps, { ordered: false });
+    }
   }
 };

@@ -194,13 +194,60 @@ const ApmErrorItemSchema = z.object({
   timestamp: z.string().datetime().optional()
 });
 
+// --- Runtime Metrics Schema ---
+const RuntimeMetricsEventLoopSchema = z.object({
+  lagMs: z.number().nonnegative(),
+  lagP50Ms: z.number().nonnegative().optional(),
+  lagP99Ms: z.number().nonnegative().optional(),
+  utilizationPercent: z.number().min(0).max(100).optional(),
+});
+
+const RuntimeMetricsGcSchema = z.object({
+  totalDurationMs: z.number().nonnegative(),
+  totalCount: z.number().nonnegative(),
+  majorCount: z.number().nonnegative(),
+  minorCount: z.number().nonnegative(),
+  incrementalCount: z.number().nonnegative(),
+  weakCallbackCount: z.number().nonnegative(),
+});
+
+const RuntimeMetricsMemorySchema = z.object({
+  heapUsedBytes: z.number().nonnegative(),
+  heapTotalBytes: z.number().nonnegative(),
+  externalBytes: z.number().nonnegative(),
+  arrayBuffersBytes: z.number().nonnegative(),
+  rssBytes: z.number().nonnegative(),
+  heapUsedPercent: z.number().min(0).max(100),
+});
+
+const RuntimeMetricsProcessSchema = z.object({
+  activeHandles: z.number().nonnegative(),
+  activeRequests: z.number().nonnegative(),
+  cpuUserUs: z.number().nonnegative(),
+  cpuSystemUs: z.number().nonnegative(),
+  uptimeSeconds: z.number().nonnegative(),
+});
+
+const RuntimeMetricsSchema = z.object({
+  eventLoop: RuntimeMetricsEventLoopSchema,
+  gc: RuntimeMetricsGcSchema,
+  memory: RuntimeMetricsMemorySchema,
+  process: RuntimeMetricsProcessSchema,
+});
+
+const RuntimeMetricsPayloadSchema = z.object({
+  timestamp: z.string().datetime(),
+  metrics: RuntimeMetricsSchema,
+});
+
 // Batch Payload (Upgraded to accept { traces, errors } but falls back to Array for legacy)
 export const ApmBatchSchema = z.union([
-  z.array(ApmTraceItem).transform(traces => ({ traces, errors: [], logs: [] })),
+  z.array(ApmTraceItem).transform(traces => ({ traces, errors: [], logs: [], runtimeMetrics: [] })),
   z.object({
     traces: z.array(ApmTraceItem).optional().default([]),
     errors: z.array(ApmErrorItemSchema).optional().default([]),
-    logs: z.array(LogPayloadSchema).default([])
+    logs: z.array(LogPayloadSchema).default([]),
+    runtimeMetrics: z.array(RuntimeMetricsPayloadSchema).optional().default([]),
   })
 ]);
 
