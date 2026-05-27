@@ -194,31 +194,52 @@ export const getVpsStats = async (req: Request, res: Response, next: NextFunctio
   try {
     const { id } = req.params;
     const { uid } = (req as any).user;
-    const { range = '1h' } = req.query;
+    const { range, start, end } = req.query;
 
     const vps = await Vps.findOne({ _id: id, ownerId: uid });
     if (!vps) return res.status(404).json({ error: "VPS not found" });
 
+    let startDate: Date;
+    let endDate: Date | undefined;
     const now = new Date();
-    const startDate = new Date();
 
-    switch (range) {
-      case '1h': startDate.setHours(now.getHours() - 1); break;
-      case '3h': startDate.setHours(now.getHours() - 3); break;
-      case '6h': startDate.setHours(now.getHours() - 6); break;
-      case '12h': startDate.setHours(now.getHours() - 12); break;
-      case '24h':
-      default: startDate.setHours(now.getHours() - 24); break;
+    if (typeof start === 'string' && typeof end === 'string') {
+      // Custom absolute range
+      startDate = new Date(start);
+      endDate = new Date(end);
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+        return res.status(400).json({ error: 'Invalid start/end date' });
+      }
+    } else {
+      // Relative range
+      startDate = new Date(now);
+      switch (range) {
+        case '30m': startDate.setMinutes(now.getMinutes() - 30); break;
+        case '1h': startDate.setHours(now.getHours() - 1); break;
+        case '3h': startDate.setHours(now.getHours() - 3); break;
+        case '6h': startDate.setHours(now.getHours() - 6); break;
+        case '12h': startDate.setHours(now.getHours() - 12); break;
+        case '24h':
+        default: startDate.setHours(now.getHours() - 24); break;
+      }
     }
 
-    const runs = await VpsRun.find({
+    const query: Record<string, any> = {
       vpsId: id,
-      createdAt: { $gte: startDate }
-    })
+      createdAt: { $gte: startDate },
+    };
+    if (endDate) {
+      query.createdAt.$lte = endDate;
+    }
+
+    const runs = await VpsRun.find(query)
       .sort({ createdAt: 1 })
       .lean();
 
-    const history = fillTimeGaps(runs, range as string, startDate);
+    const effectiveRange = (typeof start === 'string' && typeof end === 'string')
+      ? range as string || '24h'
+      : range as string || '1h';
+    const history = fillTimeGaps(runs, effectiveRange, startDate);
 
     res.json({ vps, history });
   } catch (error) {

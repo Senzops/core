@@ -2,49 +2,15 @@ import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import { Website, WebEvent, WebMetric } from '../../models/Web';
 import { logger } from '../../utils/logger';
+import { resolveTimeRange, fillTimeGaps, getEffectiveRetention, buildTimeRangeMeta, TimeRangeError } from '../../utils/timeRange';
 
-// --- Helper: Zero-Fill Time Series ---
-const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
-  const filled = [];
-  const now = new Date();
-
-  let current = new Date(startDate);
-  // Align to boundaries
-  if (range === '1h') current.setSeconds(0, 0);
-  else if (range === '24h') current.setMinutes(0, 0, 0);
-  else current.setHours(0, 0, 0, 0);
-
-  const end = new Date(now);
-  if (range === '1h') end.setMinutes(end.getMinutes());
-  else if (range === '24h') end.setHours(end.getHours());
-  else end.setDate(end.getDate());
-
-  const dataMap = new Map(data.map(item => [item.time, item]));
-
-  while (current < end) {
-    let key;
-    if (range === '1h') key = current.toISOString().slice(0, 16) + ":00.000Z";
-    else if (range === '24h') key = current.toISOString().slice(0, 13) + ":00:00.000Z";
-    else key = current.toISOString().slice(0, 10);
-
-    if (dataMap.has(key)) {
-      filled.push(dataMap.get(key));
-    } else {
-      filled.push({ time: key, views: 0, visitors: 0 });
-    }
-
-    if (range === '1h') current.setMinutes(current.getMinutes() + 1);
-    else if (range === '24h') current.setHours(current.getHours() + 1);
-    else current.setDate(current.getDate() + 1);
-  }
-  return filled;
-};
+const WEB_GRAPH_DEFAULTS = { views: 0, visitors: 0 };
 
 export const getWebStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const { uid } = (req as any).user;
-    const { range } = req.query;
+    const { range, start, end } = req.query;
 
     const cleanId = id.trim();
     const webIdObj = new mongoose.Types.ObjectId(cleanId);
@@ -52,19 +18,20 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
     const site = await Website.findOne({ _id: cleanId, ownerId: uid });
     if (!site) return res.status(404).json({ error: "Website not found" });
 
+    const maxRetention = await getEffectiveRetention('web', uid);
+    const resolved = resolveTimeRange(
+      { range: range as string, start: start as string, end: end as string },
+      maxRetention
+    );
+    const { startDate, endDate, bucketFormat } = resolved;
+    const timeMeta = buildTimeRangeMeta(resolved, maxRetention);
+
     const now = new Date();
-    const startDate = new Date();
-
-    if (range === '7d') startDate.setDate(now.getDate() - 7);
-    else if (range === '30d') startDate.setDate(now.getDate() - 30);
-    else if (range === '1h') startDate.setHours(now.getHours() - 1);
-    else startDate.setHours(now.getHours() - 24);
-
     const fiveMinutesAgo = new Date();
     fiveMinutesAgo.setMinutes(now.getMinutes() - 5);
 
-    const matchQuery = { webId: webIdObj, timestamp: { $gte: startDate } };
-    const rawMatchQuery = { webId: webIdObj, createdAt: { $gte: startDate } };
+    const matchQuery = { webId: webIdObj, timestamp: { $gte: startDate, $lte: endDate } };
+    const rawMatchQuery = { webId: webIdObj, createdAt: { $gte: startDate, $lte: endDate } };
 
     const [
       // 1. Live & Uniques (Must use Raw for accuracy)
@@ -159,8 +126,7 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
           $group: {
             _id: {
               $dateToString: {
-                format: range === '1h' ? "%Y-%m-%dT%H:%M:00.000Z"
-                  : (range === '30d' || range === '7d' ? "%Y-%m-%d" : "%Y-%m-%dT%H:00:00.000Z"),
+                format: bucketFormat,
                 date: "$createdAt"
               }
             },
@@ -185,7 +151,7 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
       ]),
     ]);
 
-    const graphData = fillTimeGaps(graphDataRaw, range as string || '24h', startDate);
+    const graphData = fillTimeGaps(graphDataRaw, resolved, WEB_GRAPH_DEFAULTS, 'time');
 
     // Format Heatmap/Traffic
     const dayMap = ["", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -216,6 +182,7 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
 
     res.json({
       meta: site,
+      timeRange: timeMeta,
       liveVisitors: liveCount.length,
       overview: {
         totalViews: stats.totalPageViews,
@@ -232,6 +199,7 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
     });
 
   } catch (error) {
+    if (error instanceof TimeRangeError) return res.status(400).json({ error: error.message });
     next(error);
   }
 };

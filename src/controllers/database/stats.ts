@@ -1,29 +1,26 @@
 import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import { DatabaseService, DbMetric, DbCollectionStat } from '../../models/Database';
+import { resolveTimeRange, getEffectiveRetention, buildTimeRangeMeta, TimeRangeError } from '../../utils/timeRange';
 
 export const getDatabaseStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const { uid } = (req as any).user;
-    const { range } = req.query;
+    const { range, start, end } = req.query;
 
     const db = await DatabaseService.findOne({ _id: id, ownerId: uid }).select('-encryptedUri');
     if (!db) return res.status(404).json({ error: "Database not found" });
 
-    const now = new Date();
-    const startDate = new Date();
+    const maxRetention = await getEffectiveRetention('database', uid);
+    const resolved = resolveTimeRange(
+      { range: range as string, start: start as string, end: end as string },
+      maxRetention
+    );
+    const { startDate, endDate, bucketFormat } = resolved;
+    const meta = buildTimeRangeMeta(resolved, maxRetention);
 
-    switch (range) {
-      case '7d': startDate.setDate(now.getDate() - 7); break;
-      case '5d': startDate.setDate(now.getDate() - 5); break;
-      case '2d': startDate.setDate(now.getDate() - 2); break;
-      case '1h': startDate.setHours(now.getHours() - 1); break;
-      case '24h':
-      default: startDate.setHours(now.getHours() - 24); break;
-    }
-
-    const matchQuery = { dbId: new mongoose.Types.ObjectId(id), timestamp: { $gte: startDate } };
+    const matchQuery = { dbId: new mongoose.Types.ObjectId(id), timestamp: { $gte: startDate, $lte: endDate } };
 
     // Fetch the time-series history, latest metrics, AND the decoupled collection stats
     const [latestMetric, historyRaw, collectionStats] = await Promise.all([
@@ -35,8 +32,7 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
           $group: {
             _id: {
               $dateToString: {
-                format: range === '1h' ? "%Y-%m-%dT%H:%M:00.000Z"
-                  : (range === '7d' || range === '5d' || range === '2d' ? "%Y-%m-%d" : "%Y-%m-%dT%H:00:00.000Z"),
+                format: bucketFormat,
                 date: "$timestamp"
               }
             },
@@ -103,11 +99,13 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
 
     res.json({
       database: db,
+      timeRange: meta,
       latest: latestMetric || {},
       history: historyRaw,
       collections: collectionStats?.collections || []
     });
   } catch (error) {
+    if (error instanceof TimeRangeError) return res.status(400).json({ error: error.message });
     next(error);
   }
 };

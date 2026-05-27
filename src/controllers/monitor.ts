@@ -81,37 +81,50 @@ export const getMonitorStats = async (req: Request, res: Response, next: NextFun
   try {
     const { id } = req.params;
     const { uid } = (req as any).user;
-    const { range } = req.query; // '24h', '2d', '5d', '7d'
+    const { range, start, end } = req.query;
 
     // 1. Verify Ownership
     const monitor = await Monitor.findOne({ _id: id, ownerId: uid });
     if (!monitor) return res.status(404).json({ error: "Monitor not found" });
 
     // 2. Calculate Date Range
+    let startDate: Date;
+    let endDate: Date | undefined;
     const now = new Date();
-    const startDate = new Date();
 
-    switch (range) {
-      case '7d':
-        startDate.setDate(now.getDate() - 7);
-        break;
-      case '5d':
-        startDate.setDate(now.getDate() - 5);
-        break;
-      case '2d':
-        startDate.setDate(now.getDate() - 2);
-        break;
-      case '24h':
-      default:
-        startDate.setHours(now.getHours() - 24);
-        break;
+    if (typeof start === 'string' && typeof end === 'string') {
+      // Custom absolute range
+      startDate = new Date(start);
+      endDate = new Date(end);
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+        return res.status(400).json({ error: 'Invalid start/end date' });
+      }
+    } else {
+      // Relative range
+      startDate = new Date(now);
+      switch (range) {
+        case '30m': startDate.setMinutes(now.getMinutes() - 30); break;
+        case '1h': startDate.setHours(now.getHours() - 1); break;
+        case '3h': startDate.setHours(now.getHours() - 3); break;
+        case '6h': startDate.setHours(now.getHours() - 6); break;
+        case '12h': startDate.setHours(now.getHours() - 12); break;
+        case '3d': startDate.setDate(now.getDate() - 3); break;
+        case '7d': startDate.setDate(now.getDate() - 7); break;
+        case '24h':
+        default: startDate.setHours(now.getHours() - 24); break;
+      }
     }
 
     // 3. Fetch Runs in Range
-    const runs = await MonitorRun.find({
+    const runQuery: Record<string, any> = {
       monitorId: id,
-      createdAt: { $gte: startDate }
-    }).sort({ createdAt: -1 }); // Newest first
+      createdAt: { $gte: startDate },
+    };
+    if (endDate) {
+      runQuery.createdAt.$lte = endDate;
+    }
+
+    const runs = await MonitorRun.find(runQuery).sort({ createdAt: -1 }); // Newest first
 
     // 4. Calculate Aggregates
     const total = runs.length;

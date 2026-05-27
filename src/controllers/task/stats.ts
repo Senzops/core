@@ -3,78 +3,36 @@ import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
 import { ErrorEvent } from '../../models/Error';
+import { resolveTimeRange, fillTimeGaps as fillTimeGapsGeneric, getEffectiveRetention, buildTimeRangeMeta, TimeRangeError, type ResolvedTimeRange } from '../../utils/timeRange';
 
-// --- Time Range Utilities ---
-const getStartDate = (range: string) => {
-  const date = new Date();
-  switch (range) {
-    case '1h': date.setHours(date.getHours() - 1); break;
-    case '7d': date.setDate(date.getDate() - 7); break;
-    case '30d': date.setDate(date.getDate() - 30); break;
-    case '24h':
-    default: date.setHours(date.getHours() - 24); break;
-  }
-  return date;
-};
-
-const getTrendFormat = (range: string) => {
-  if (range === '1h') return "%Y-%m-%dT%H:%M:00.000Z";
-  if (range === '7d' || range === '30d') return "%Y-%m-%d";
-  return "%Y-%m-%dT%H:00:00.000Z"; // Default 24h is hourly
-};
-
-const fillTimeGaps = (data: any[], range: string, startDate: Date, fields: string[] = ['runs', 'failures']) => {
-  if (!data || data.length === 0) return [];
-  const filled = [];
-  const now = new Date();
-  let current = new Date(startDate);
-
-  if (range === '1h') current.setSeconds(0, 0);
-  else if (range === '24h') current.setMinutes(0, 0, 0);
-  else current.setHours(0, 0, 0, 0);
-
-  const dataMap = new Map(data.map(item => [item._id, item]));
-
-  while (current <= now) {
-    let key = '';
-    if (range === '1h') key = current.toISOString().slice(0, 16) + ":00.000Z";
-    else if (range === '24h') key = current.toISOString().slice(0, 13) + ":00:00.000Z";
-    else key = current.toISOString().slice(0, 10);
-
-    const existing = dataMap.get(key) || {};
-    const entry: any = { time: key };
-    fields.forEach(f => entry[f] = existing[f] || 0);
-    if (existing.durationSum) entry.durationAvg = existing.durationSum / (existing.runs || 1);
-    else entry.durationAvg = 0;
-
-    filled.push(entry);
-
-    if (range === '1h') current.setMinutes(current.getMinutes() + 1);
-    else if (range === '24h') current.setHours(current.getHours() + 1);
-    else current.setDate(current.getDate() + 1);
-  }
-
-  return filled;
-};
+const TASK_TREND_DEFAULTS = { runs: 0, failures: 0, durationSum: 0, queueDelaySum: 0, durationAvg: 0 };
 
 export const getTaskServiceDashboard = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const { uid } = (req as any).user;
-    const range = req.query.range as string || '24h';
-    const startDate = getStartDate(range);
+    const { range, start, end } = req.query;
+
+    const maxRetention = await getEffectiveRetention('task', uid);
+    const resolved = resolveTimeRange(
+      { range: range as string, start: start as string, end: end as string },
+      maxRetention
+    );
+    const { startDate, endDate, bucketFormat } = resolved;
+    const meta = buildTimeRangeMeta(resolved, maxRetention);
 
     const service = await TaskService.findOne({ _id: id, ownerId: uid }).lean();
     if (!service) return res.status(404).json({ error: "Service not found" });
 
     const serviceIdObj = new mongoose.Types.ObjectId(id);
+    const timeMatch = { $gte: startDate, $lte: endDate };
 
     // 1. Global Trend (Time Series)
     const trendRaw = await TaskMetric.aggregate([
-      { $match: { serviceId: serviceIdObj, timestamp: { $gte: startDate } } },
+      { $match: { serviceId: serviceIdObj, timestamp: timeMatch } },
       {
         $group: {
-          _id: { $dateToString: { format: getTrendFormat(range), date: "$timestamp" } },
+          _id: { $dateToString: { format: bucketFormat, date: "$timestamp" } },
           runs: { $sum: "$runs" },
           failures: { $sum: "$failures" },
           durationSum: { $sum: "$durationSum" },
@@ -84,11 +42,11 @@ export const getTaskServiceDashboard = async (req: Request, res: Response, next:
       { $sort: { "_id": 1 } }
     ]);
 
-    const trend = trendRaw.length > 0 ? fillTimeGaps(trendRaw, range, startDate, ['runs', 'failures', 'queueDelaySum']) : [];
+    const trend = fillTimeGapsGeneric(trendRaw, resolved, TASK_TREND_DEFAULTS);
 
     // 2. Global Stats & Aggregates
     const statsAgg = await TaskMetric.aggregate([
-      { $match: { serviceId: serviceIdObj, timestamp: { $gte: startDate } } },
+      { $match: { serviceId: serviceIdObj, timestamp: timeMatch } },
       {
         $group: {
           _id: null,
@@ -104,7 +62,7 @@ export const getTaskServiceDashboard = async (req: Request, res: Response, next:
 
     // 3. Task Table (List of unique tasks and their stats)
     const tasksTable = await TaskMetric.aggregate([
-      { $match: { serviceId: serviceIdObj, timestamp: { $gte: startDate } } },
+      { $match: { serviceId: serviceIdObj, timestamp: timeMatch } },
       {
         $group: {
           _id: "$taskName",
@@ -117,8 +75,9 @@ export const getTaskServiceDashboard = async (req: Request, res: Response, next:
       { $sort: { totalRuns: -1 } }
     ]);
 
-    res.json({ service, stats, trend, tasksTable });
+    res.json({ service, timeRange: meta, stats, trend, tasksTable });
   } catch (error) {
+    if (error instanceof TimeRangeError) return res.status(400).json({ error: error.message });
     next(error);
   }
 };
@@ -127,24 +86,32 @@ export const getTaskEntityDetail = async (req: Request, res: Response, next: Nex
   try {
     const { id, taskName } = req.params;
     const { uid } = (req as any).user;
-    const range = req.query.range as string || '24h';
-    const startDate = getStartDate(range);
+    const { range, start, end } = req.query;
+
+    const maxRetention = await getEffectiveRetention('task', uid);
+    const resolved = resolveTimeRange(
+      { range: range as string, start: start as string, end: end as string },
+      maxRetention
+    );
+    const { startDate, endDate, bucketFormat } = resolved;
+    const meta = buildTimeRangeMeta(resolved, maxRetention);
 
     const service = await TaskService.findOne({ _id: id, ownerId: uid }).lean();
     if (!service) return res.status(404).json({ error: "Service not found" });
 
     const serviceIdObj = new mongoose.Types.ObjectId(id);
     const decodedTaskName = decodeURIComponent(taskName);
+    const timeMatch = { $gte: startDate, $lte: endDate };
 
     // NEW: Fetch Watchdog Signature
     const signature = await TaskSignature.findOne({ serviceId: serviceIdObj, taskName: decodedTaskName }).lean();
 
     // 1. Task Specific Trend
     const trendRaw = await TaskMetric.aggregate([
-      { $match: { serviceId: serviceIdObj, taskName: decodedTaskName, timestamp: { $gte: startDate } } },
+      { $match: { serviceId: serviceIdObj, taskName: decodedTaskName, timestamp: timeMatch } },
       {
         $group: {
-          _id: { $dateToString: { format: getTrendFormat(range), date: "$timestamp" } },
+          _id: { $dateToString: { format: bucketFormat, date: "$timestamp" } },
           runs: { $sum: "$runs" },
           failures: { $sum: "$failures" },
           durationSum: { $sum: "$durationSum" }
@@ -153,11 +120,11 @@ export const getTaskEntityDetail = async (req: Request, res: Response, next: Nex
       { $sort: { "_id": 1 } }
     ]);
 
-    const trend = trendRaw.length > 0 ? fillTimeGaps(trendRaw, range, startDate, ['runs', 'failures']) : [];
+    const trend = fillTimeGapsGeneric(trendRaw, resolved, { runs: 0, failures: 0, durationSum: 0, durationAvg: 0 });
 
     // 2. Task Specific Stats
     const statsAgg = await TaskMetric.aggregate([
-      { $match: { serviceId: serviceIdObj, taskName: decodedTaskName, timestamp: { $gte: startDate } } },
+      { $match: { serviceId: serviceIdObj, taskName: decodedTaskName, timestamp: timeMatch } },
       {
         $group: {
           _id: null,
@@ -173,7 +140,7 @@ export const getTaskEntityDetail = async (req: Request, res: Response, next: Nex
     const recentRuns = await TaskRun.find({
       serviceId: serviceIdObj,
       taskName: decodedTaskName,
-      timestamp: { $gte: startDate }
+      timestamp: timeMatch
     })
       .sort({ timestamp: -1 })
       .limit(50)
@@ -182,12 +149,14 @@ export const getTaskEntityDetail = async (req: Request, res: Response, next: Nex
 
     res.json({
       taskName: decodedTaskName,
-      signature, // NEW: Exporting to frontend
+      signature,
+      timeRange: meta,
       stats: statsAgg[0] || { totalRuns: 0, totalFailures: 0, durationSum: 0, maxAttempts: 1 },
       trend,
       recentRuns
     });
   } catch (error) {
+    if (error instanceof TimeRangeError) return res.status(400).json({ error: error.message });
     next(error);
   }
 };

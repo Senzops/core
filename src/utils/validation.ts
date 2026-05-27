@@ -121,8 +121,22 @@ export const UpdateWebsiteSchema = z.object({
 }).refine(data => data.name || data.domain, { message: 'At least one field must be provided' });
 
 export const WebStatsQuerySchema = z.object({
-  range: z.enum(['24h', '7d', '30d']).default('24h'),
-});
+  range: z.enum(['30m', '1h', '3h', '6h', '12h', '24h', '3d', '7d']).optional(),
+  start: z.string().datetime().optional(),
+  end: z.string().datetime().optional(),
+}).refine(
+  (d) => d.range || (d.start && d.end),
+  { message: "Either 'range' or both 'start' and 'end' are required" }
+);
+
+export const DashboardTimeRangeSchema = z.object({
+  range: z.enum(['30m', '1h', '3h', '6h', '12h', '24h', '3d', '7d']).optional(),
+  start: z.string().datetime().optional(),
+  end: z.string().datetime().optional(),
+}).refine(
+  (d) => d.range || (d.start && d.end) || (!d.range && !d.start && !d.end),
+  { message: "Provide 'range' or both 'start' and 'end'" }
+);
 
 // --- Web Ingestion Schema ---
 export const WebIngestSchema = z.object({

@@ -3,18 +3,7 @@ import crypto from 'crypto';
 import { LogEvent, LogApiKey } from '../../models/Log';
 import { parseLogQuery } from '../../utils/logParser';
 import { logger } from '../../utils/logger';
-
-const getStartDate = (range: string) => {
-  const date = new Date();
-  switch (range) {
-    case '1h': date.setHours(date.getHours() - 1); break;
-    case '7d': date.setDate(date.getDate() - 7); break;
-    case '30d': date.setDate(date.getDate() - 30); break;
-    case '24h':
-    default: date.setHours(date.getHours() - 24); break;
-  }
-  return date;
-};
+import { resolveTimeRange, getEffectiveRetention, buildTimeRangeMeta, TimeRangeError } from '../../utils/timeRange';
 
 // ============================================================================
 // ENTERPRISE INGESTION CACHE
@@ -52,12 +41,18 @@ export const getDashboardLogs = async (req: Request, res: Response, next: NextFu
   try {
     const { uid } = (req as any).user;
     const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 100; // Professional standard: 100 logs/page
+    const limit = parseInt(req.query.limit as string) || 100;
     const search = req.query.search as string || '';
-    const range = req.query.range as string || '24h';
+    const { range, start, end } = req.query;
 
-    const startDate = getStartDate(range);
-    
+    const maxRetention = await getEffectiveRetention('logs', uid);
+    const resolved = resolveTimeRange(
+      { range: range as string, start: start as string, end: end as string },
+      maxRetention
+    );
+    const { startDate, bucketFormat } = resolved;
+    const meta = buildTimeRangeMeta(resolved, maxRetention);
+
     // Parse the New Relic style query
     const query = parseLogQuery(search, uid, startDate);
 
@@ -67,15 +62,12 @@ export const getDashboardLogs = async (req: Request, res: Response, next: NextFu
         .sort({ timestamp: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
-        .populate('serviceId', 'name') // Resolves the service name if linked
+        .populate('serviceId', 'name')
         .lean(),
       LogEvent.countDocuments(query)
     ]);
 
-    // Trend Aggregation for the Area Chart
-    let dateFormat = "%Y-%m-%dT%H:00:00.000Z";
-    if (range === '1h') dateFormat = "%Y-%m-%dT%H:%M:00.000Z";
-    if (range === '7d' || range === '30d') dateFormat = "%Y-%m-%d";
+    const dateFormat = bucketFormat;
 
     const trend = await LogEvent.aggregate([
       { $match: query },
@@ -86,9 +78,11 @@ export const getDashboardLogs = async (req: Request, res: Response, next: NextFu
     res.json({
       logs,
       trend,
+      timeRange: meta,
       pagination: { total, page, limit, pages: Math.ceil(total / limit) }
     });
   } catch (error) {
+    if (error instanceof TimeRangeError) return res.status(400).json({ error: error.message });
     next(error);
   }
 };

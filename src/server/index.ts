@@ -80,6 +80,7 @@ import { requireServiceQuota } from '../middlewares/serviceLimiter';
 import { cancelSubscription, changePlan, getActivePlans, getCurrentSubscription, getStorageStats, getTransactionReceipt, getTransactions, handlePaddleWebhook, handleDodoWebhook, createCheckoutSession } from '../controllers/billing';
 import { deleteAccount, syncUser } from '../controllers/user';
 import { getDynamicSchema } from '../controllers/schema';
+import { getDashboardCapabilities } from '../controllers/dashboard/capabilities';
 
 
 if (!process.env.MONGO_URI) {
@@ -336,6 +337,9 @@ apiRouter.delete('/user/account', deleteAccount);
 
 // Dynamic Schema Inference
 apiRouter.get('/schema', getDynamicSchema);
+
+// Dashboard Capabilities (Time Range Picker)
+apiRouter.get('/dashboard/capabilities', getDashboardCapabilities);
 
 
 // --- Mounting Routes (CRITICAL ORDER) ---

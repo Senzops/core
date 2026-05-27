@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import { ApmService } from '../../models/Apm';
 import { RuntimeMetric } from '../../models/RuntimeMetric';
+import { resolveTimeRange, fillTimeGaps, getEffectiveRetention, TimeRangeError } from '../../utils/timeRange';
 
 // ---------------------------------------------------------------------------
 // Runtime Metrics Stats Controller
@@ -13,97 +14,59 @@ import { RuntimeMetric } from '../../models/RuntimeMetric';
 //   - CPU usage and process health
 // ---------------------------------------------------------------------------
 
-/** Zero-fill runtime metrics time series with empty data points. */
-const fillRuntimeTimeGaps = (data: any[], range: string, startDate: Date) => {
-  const filled = [];
-  const now = new Date();
-  const current = new Date(startDate);
-
-  // Align to boundaries
-  if (range === '1h') {
-    current.setSeconds(0, 0);
-    current.setMinutes(current.getMinutes() + 1);
-  } else if (range === '24h') {
-    current.setMinutes(0, 0, 0);
-  } else {
-    current.setHours(0, 0, 0, 0);
-  }
-
-  const end = new Date(now);
-  const dataMap = new Map(data.map(item => [item.time, item]));
-
-  const emptyPoint = {
-    eventLoopLagMs: 0,
-    eventLoopLagP50Ms: 0,
-    eventLoopLagP99Ms: 0,
-    eventLoopUtilizationPercent: 0,
-    gcTotalDurationMs: 0,
-    gcTotalCount: 0,
-    gcMajorCount: 0,
-    gcMinorCount: 0,
-    heapUsedBytes: 0,
-    heapTotalBytes: 0,
-    heapUsedPercent: 0,
-    rssBytes: 0,
-    activeHandles: 0,
-    activeRequests: 0,
-    cpuUserUs: 0,
-    cpuSystemUs: 0,
-    uptimeSeconds: 0,
-  };
-
-  while (current < end) {
-    let key: string;
-    if (range === '1h') key = current.toISOString().slice(0, 16) + ':00.000Z';
-    else if (range === '24h') key = current.toISOString().slice(0, 13) + ':00:00.000Z';
-    else key = current.toISOString().slice(0, 10);
-
-    if (dataMap.has(key)) {
-      filled.push(dataMap.get(key));
-    } else {
-      filled.push({ time: key, ...emptyPoint });
-    }
-
-    if (range === '1h') current.setMinutes(current.getMinutes() + 1);
-    else if (range === '24h') current.setHours(current.getHours() + 1);
-    else current.setDate(current.getDate() + 1);
-  }
-
-  return filled;
-};
+/** Default zero-values for empty runtime metric time-series buckets. */
+const RUNTIME_METRIC_DEFAULTS = {
+  eventLoopLagMs: 0,
+  eventLoopLagP50Ms: 0,
+  eventLoopLagP99Ms: 0,
+  eventLoopUtilizationPercent: 0,
+  gcTotalDurationMs: 0,
+  gcTotalCount: 0,
+  gcMajorCount: 0,
+  gcMinorCount: 0,
+  heapUsedBytes: 0,
+  heapTotalBytes: 0,
+  heapUsedPercent: 0,
+  rssBytes: 0,
+  activeHandles: 0,
+  activeRequests: 0,
+  cpuUserUs: 0,
+  cpuSystemUs: 0,
+  uptimeSeconds: 0,
+} as const;
 
 export const getRuntimeStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const { uid } = (req as any).user;
-    const { range } = req.query;
+    const { range, start, end } = req.query;
 
     // Verify ownership
     const service = await ApmService.findOne({ _id: id, ownerId: uid });
     if (!service) return res.status(404).json({ error: 'Service not found' });
 
-    // Calculate date range
-    const now = new Date();
-    const startDate = new Date();
-
-    if (range === '7d') startDate.setDate(now.getDate() - 7);
-    else if (range === '30d') startDate.setDate(now.getDate() - 30);
-    else if (range === '1h') startDate.setHours(now.getHours() - 1);
-    else startDate.setHours(now.getHours() - 24);
+    // Resolve time range via centralized utility
+    const maxRetention = await getEffectiveRetention('apm', uid);
+    const resolved = resolveTimeRange(
+      { range: range as string | undefined, start: start as string | undefined, end: end as string | undefined },
+      maxRetention
+    );
 
     const serviceIdObj = new mongoose.Types.ObjectId(id as string);
-    const matchQuery = { serviceId: serviceIdObj, timestamp: { $gte: startDate } };
+    const matchQuery = {
+      serviceId: serviceIdObj,
+      timestamp: { $gte: resolved.startDate, $lte: resolved.endDate },
+    };
 
     const [timeSeriesRaw, latestSnapshot] = await Promise.all([
-      // Time-series aggregation
+      // Time-series aggregation with dynamic bucket format
       RuntimeMetric.aggregate([
         { $match: matchQuery },
         {
           $group: {
             _id: {
               $dateToString: {
-                format: range === '1h' ? '%Y-%m-%dT%H:%M:00.000Z'
-                  : (range === '30d' || range === '7d' ? '%Y-%m-%d' : '%Y-%m-%dT%H:00:00.000Z'),
+                format: resolved.bucketFormat,
                 date: '$timestamp',
               },
             },
@@ -165,11 +128,7 @@ export const getRuntimeStats = async (req: Request, res: Response, next: NextFun
         .lean(),
     ]);
 
-    const timeSeries = fillRuntimeTimeGaps(
-      timeSeriesRaw,
-      (range as string) || '24h',
-      startDate
-    );
+    const timeSeries = fillTimeGaps(timeSeriesRaw, resolved, RUNTIME_METRIC_DEFAULTS);
 
     // Build current overview from latest snapshot
     const current = latestSnapshot
@@ -191,6 +150,9 @@ export const getRuntimeStats = async (req: Request, res: Response, next: NextFun
       timeSeries,
     });
   } catch (error) {
+    if (error instanceof TimeRangeError) {
+      return res.status(400).json({ error: error.message });
+    }
     next(error);
   }
 };

@@ -10,6 +10,7 @@ import { VpsRun, Vps } from '../../models/Vps';
 import { DbMetric, DatabaseService } from '../../models/Database';
 import { MonitorRun, Monitor } from '../../models/Monitor';
 import { logger } from '../../utils/logger';
+import { resolveTimeRange, getEffectiveRetention, TimeRangeError } from '../../utils/timeRange';
 
 // --- Helpers ---
 const getTargetModel = (target: string) => {
@@ -69,7 +70,7 @@ export const sanitizeMql = (userQuery: any) => {
 const buildAndExecutePipeline = async (
   uid: string,
   target: string,
-  range: string,
+  rangeParams: { range?: string; start?: string; end?: string },
   query: any
 ) => {
   const targetDef = getTargetModel(target);
@@ -77,15 +78,9 @@ const buildAndExecutePipeline = async (
   const { model: TargetModel, parentModel, foreignKey, timeField } = targetDef;
 
   // 1. Time Boundary Calculation
-  const now = new Date();
-  const startDate = new Date();
-  switch (range) {
-    case '1h': startDate.setHours(now.getHours() - 1); break;
-    case '7d': startDate.setDate(now.getDate() - 7); break;
-    case '30d': startDate.setDate(now.getDate() - 30); break;
-    case '24h':
-    default: startDate.setHours(now.getHours() - 24); break;
-  }
+  const maxRetention = await getEffectiveRetention(target, uid);
+  const resolved = resolveTimeRange(rangeParams, maxRetention);
+  const { startDate, endDate } = resolved;
 
   // 2. Safe Match Stage & Tenant Isolation
   let tenantIsolationMatch: any = {};
@@ -103,7 +98,7 @@ const buildAndExecutePipeline = async (
 
   const safeMatch: any = {
     ...tenantIsolationMatch,
-    [timeField]: { $gte: startDate }
+    [timeField]: { $gte: startDate, $lte: endDate }
   };
 
   // 3. Pipeline Construction Base
@@ -158,14 +153,13 @@ export const getWidgetData = async (req: Request, res: Response, next: NextFunct
   try {
     const { uid } = (req as any).user;
     const { id } = req.params;
-    const range = req.query.range as string || '24h';
+    const { range, start, end } = req.query;
 
     const widget = await ViewWidget.findOne({ _id: id, ownerId: uid }).lean();
     if (!widget) return res.status(404).json({ error: "Widget not found" });
 
-    // Execute the unified pipeline execution engine
     const data = await buildAndExecutePipeline(
-      uid, widget.target, range, widget.query
+      uid, widget.target, { range: range as string, start: start as string, end: end as string }, widget.query
     );
 
     res.json({ data });
@@ -180,14 +174,14 @@ export const getWidgetData = async (req: Request, res: Response, next: NextFunct
 export const executeLivePreview = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { uid } = (req as any).user;
-    const { target, query, range = '24h' } = req.body;
+    const { target, query, range, start, end } = req.body;
 
     if (!target) {
       return res.status(400).json({ error: "Missing required builder parameters" });
     }
 
     const data = await buildAndExecutePipeline(
-      uid, target, range, query
+      uid, target, { range: range || '24h', start, end }, query
     );
 
     res.json({ data });

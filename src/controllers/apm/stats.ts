@@ -1,76 +1,34 @@
 import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
+import { resolveTimeRange, fillTimeGaps, getEffectiveRetention, buildTimeRangeMeta, TimeRangeError } from '../../utils/timeRange';
 
-// --- Helper: Zero-Fill Time Series ---
-const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
-  const filled = [];
-  const now = new Date();
-
-  let current = new Date(startDate);
-  // Align to boundaries
-  if (range === '1h') {
-    current.setSeconds(0, 0);
-    current.setMinutes(current.getMinutes() + 1);
-  }
-  else if (range === '24h') current.setMinutes(0, 0, 0);
-  else current.setHours(0, 0, 0, 0);
-
-  const end = new Date(now);
-  if (range === '1h') end.setMinutes(end.getMinutes());
-  else if (range === '24h') end.setHours(end.getHours());
-  else end.setDate(end.getDate());
-
-  const dataMap = new Map(data.map(item => [item.time, item]));
-
-  while (current < end) {
-    let key;
-    if (range === '1h') key = current.toISOString().slice(0, 16) + ":00.000Z";
-    else if (range === '24h') key = current.toISOString().slice(0, 13) + ":00:00.000Z";
-    else key = current.toISOString().slice(0, 10);
-
-    if (dataMap.has(key)) {
-      filled.push(dataMap.get(key));
-    } else {
-      filled.push({
-        time: key,
-        requests: 0,
-        errors: 0,
-        avgLatency: 0,
-        maxLatency: 0,
-        minLatency: 0,
-        codes2xx: 0, codes3xx: 0, codes4xx: 0, codes5xx: 0, statusBreakdown: []
-      });
-    }
-
-    if (range === '1h') current.setMinutes(current.getMinutes() + 1);
-    else if (range === '24h') current.setHours(current.getHours() + 1);
-    else current.setDate(current.getDate() + 1);
-  }
-  return filled;
+const GRAPH_DEFAULTS = {
+  requests: 0, errors: 0, avgLatency: 0, maxLatency: 0, minLatency: 0,
+  codes2xx: 0, codes3xx: 0, codes4xx: 0, codes5xx: 0, statusBreakdown: [] as any[],
 };
 
 export const getApmStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const { uid } = (req as any).user;
-    const { range, route } = req.query;
+    const { range, route, start, end } = req.query;
 
     // 1. Verify Ownership
     const service = await ApmService.findOne({ _id: id, ownerId: uid });
     if (!service) return res.status(404).json({ error: "Service not found" });
 
-    // 2. Calculate Date Range
-    const now = new Date();
-    const startDate = new Date();
-
-    if (range === '7d') startDate.setDate(now.getDate() - 7);
-    else if (range === '30d') startDate.setDate(now.getDate() - 30);
-    else if (range === '1h') startDate.setHours(now.getHours() - 1);
-    else startDate.setHours(now.getHours() - 24);
+    // 2. Resolve Time Range
+    const maxRetention = await getEffectiveRetention('apm', uid);
+    const resolved = resolveTimeRange(
+      { range: range as string, start: start as string, end: end as string },
+      maxRetention
+    );
+    const { startDate, endDate, bucketFormat } = resolved;
+    const meta = buildTimeRangeMeta(resolved, maxRetention);
 
     const serviceIdObj = new mongoose.Types.ObjectId(id as string);
-    const matchQuery: any = { serviceId: serviceIdObj, timestamp: { $gte: startDate } };
+    const matchQuery: any = { serviceId: serviceIdObj, timestamp: { $gte: startDate, $lte: endDate } };
 
     // --- CASE A: ROUTE DRILL-DOWN (Use Raw Traces for accuracy on specific filters) ---
     if (route) {
@@ -123,8 +81,7 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
             $group: {
               _id: {
                 $dateToString: {
-                  format: range === '1h' ? "%Y-%m-%dT%H:%M:00.000Z"
-                    : (range === '30d' || range === '7d' ? "%Y-%m-%d" : "%Y-%m-%dT%H:00:00.000Z"),
+                  format: bucketFormat,
                   date: "$timestamp"
                 }
               },
@@ -171,11 +128,12 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
         ApmTrace.aggregate([{ $match: matchQuery }, { $group: { _id: "$userAgent", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 10 }])
       ]);
 
-      const graph = fillTimeGaps(graphDataRaw, range as string || '24h', startDate);
+      const graph = fillTimeGaps(graphDataRaw, resolved, GRAPH_DEFAULTS, 'time');
       const safeOverview = overview[0] || { totalRequests: 0, totalErrors: 0, errorRate: 0, avgLatency: 0, maxLatency: 0, minLatency: 0 };
 
       return res.json({
         meta: service,
+        timeRange: meta,
         overview: safeOverview,
         routes: [], // No top routes needed for single route view
         statusCodes: statusCodes.map((s: any) => ({ status: s._id, count: s.count })),
@@ -273,8 +231,7 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
           $group: {
             _id: {
               $dateToString: {
-                format: range === '1h' ? "%Y-%m-%dT%H:%M:00.000Z"
-                  : (range === '30d' || range === '7d' ? "%Y-%m-%d" : "%Y-%m-%dT%H:00:00.000Z"),
+                format: bucketFormat,
                 date: "$timestamp"
               }
             },
@@ -342,7 +299,7 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
       };
     });
 
-    const graph = fillTimeGaps(processedGraphData, range as string || '24h', startDate);
+    const graph = fillTimeGaps(processedGraphData, resolved, GRAPH_DEFAULTS, 'time');
 
     // Format Routes
     const formattedRoutes = routesResult.map((r: any) => {
@@ -358,6 +315,7 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
 
     res.json({
       meta: service,
+      timeRange: meta,
       overview: safeOverview,
       routes: formattedRoutes,
       statusCodes: statusResult.map((s: any) => ({ status: s._id, count: s.count })),
@@ -370,6 +328,7 @@ export const getApmStats = async (req: Request, res: Response, next: NextFunctio
     });
 
   } catch (error) {
+    if (error instanceof TimeRangeError) return res.status(400).json({ error: error.message });
     next(error);
   }
 };
