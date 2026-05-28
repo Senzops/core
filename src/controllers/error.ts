@@ -40,7 +40,7 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
     const { startDate, endDate, bucketFormat } = resolved;
     const meta = buildTimeRangeMeta(resolved, maxRetention);
 
-    const query: any = { ownerId: uid, lastSeen: { $gte: startDate } };
+    const query: any = { ownerId: uid, lastSeen: { $gte: startDate, $lte: endDate } };
     if (status !== 'all') query.status = status;
     if (reqServiceId) query.serviceId = reqServiceId;
 
@@ -91,7 +91,7 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
         { $match: { serviceId: { $in: serviceIdsMatch }, timestamp: { $gte: startDate, $lte: endDate } } },
         { $group: { _id: null, count: { $sum: 1 }, uniqueServices: { $addToSet: "$serviceId" } } }
       ]),
-      ErrorGroup.countDocuments({ ownerId: uid, status: 'unresolved', lastSeen: { $gte: startDate } })
+      ErrorGroup.countDocuments({ ownerId: uid, status: 'unresolved', lastSeen: { $gte: startDate, $lte: endDate } })
     ]);
 
     const trend = fillTimeGaps(trendRaw, resolved, ERROR_TREND_DEFAULTS);

@@ -1,8 +1,8 @@
 import crypto from 'crypto';
 import { Request, Response, NextFunction } from 'express';
 import { Vps, VpsRun } from '../models/Vps';
-import { User } from '../models/User';
 import { RegisterVpsSchema, UpdateVpsSchema, TelemetrySchema } from '../utils/validation';
+import { resolveTimeRange, getEffectiveRetention, TimeRangeError, type ResolvedTimeRange } from '../utils/timeRange';
 import { logger } from '../utils/logger';
 
 // --- VPS Controller ---
@@ -136,50 +136,53 @@ export const ingestMetrics = async (req: Request, res: Response, next: NextFunct
   }
 };
 
-// --- Helper: Zero-Fill Time Series (Returns 0 for missing data) ---
-const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
-  const filled = [];
-  const now = new Date();
+// --- Helper: Zero-Fill VPS Time Series (1-minute resolution with online/offline status) ---
+// VPS telemetry is raw per-minute data, not aggregated — always uses 1-minute stepping
+// regardless of span, since the agent heartbeat IS the online/offline signal.
+const EMPTY_VPS_METRICS = {
+  cpu: { usagePercent: 0, cores: 0, brand: '' },
+  memory: { used: 0, total: 0, free: 0, active: 0, usagePercent: 0 },
+  disk: [],
+  hardware: { temperature: 0, powerDraw: 0 },
+  gpus: [],
+  network: { bytesRecvSec: 0, bytesSentSec: 0, latencyMs: 0 },
+  processes: { running: 0, sleeping: 0, blocked: 0, total: 0 },
+  uptimeSeconds: 0,
+  docker: [],
+  nginx: null,
+  traefik: null
+} as const;
 
-  let current = new Date(startDate);
+function fillVpsTimeGaps(data: any[], resolved: ResolvedTimeRange) {
+  const filled: any[] = [];
+
+  const current = new Date(resolved.startDate);
   current.setSeconds(0, 0);
   current.setMinutes(current.getMinutes() + 1);
 
-  const end = new Date(now);
+  const end = new Date(resolved.endDate);
   end.setSeconds(0, 0);
 
-  const dataMap = new Map();
+  // Index existing runs by minute-aligned timestamp
+  const dataMap = new Map<number, any>();
   for (const item of data) {
     const d = new Date(item.createdAt);
     d.setSeconds(0, 0);
     dataMap.set(d.getTime(), item);
   }
 
-  while (current < end) {
+  while (current <= end) {
     const key = current.getTime();
     const item = dataMap.get(key);
 
     if (item) {
       filled.push({ ...item, isOnline: true });
     } else {
-      // Safe, compliant empty structure
       filled.push({
         _id: 'gap-' + key,
         createdAt: current.toISOString(),
         isOnline: false,
-        metrics: {
-          cpu: { usagePercent: 0, cores: 0, brand: '' },
-          memory: { used: 0, total: 0, free: 0, active: 0, usagePercent: 0 },
-          disk: [], 
-          hardware: { temperature: 0, powerDraw: 0 },
-          gpus: [],
-          network: { bytesRecvSec: 0, bytesSentSec: 0, latencyMs: 0 },
-          processes: { running: 0, sleeping: 0, blocked: 0, total: 0 },
-          uptimeSeconds: 0,
-          docker: [],
-          nginx: null,
-          traefik: null
-        }
+        metrics: { ...EMPTY_VPS_METRICS },
       });
     }
 
@@ -187,7 +190,7 @@ const fillTimeGaps = (data: any[], range: string, startDate: Date) => {
   }
 
   return filled;
-};
+}
 
 // --- Dashboard Stats Controller ---
 export const getVpsStats = async (req: Request, res: Response, next: NextFunction) => {
@@ -199,50 +202,27 @@ export const getVpsStats = async (req: Request, res: Response, next: NextFunctio
     const vps = await Vps.findOne({ _id: id, ownerId: uid });
     if (!vps) return res.status(404).json({ error: "VPS not found" });
 
-    let startDate: Date;
-    let endDate: Date | undefined;
-    const now = new Date();
+    // Resolve time range via centralized utility
+    const maxRetention = await getEffectiveRetention('server', uid);
+    const resolved = resolveTimeRange(
+      { range: range as string | undefined, start: start as string | undefined, end: end as string | undefined },
+      maxRetention
+    );
 
-    if (typeof start === 'string' && typeof end === 'string') {
-      // Custom absolute range
-      startDate = new Date(start);
-      endDate = new Date(end);
-      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-        return res.status(400).json({ error: 'Invalid start/end date' });
-      }
-    } else {
-      // Relative range
-      startDate = new Date(now);
-      switch (range) {
-        case '30m': startDate.setMinutes(now.getMinutes() - 30); break;
-        case '1h': startDate.setHours(now.getHours() - 1); break;
-        case '3h': startDate.setHours(now.getHours() - 3); break;
-        case '6h': startDate.setHours(now.getHours() - 6); break;
-        case '12h': startDate.setHours(now.getHours() - 12); break;
-        case '24h':
-        default: startDate.setHours(now.getHours() - 24); break;
-      }
-    }
-
-    const query: Record<string, any> = {
+    const runs = await VpsRun.find({
       vpsId: id,
-      createdAt: { $gte: startDate },
-    };
-    if (endDate) {
-      query.createdAt.$lte = endDate;
-    }
-
-    const runs = await VpsRun.find(query)
+      createdAt: { $gte: resolved.startDate, $lte: resolved.endDate },
+    })
       .sort({ createdAt: 1 })
       .lean();
 
-    const effectiveRange = (typeof start === 'string' && typeof end === 'string')
-      ? range as string || '24h'
-      : range as string || '1h';
-    const history = fillTimeGaps(runs, effectiveRange, startDate);
+    const history = fillVpsTimeGaps(runs, resolved);
 
     res.json({ vps, history });
   } catch (error) {
+    if (error instanceof TimeRangeError) {
+      return res.status(400).json({ error: error.message });
+    }
     next(error);
   }
 }

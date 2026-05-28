@@ -2,31 +2,30 @@ import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import { ApmService, ApmTrace } from '../../models/Apm';
 import { RumService, RumTrace } from '../../models/Rum';
+import { resolveTimeRange, getEffectiveRetention, TimeRangeError } from '../../utils/timeRange';
 
 // --- Get Recent Invocations (List) ---
 export const getInvocations = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
     const { uid } = (req as any).user;
-    const { range, route, status, minDuration } = req.query;
+    const { range, start, end, route, status, minDuration } = req.query;
 
     // 1. Verify Ownership
     const service = await ApmService.findOne({ _id: id, ownerId: uid });
     if (!service) return res.status(404).json({ error: "Service not found" });
 
-    // 2. Calculate Date Range
-    const now = new Date();
-    const startDate = new Date();
-
-    if (range === '7d') startDate.setDate(now.getDate() - 7);
-    else if (range === '30d') startDate.setDate(now.getDate() - 30);
-    else if (range === '1h') startDate.setHours(now.getHours() - 1);
-    else startDate.setHours(now.getHours() - 24); // Default 24h
+    // 2. Resolve time range via centralized utility
+    const maxRetention = await getEffectiveRetention('apm', uid);
+    const resolved = resolveTimeRange(
+      { range: range as string | undefined, start: start as string | undefined, end: end as string | undefined },
+      maxRetention
+    );
 
     // 3. Build Query
     const query: any = {
       serviceId: id,
-      timestamp: { $gte: startDate } // Apply Time Filter
+      timestamp: { $gte: resolved.startDate, $lte: resolved.endDate }
     };
 
     // Optional Filters
@@ -44,6 +43,9 @@ export const getInvocations = async (req: Request, res: Response, next: NextFunc
 
     res.json(traces);
   } catch (error) {
+    if (error instanceof TimeRangeError) {
+      return res.status(400).json({ error: error.message });
+    }
     next(error);
   }
 };

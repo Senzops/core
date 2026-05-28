@@ -113,7 +113,7 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
 
       // E. Page Titles (Raw - Not in Metric)
       WebEvent.aggregate([
-        { $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate }, title: { $exists: true, $ne: null } } },
+        { $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate, $lte: endDate }, title: { $exists: true, $ne: null } } },
         { $group: { _id: "$title", count: { $sum: 1 } } },
         { $sort: { count: -1 } },
         { $limit: 10 }
@@ -121,7 +121,7 @@ export const getWebStats = async (req: Request, res: Response, next: NextFunctio
 
       // F. Graph (Raw required for Unique Visitor count per bucket)
       WebEvent.aggregate([
-        { $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate } } },
+        { $match: { webId: webIdObj, type: 'pageview', createdAt: { $gte: startDate, $lte: endDate } } },
         {
           $group: {
             _id: {

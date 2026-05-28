@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { Monitor, MonitorRun } from '../models/Monitor';
 import { User } from '../models/User';
 import { RegisterMonitorSchema, UpdateMonitorSchema } from '../utils/validation';
+import { resolveTimeRange, getEffectiveRetention, TimeRangeError } from '../utils/timeRange';
 
 // --- Register ---
 export const registerMonitor = async (req: Request, res: Response, next: NextFunction) => {
@@ -87,44 +88,18 @@ export const getMonitorStats = async (req: Request, res: Response, next: NextFun
     const monitor = await Monitor.findOne({ _id: id, ownerId: uid });
     if (!monitor) return res.status(404).json({ error: "Monitor not found" });
 
-    // 2. Calculate Date Range
-    let startDate: Date;
-    let endDate: Date | undefined;
-    const now = new Date();
-
-    if (typeof start === 'string' && typeof end === 'string') {
-      // Custom absolute range
-      startDate = new Date(start);
-      endDate = new Date(end);
-      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
-        return res.status(400).json({ error: 'Invalid start/end date' });
-      }
-    } else {
-      // Relative range
-      startDate = new Date(now);
-      switch (range) {
-        case '30m': startDate.setMinutes(now.getMinutes() - 30); break;
-        case '1h': startDate.setHours(now.getHours() - 1); break;
-        case '3h': startDate.setHours(now.getHours() - 3); break;
-        case '6h': startDate.setHours(now.getHours() - 6); break;
-        case '12h': startDate.setHours(now.getHours() - 12); break;
-        case '3d': startDate.setDate(now.getDate() - 3); break;
-        case '7d': startDate.setDate(now.getDate() - 7); break;
-        case '24h':
-        default: startDate.setHours(now.getHours() - 24); break;
-      }
-    }
+    // 2. Resolve time range via centralized utility
+    const maxRetention = await getEffectiveRetention('monitor', uid);
+    const resolved = resolveTimeRange(
+      { range: range as string | undefined, start: start as string | undefined, end: end as string | undefined },
+      maxRetention
+    );
 
     // 3. Fetch Runs in Range
-    const runQuery: Record<string, any> = {
+    const runs = await MonitorRun.find({
       monitorId: id,
-      createdAt: { $gte: startDate },
-    };
-    if (endDate) {
-      runQuery.createdAt.$lte = endDate;
-    }
-
-    const runs = await MonitorRun.find(runQuery).sort({ createdAt: -1 }); // Newest first
+      createdAt: { $gte: resolved.startDate, $lte: resolved.endDate },
+    }).sort({ createdAt: -1 }); // Newest first
 
     // 4. Calculate Aggregates
     const total = runs.length;
@@ -156,6 +131,9 @@ export const getMonitorStats = async (req: Request, res: Response, next: NextFun
     });
 
   } catch (error) {
+    if (error instanceof TimeRangeError) {
+      return res.status(400).json({ error: error.message });
+    }
     next(error);
   }
 };
