@@ -9,6 +9,9 @@ import { TaskRun, TaskService } from '../models/Task';
 import { VpsRun, Vps } from '../models/Vps';
 import { DbMetric, DatabaseService } from '../models/Database';
 import { MonitorRun, Monitor } from '../models/Monitor';
+import { ErrorGroup } from '../models/Error';
+import { RuntimeMetric } from '../models/RuntimeMetric';
+import { WebEvent, Website } from '../models/Web';
 
 // ============================================================================
 // ENTERPRISE TARGET MAPPING (Dynamic)
@@ -22,7 +25,10 @@ const COLLECTION_MAP: Record<string, { event: string; service: string | null }> 
   database: { event: DbMetric.collection.name, service: DatabaseService.collection.name },
   uptime: { event: MonitorRun.collection.name, service: Monitor.collection.name },
   rum: { event: RumTrace.collection.name, service: RumService.collection.name },
-  task: { event: TaskRun.collection.name, service: TaskService.collection.name }
+  task: { event: TaskRun.collection.name, service: TaskService.collection.name },
+  errors: { event: ErrorGroup.collection.name, service: null },
+  runtime: { event: RuntimeMetric.collection.name, service: ApmService.collection.name },
+  web: { event: WebEvent.collection.name, service: Website.collection.name }
 };
 
 // ============================================================================
