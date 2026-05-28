@@ -15,6 +15,10 @@ const SEVERITY_CONFIG: Record<string, { color: string; emoji: string; label: str
   info: { color: '#6b7280', emoji: '⚪', label: 'INFO' },
 };
 
+const OPERATOR_SYMBOLS: Record<string, string> = {
+  gt: '>', lt: '<', eq: '=', gte: '≥', lte: '≤', neq: '≠'
+};
+
 // --- Retry Wrapper ---
 const withRetry = async <T>(fn: () => Promise<T>, label: string): Promise<T> => {
   let lastError: Error | null = null;
@@ -91,51 +95,93 @@ const sendEmailAlert = async (emails: string[], incident: any, condition: any, p
   const severity = condition.severity || 'high';
   const sevConfig = SEVERITY_CONFIG[severity] || SEVERITY_CONFIG.high;
   const statusColor = isResolved ? '#10b981' : sevConfig.color;
-  const statusText = isResolved ? 'RESOLVED' : 'FIRED';
+  const statusText = isResolved ? 'RESOLVED' : 'FIRING';
   const time = new Date(isResolved ? incident.resolvedAt : incident.openedAt).toUTCString();
   const dashboardUrl = `https://senzor.dev/dashboard/incidents/${incident._id}`;
   const incidentNum = incident.incidentNumber ? `INC-${String(incident.incidentNumber).padStart(4, '0')}` : '';
+  const opSymbol = OPERATOR_SYMBOLS[condition.threshold.operator] || condition.threshold.operator;
 
   const duration = isResolved && incident.openedAt && incident.resolvedAt
     ? formatDuration(new Date(incident.openedAt), new Date(incident.resolvedAt))
     : null;
 
+  const labelsHtml = incident.labels?.length > 0
+    ? `<tr><td style="padding: 6px 0; color: #6b7280; vertical-align: top;">Labels</td><td style="padding: 6px 0;">${incident.labels.map((l: string) => `<span style="display: inline-block; background: #f1f5f9; color: #475569; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-family: monospace; margin-right: 4px;">${l}</span>`).join('')}</td></tr>`
+    : '';
+
+  const descriptionHtml = condition.description
+    ? `<p style="color: #64748b; font-size: 13px; margin: 4px 0 0 0; line-height: 1.5;">${condition.description}</p>`
+    : '';
+
   const html = `
-    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #eaeaea; border-radius: 8px;">
-      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
-        <span style="background-color: ${statusColor}; padding: 4px 10px; border-radius: 4px; color: white; font-size: 11px; font-weight: 700; letter-spacing: 0.5px;">${statusText}</span>
-        <span style="background-color: ${sevConfig.color}15; color: ${sevConfig.color}; padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px;">${sevConfig.label}</span>
-        ${incidentNum ? `<span style="color: #6b7280; font-size: 12px; font-family: monospace;">${incidentNum}</span>` : ''}
-      </div>
-
-      <h2 style="color: #111; margin: 0 0 4px 0; font-size: 18px;">${condition.name}</h2>
-      <p style="color: #666; font-size: 13px; margin: 0 0 20px 0;"><strong>Policy:</strong> ${policy.name}</p>
-
-      <div style="background-color: #f9fafb; padding: 16px; border-radius: 8px; margin: 0 0 20px 0;">
-        <table style="width: 100%; font-size: 13px; border-collapse: collapse;">
-          <tr><td style="padding: 4px 0; color: #666; width: 120px;">Target</td><td style="padding: 4px 0; font-weight: 600;">${condition.target.toUpperCase()}</td></tr>
-          <tr><td style="padding: 4px 0; color: #666;">Trigger Value</td><td style="padding: 4px 0; font-weight: 600;">${incident.triggerValue} (Threshold: ${condition.threshold.operator} ${condition.threshold.value})</td></tr>
-          <tr><td style="padding: 4px 0; color: #666;">Window</td><td style="padding: 4px 0;">${condition.threshold.windowMins} minutes</td></tr>
-          <tr><td style="padding: 4px 0; color: #666;">Time</td><td style="padding: 4px 0;">${time}</td></tr>
-          ${duration ? `<tr><td style="padding: 4px 0; color: #666;">Duration</td><td style="padding: 4px 0;">${duration}</td></tr>` : ''}
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <!-- Header Bar -->
+      <div style="background: ${statusColor}; padding: 16px 24px; border-radius: 8px 8px 0 0;">
+        <table style="width: 100%;">
+          <tr>
+            <td>
+              <span style="color: white; font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;">${statusText}</span>
+              ${incidentNum ? `<span style="color: rgba(255,255,255,0.8); font-size: 12px; font-family: monospace; margin-left: 12px;">${incidentNum}</span>` : ''}
+            </td>
+            <td style="text-align: right;">
+              <span style="background: rgba(255,255,255,0.2); color: white; padding: 3px 10px; border-radius: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px;">${sevConfig.label}</span>
+            </td>
+          </tr>
         </table>
       </div>
 
-      <div style="background-color: #1e293b; padding: 16px; border-radius: 8px; margin: 0 0 20px 0; overflow-x: auto;">
-        <div style="color: #94a3b8; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px;">Condition Query</div>
-        <pre style="color: #e2e8f0; font-size: 12px; margin: 0; white-space: pre-wrap; word-break: break-all;">${JSON.stringify(condition.query, null, 2)}</pre>
-      </div>
+      <!-- Body -->
+      <div style="border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 8px 8px; padding: 24px;">
+        <h2 style="color: #0f172a; margin: 0 0 4px 0; font-size: 18px; font-weight: 700; line-height: 1.4;">${condition.name}</h2>
+        ${descriptionHtml}
+        <p style="color: #94a3b8; font-size: 12px; margin: 8px 0 20px 0;">Policy: <strong style="color: #64748b;">${policy.name}</strong></p>
 
-      <a href="${dashboardUrl}" style="display: inline-block; background-color: #3b82f6; color: white; text-decoration: none; padding: 10px 24px; border-radius: 6px; font-weight: 600; font-size: 13px;">
-        View Incident
-      </a>
+        <!-- Details Table -->
+        <div style="background: #f8fafc; padding: 16px; border-radius: 8px; border: 1px solid #e2e8f0;">
+          <table style="width: 100%; font-size: 13px; border-collapse: collapse;">
+            <tr>
+              <td style="padding: 6px 0; color: #6b7280; width: 130px;">Target</td>
+              <td style="padding: 6px 0; font-weight: 600; color: #1e293b;">${condition.target.toUpperCase()}</td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #6b7280;">Trigger Value</td>
+              <td style="padding: 6px 0; font-weight: 700; color: #1e293b; font-family: monospace; font-size: 14px;">${incident.triggerValue}</td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #6b7280;">Threshold</td>
+              <td style="padding: 6px 0; font-family: monospace; color: #475569;">count ${opSymbol} ${condition.threshold.value} in ${condition.threshold.windowMins}m window</td>
+            </tr>
+            <tr>
+              <td style="padding: 6px 0; color: #6b7280;">Time</td>
+              <td style="padding: 6px 0; color: #475569;">${time}</td>
+            </tr>
+            ${duration ? `<tr><td style="padding: 6px 0; color: #6b7280;">Duration</td><td style="padding: 6px 0; font-weight: 600; color: #10b981;">${duration}</td></tr>` : ''}
+            ${labelsHtml}
+          </table>
+        </div>
+
+        <!-- CTA -->
+        <div style="margin-top: 24px;">
+          <a href="${dashboardUrl}" style="display: inline-block; background-color: #3b82f6; color: white; text-decoration: none; padding: 10px 28px; border-radius: 6px; font-weight: 600; font-size: 13px;">
+            View Incident
+          </a>
+        </div>
+
+        <!-- Footer -->
+        <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8f0;">
+          <p style="color: #94a3b8; font-size: 11px; margin: 0; line-height: 1.5;">
+            Sent by <strong>Senzor Alerting Engine</strong> for policy "${policy.name}".
+            <br/>Manage alert preferences at <a href="https://senzor.dev/dashboard/alerts" style="color: #3b82f6; text-decoration: none;">senzor.dev/dashboard/alerts</a>
+          </p>
+        </div>
+      </div>
     </div>
   `;
 
   await resend.emails.send({
     from: `Senzor Alerts <${process.env.RESEND_FROM_EMAIL || 'alerts@senzor.dev'}>`,
     to: emails,
-    subject: `[Senzor] ${statusText} ${sevConfig.emoji} ${incidentNum ? `${incidentNum}: ` : ''}${condition.name}`,
+    subject: `${isResolved ? 'Resolved' : 'Firing'} — ${incidentNum ? `${incidentNum} ` : ''}${condition.name} [${sevConfig.label}]`,
     html
   });
 
@@ -148,40 +194,76 @@ const sendSlackAlert = async (webhookUrl: string, incident: any, condition: any,
   const severity = condition.severity || 'high';
   const sevConfig = SEVERITY_CONFIG[severity] || SEVERITY_CONFIG.high;
   const statusIcon = isResolved ? '✅' : '🚨';
-  const time = new Date(isResolved ? incident.resolvedAt : incident.openedAt).toUTCString();
   const dashboardUrl = `https://senzor.dev/dashboard/incidents/${incident._id}`;
   const incidentNum = incident.incidentNumber ? `INC-${String(incident.incidentNumber).padStart(4, '0')}` : '';
+  const opSymbol = OPERATOR_SYMBOLS[condition.threshold.operator] || condition.threshold.operator;
+  const timestamp = Math.floor(new Date(isResolved ? incident.resolvedAt : incident.openedAt).getTime() / 1000);
 
-  const payload = {
-    text: `[Senzor] ${isResolved ? 'RESOLVED' : 'FIRED'}: ${condition.name}`,
-    blocks: [
+  const duration = isResolved && incident.openedAt && incident.resolvedAt
+    ? formatDuration(new Date(incident.openedAt), new Date(incident.resolvedAt))
+    : null;
+
+  const blocks: any[] = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: `${statusIcon} ${isResolved ? 'Resolved' : 'Firing'}: ${condition.name}`, emoji: true }
+    },
+  ];
+
+  // Description context if available
+  if (condition.description) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: condition.description }]
+    });
+  }
+
+  blocks.push({ type: 'divider' });
+
+  // Main fields
+  const fields: any[] = [
+    { type: 'mrkdwn', text: `*Incident*\n${incidentNum || 'N/A'}` },
+    { type: 'mrkdwn', text: `*Severity*\n${sevConfig.emoji} ${sevConfig.label}` },
+    { type: 'mrkdwn', text: `*Policy*\n${policy.name}` },
+    { type: 'mrkdwn', text: `*Target*\n${condition.target.toUpperCase()}` },
+    { type: 'mrkdwn', text: `*Trigger Value*\n\`${incident.triggerValue}\` (threshold: count ${opSymbol} ${condition.threshold.value})` },
+    { type: 'mrkdwn', text: `*Window*\n${condition.threshold.windowMins} minutes` },
+  ];
+
+  blocks.push({ type: 'section', fields });
+
+  // Labels + duration context
+  const contextElements: any[] = [];
+
+  if (duration) {
+    contextElements.push({ type: 'mrkdwn', text: `⏱ Resolved in *${duration}*` });
+  }
+
+  if (incident.labels?.length > 0) {
+    contextElements.push({ type: 'mrkdwn', text: `🏷 ${incident.labels.map((l: string) => `\`${l}\``).join(' ')}` });
+  }
+
+  contextElements.push({ type: 'mrkdwn', text: `<!date^${timestamp}^{date_short_pretty} at {time}|${new Date(isResolved ? incident.resolvedAt : incident.openedAt).toUTCString()}>` });
+
+  if (contextElements.length > 0) {
+    blocks.push({ type: 'context', elements: contextElements });
+  }
+
+  blocks.push({
+    type: 'actions',
+    elements: [
       {
-        type: 'header',
-        text: { type: 'plain_text', text: `${statusIcon} ${isResolved ? 'RESOLVED' : 'FIRED'}: ${condition.name}`, emoji: true }
-      },
-      {
-        type: 'section',
-        fields: [
-          { type: 'mrkdwn', text: `*Incident:*\n${incidentNum}` },
-          { type: 'mrkdwn', text: `*Severity:*\n${sevConfig.emoji} ${sevConfig.label}` },
-          { type: 'mrkdwn', text: `*Policy:*\n${policy.name}` },
-          { type: 'mrkdwn', text: `*Target:*\n${condition.target.toUpperCase()}` },
-          { type: 'mrkdwn', text: `*Value:*\n${incident.triggerValue} (${condition.threshold.operator} ${condition.threshold.value})` },
-          { type: 'mrkdwn', text: `*Time:*\n${time}` }
-        ]
-      },
-      {
-        type: 'actions',
-        elements: [
-          {
-            type: 'button',
-            text: { type: 'plain_text', text: 'View Incident' },
-            style: isResolved ? 'primary' : 'danger',
-            url: dashboardUrl
-          }
-        ]
+        type: 'button',
+        text: { type: 'plain_text', text: 'View Incident', emoji: true },
+        style: isResolved ? undefined : 'danger',
+        url: dashboardUrl
       }
     ]
+  });
+
+  const payload = {
+    text: `[Senzor] ${isResolved ? 'Resolved' : 'Firing'}: ${incidentNum ? `${incidentNum} — ` : ''}${condition.name}`,
+    blocks
   };
 
   const response = await fetch(webhookUrl, {
@@ -203,22 +285,43 @@ const sendDiscordAlert = async (webhookUrl: string, incident: any, condition: an
   const time = new Date(isResolved ? incident.resolvedAt : incident.openedAt).toISOString();
   const dashboardUrl = `https://senzor.dev/dashboard/incidents/${incident._id}`;
   const incidentNum = incident.incidentNumber ? `INC-${String(incident.incidentNumber).padStart(4, '0')}` : '';
+  const opSymbol = OPERATOR_SYMBOLS[condition.threshold.operator] || condition.threshold.operator;
+
+  const duration = isResolved && incident.openedAt && incident.resolvedAt
+    ? formatDuration(new Date(incident.openedAt), new Date(incident.resolvedAt))
+    : null;
+
+  const fields: any[] = [
+    { name: 'Incident', value: incidentNum || 'N/A', inline: true },
+    { name: 'Severity', value: `${sevConfig.emoji} ${sevConfig.label}`, inline: true },
+    { name: 'Policy', value: policy.name, inline: true },
+    { name: 'Target', value: condition.target.toUpperCase(), inline: true },
+    { name: 'Trigger Value', value: `\`${incident.triggerValue}\`  (threshold: count ${opSymbol} ${condition.threshold.value})`, inline: false },
+    { name: 'Window', value: `${condition.threshold.windowMins} minutes`, inline: true },
+  ];
+
+  if (duration) {
+    fields.push({ name: 'Duration', value: duration, inline: true });
+  }
+
+  if (condition.description) {
+    fields.push({ name: 'Description', value: condition.description, inline: false });
+  }
+
+  if (incident.labels?.length > 0) {
+    fields.push({ name: 'Labels', value: incident.labels.map((l: string) => `\`${l}\``).join(' '), inline: false });
+  }
 
   const payload = {
     embeds: [
       {
-        title: `${isResolved ? '✅ RESOLVED' : '🚨 FIRED'}: ${condition.name}`,
+        title: `${isResolved ? '✅ Resolved' : '🚨 Firing'}: ${condition.name}`,
         url: dashboardUrl,
         color,
-        fields: [
-          { name: 'Incident', value: incidentNum || 'N/A', inline: true },
-          { name: 'Severity', value: `${sevConfig.emoji} ${sevConfig.label}`, inline: true },
-          { name: 'Policy', value: policy.name, inline: true },
-          { name: 'Target', value: condition.target.toUpperCase(), inline: true },
-          { name: 'Trigger Value', value: `${incident.triggerValue} (${condition.threshold.operator} ${condition.threshold.value})`, inline: false }
-        ],
+        description: condition.description || undefined,
+        fields,
         timestamp: time,
-        footer: { text: 'Senzor Alerting Engine' }
+        footer: { text: `Senzor Alerting Engine · ${policy.name}` }
       }
     ]
   };
@@ -246,13 +349,15 @@ const sendWebhookAlert = async (destination: any, incident: any, condition: any,
       severity: incident.severity,
       status: incident.status,
       triggerValue: incident.triggerValue,
+      labels: incident.labels || [],
       openedAt: incident.openedAt,
-      resolvedAt: incident.resolvedAt,
-      labels: incident.labels
+      acknowledgedAt: incident.acknowledgedAt || null,
+      resolvedAt: incident.resolvedAt || null
     },
     condition: {
       id: condition._id,
       name: condition.name,
+      description: condition.description || null,
       target: condition.target,
       threshold: condition.threshold,
       severity: condition.severity
