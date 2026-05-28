@@ -39,6 +39,37 @@ const SYSTEM_SCHEMA_DICTIONARY = {
     { field: "status", type: "string", desc: "Job execution ('completed', 'failed')" },
     { field: "duration", type: "number", desc: "Job runtime in ms" },
     { field: "taskName", type: "string", desc: "Specific worker/queue name" }
+  ],
+  errors: [
+    { field: "errorClass", type: "string", desc: "Exception class name (e.g. TypeError)" },
+    { field: "message", type: "string", desc: "Error message text" },
+    { field: "status", type: "string", desc: "Triage state (unresolved, resolved, ignored)" },
+    { field: "totalCount", type: "number", desc: "Total occurrence count" },
+    { field: "lastSeen", type: "date", desc: "Most recent occurrence timestamp" },
+    { field: "firstSeen", type: "date", desc: "First occurrence timestamp" },
+    { field: "serviceModel", type: "string", desc: "Originating service type" }
+  ],
+  runtime: [
+    { field: "eventLoopLagMs", type: "number", desc: "Event loop lag in ms" },
+    { field: "eventLoopLagP99Ms", type: "number", desc: "P99 event loop lag in ms" },
+    { field: "eventLoopUtilizationPercent", type: "number", desc: "Event loop utilization %" },
+    { field: "heapUsedPercent", type: "number", desc: "V8 heap utilization %" },
+    { field: "heapUsedBytes", type: "number", desc: "V8 heap used in bytes" },
+    { field: "gcTotalDurationMs", type: "number", desc: "GC total pause time in ms" },
+    { field: "gcMajorCount", type: "number", desc: "Major GC collection count" },
+    { field: "activeHandles", type: "number", desc: "Active libuv handles" },
+    { field: "cpuUserUs", type: "number", desc: "User CPU time in microseconds" }
+  ],
+  web: [
+    { field: "path", type: "string", desc: "Page path (e.g. /pricing)" },
+    { field: "referrer", type: "string", desc: "Traffic referrer URL" },
+    { field: "channel", type: "string", desc: "Traffic channel (direct, organic, social)" },
+    { field: "browser", type: "string", desc: "Visitor browser name" },
+    { field: "os", type: "string", desc: "Visitor operating system" },
+    { field: "device", type: "string", desc: "Device type (desktop, mobile, tablet)" },
+    { field: "country", type: "string", desc: "Visitor country" },
+    { field: "duration", type: "number", desc: "Time on page in seconds" },
+    { field: "type", type: "string", desc: "Event type (pageview, ping)" }
   ]
 };
 

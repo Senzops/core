@@ -9,6 +9,9 @@ import { TaskRun, TaskService } from '../../models/Task';
 import { VpsRun, Vps } from '../../models/Vps';
 import { DbMetric, DatabaseService } from '../../models/Database';
 import { MonitorRun, Monitor } from '../../models/Monitor';
+import { ErrorGroup } from '../../models/Error';
+import { RuntimeMetric } from '../../models/RuntimeMetric';
+import { WebEvent, Website } from '../../models/Web';
 import { logger } from '../../utils/logger';
 import { resolveTimeRange, getEffectiveRetention, TimeRangeError } from '../../utils/timeRange';
 
@@ -22,6 +25,9 @@ const getTargetModel = (target: string) => {
     case 'vps': return { model: VpsRun, parentModel: Vps, foreignKey: 'vpsId', timeField: 'createdAt' };
     case 'database': return { model: DbMetric, parentModel: DatabaseService, foreignKey: 'dbId', timeField: 'timestamp' };
     case 'uptime': return { model: MonitorRun, parentModel: Monitor, foreignKey: 'monitorId', timeField: 'createdAt' };
+    case 'errors': return { model: ErrorGroup, parentModel: null, foreignKey: 'ownerId', timeField: 'lastSeen' };
+    case 'runtime': return { model: RuntimeMetric, parentModel: ApmService, foreignKey: 'serviceId', timeField: 'timestamp' };
+    case 'web': return { model: WebEvent, parentModel: Website, foreignKey: 'webId', timeField: 'createdAt' };
     default: return null;
   }
 };
