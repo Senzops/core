@@ -167,7 +167,6 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[], lo
   if (signaturesMap.size > 0) {
     const signatureOps = Array.from(signaturesMap.values()).map(sig => {
       const batchAvgDuration = sig.durationTotal / sig.runCount;
-      const healthState = sig.lastStatus === 'failed' ? 'failing' : 'healthy';
 
       return {
         updateOne: {
@@ -178,7 +177,6 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[], lo
                 taskType: sig.taskType,
                 lastRunAt: { $max: ["$lastRunAt", sig.lastRunAt] },
                 lastStatus: sig.lastStatus,
-                healthState: healthState,
                 ...(sig.scheduleExpression && { scheduleExpression: sig.scheduleExpression })
               }
             },

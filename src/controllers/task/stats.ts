@@ -75,7 +75,35 @@ export const getTaskServiceDashboard = async (req: Request, res: Response, next:
       { $sort: { totalRuns: -1 } }
     ]);
 
-    res.json({ service, timeRange: meta, stats, trend, tasksTable });
+    // 4. Watchdog Health: fetch all signatures for this service to enrich the table
+    const signatures = await TaskSignature.find({ serviceId: serviceIdObj })
+      .select('taskName healthState consecutiveMisses consecutiveFailures lastHealthTransition scheduleExpression taskType')
+      .lean();
+
+    const sigMap = new Map(signatures.map(s => [s.taskName, s]));
+
+    const enrichedTasksTable = tasksTable.map((t: any) => {
+      const sig = sigMap.get(t._id);
+      return {
+        ...t,
+        healthState: sig?.healthState || 'healthy',
+        consecutiveMisses: sig?.consecutiveMisses || 0,
+        consecutiveFailures: sig?.consecutiveFailures || 0,
+        lastHealthTransition: sig?.lastHealthTransition || null,
+        scheduleExpression: sig?.scheduleExpression || null,
+        taskType: sig?.taskType || null,
+      };
+    });
+
+    const watchdogSummary = {
+      total: signatures.length,
+      healthy: signatures.filter(s => s.healthState === 'healthy').length,
+      missing: signatures.filter(s => s.healthState === 'missing').length,
+      stalled: signatures.filter(s => s.healthState === 'stalled').length,
+      failing: signatures.filter(s => s.healthState === 'failing').length,
+    };
+
+    res.json({ service, timeRange: meta, stats, trend, tasksTable: enrichedTasksTable, watchdogSummary });
   } catch (error) {
     if (error instanceof TimeRangeError) return res.status(400).json({ error: error.message });
     next(error);
@@ -103,8 +131,9 @@ export const getTaskEntityDetail = async (req: Request, res: Response, next: Nex
     const decodedTaskName = decodeURIComponent(taskName);
     const timeMatch = { $gte: startDate, $lte: endDate };
 
-    // NEW: Fetch Watchdog Signature
-    const signature = await TaskSignature.findOne({ serviceId: serviceIdObj, taskName: decodedTaskName }).lean();
+    const signature = await TaskSignature.findOne({ serviceId: serviceIdObj, taskName: decodedTaskName })
+      .select('taskType scheduleExpression healthState consecutiveMisses consecutiveFailures lastHealthTransition avgDuration lastRunAt lastStatus gracePeriodMs stallMultiplier failureRateThreshold')
+      .lean();
 
     // 1. Task Specific Trend
     const trendRaw = await TaskMetric.aggregate([

@@ -24,11 +24,17 @@ export interface ITaskSignature extends Document {
   serviceId: mongoose.Types.ObjectId;
   taskName: string;
   taskType: 'cron' | 'queue' | 'pipeline' | 'custom';
-  scheduleExpression?: string; // e.g., '0 * * * *'
+  scheduleExpression?: string;
   lastRunAt?: Date;
   lastStatus?: 'success' | 'failed';
-  avgDuration: number; // Exponential Moving Average (EMA)
+  avgDuration: number;
   healthState: 'healthy' | 'missing' | 'stalled' | 'failing';
+  consecutiveMisses: number;
+  consecutiveFailures: number;
+  lastHealthTransition?: Date;
+  gracePeriodMs?: number;
+  stallMultiplier?: number;
+  failureRateThreshold?: number;
 }
 const TaskSignatureSchema = new Schema<ITaskSignature>({
   serviceId: { type: Schema.Types.ObjectId, ref: 'TaskService', required: true },
@@ -38,7 +44,13 @@ const TaskSignatureSchema = new Schema<ITaskSignature>({
   lastRunAt: { type: Date },
   lastStatus: { type: String, enum: ['success', 'failed'] },
   avgDuration: { type: Number, default: 0 },
-  healthState: { type: String, enum: ['healthy', 'missing', 'stalled', 'failing'], default: 'healthy' }
+  healthState: { type: String, enum: ['healthy', 'missing', 'stalled', 'failing'], default: 'healthy' },
+  consecutiveMisses: { type: Number, default: 0 },
+  consecutiveFailures: { type: Number, default: 0 },
+  lastHealthTransition: { type: Date },
+  gracePeriodMs: { type: Number },
+  stallMultiplier: { type: Number },
+  failureRateThreshold: { type: Number }
 });
 // Critical for fast upserts during ingestion
 TaskSignatureSchema.index({ serviceId: 1, taskName: 1 }, { unique: true });
