@@ -171,7 +171,7 @@ function fillVpsTimeGaps(data: any[], resolved: ResolvedTimeRange) {
     dataMap.set(d.getTime(), item);
   }
 
-  while (current <= end) {
+  while (current < end) {
     const key = current.getTime();
     const item = dataMap.get(key);
 

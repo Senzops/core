@@ -106,6 +106,21 @@ export function resolveTimeRange(
   const spanMs = endDate.getTime() - startDate.getTime();
   const { format, incrementMs, label } = computeBucketConfig(spanMs);
 
+  // Align startDate DOWN to bucket boundary so the first bucket has complete data.
+  // Without this, startDate falls mid-bucket (e.g. 14:05:45 for a 1m bucket),
+  // MongoDB excludes data before that instant, but fillTimeGaps generates a bucket
+  // key for the full boundary (14:05:00) — resulting in an empty first bucket.
+  if (label === '1m') {
+    startDate = new Date(startDate);
+    startDate.setSeconds(0, 0);
+  } else if (label === '1h') {
+    startDate = new Date(startDate);
+    startDate.setMinutes(0, 0, 0);
+  } else {
+    startDate = new Date(startDate);
+    startDate.setHours(0, 0, 0, 0);
+  }
+
   return { startDate, endDate, bucketFormat: format, bucketIncrementMs: incrementMs, granularityLabel: label };
 }
 
