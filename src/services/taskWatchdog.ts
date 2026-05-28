@@ -12,14 +12,18 @@ const BATCH_SIZE = 500;
 
 const DEFAULT_GRACE_PERIOD_MS = 120_000;
 const DEFAULT_EARLY_JITTER_MS = 5_000;
-const DEFAULT_STALL_MULTIPLIER = 3;
 const DEFAULT_FAILURE_RATE_THRESHOLD = 0.5;
 const DEFAULT_FAILURE_RATE_WINDOW_MS = 10 * 60 * 1000;
 const DEFAULT_FAILURE_RATE_MIN_RUNS = 3;
 const DEFAULT_DURATION_ANOMALY_MULTIPLIER = 3;
+const DEFAULT_DURATION_SHORT_RATIO = 0.1;
+const DEFAULT_DURATION_MIN_AVG_MS = 1_000;
+const DEFAULT_SCHEDULE_LATE_THRESHOLD_MS = 60_000;
+const DEFAULT_SCHEDULE_EARLY_THRESHOLD_MS = 30_000;
 const DEFAULT_HEARTBEAT_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_DEAD_LETTER_THRESHOLD = 5;
 const DEFAULT_DEAD_LETTER_WINDOW_MS = 30 * 60 * 1000;
+const SWEEP_WINDOW_MS = 3 * 60 * 1000;
 
 interface SweepContext {
   now: Date;
@@ -31,11 +35,13 @@ interface SweepContext {
   counters: {
     missed: number;
     recovered: number;
-    stalled: number;
     failing: number;
     heartbeatLost: number;
     deadLetters: number;
     durationAnomalies: number;
+    shortDurations: number;
+    lateRuns: number;
+    earlyRuns: number;
   };
 }
 
@@ -55,11 +61,13 @@ const createSweepContext = (now: Date, services: Map<string, any>): SweepContext
   counters: {
     missed: 0,
     recovered: 0,
-    stalled: 0,
     failing: 0,
     heartbeatLost: 0,
     deadLetters: 0,
     durationAnomalies: 0,
+    shortDurations: 0,
+    lateRuns: 0,
+    earlyRuns: 0,
   },
 });
 
@@ -91,6 +99,8 @@ const pushAnomaly = (
 };
 
 // ─── Strategy 1: Missed Cron Detection ───────────────────────────────────────
+// Detects crons that did not execute within their expected schedule window + grace period.
+// Health transition: healthy → missing (recovers when a run lands in the next window).
 
 const evaluateMissedCrons = async (ctx: SweepContext) => {
   const cursor = TaskSignature.find({
@@ -146,64 +156,85 @@ const evaluateMissedCrons = async (ctx: SweepContext) => {
         pushHealthTransition(ctx, sig._id, 'healthy', { consecutiveMisses: 0 });
       }
     } catch {
-      if (sig.healthState !== 'failing') {
-        pushHealthTransition(ctx, sig._id, 'failing');
-      }
+      // Invalid cron expression — don't change health, just skip
     }
   }
 };
 
-// ─── Strategy 2: Stalled Task Detection ──────────────────────────────────────
+// ─── Strategy 2: Schedule Deviation Detection ────────────────────────────────
+// Detects crons that ran but started significantly early or late relative to
+// their cron schedule. This is an anomaly alert only — does NOT change health state,
+// because the task did execute (just at the wrong time).
 
-const evaluateStalledTasks = async (ctx: SweepContext) => {
-  const activeServiceIds = Array.from(ctx.activeServices.keys()).map(
-    id => new mongoose.Types.ObjectId(id)
-  );
+const evaluateScheduleDeviations = async (ctx: SweepContext) => {
+  const windowStart = new Date(ctx.nowMs - SWEEP_WINDOW_MS);
 
-  if (activeServiceIds.length === 0) return;
-
-  const signatures = await TaskSignature.find({
-    serviceId: { $in: activeServiceIds },
-    avgDuration: { $gt: 0 },
-    lastRunAt: { $exists: true },
-    lastStatus: 'success',
-    healthState: { $in: ['healthy', 'stalled'] },
+  const cronSignatures = await TaskSignature.find({
+    taskType: 'cron',
+    scheduleExpression: { $exists: true, $ne: null },
+    lastRunAt: { $gte: windowStart },
   })
-    .select('_id taskName serviceId avgDuration lastRunAt healthState stallMultiplier lastStatus')
+    .select('_id taskName serviceId scheduleExpression lastRunAt')
     .lean();
 
-  for (const sig of signatures) {
+  if (cronSignatures.length === 0) return;
+
+  for (const sig of cronSignatures) {
     const service = ctx.activeServices.get(sig.serviceId.toString());
-    if (!service) continue;
+    if (!service || !sig.scheduleExpression || !sig.lastRunAt) continue;
 
-    const multiplier = sig.stallMultiplier || DEFAULT_STALL_MULTIPLIER;
-    const stallThresholdMs = sig.avgDuration * multiplier;
-    const minStallThresholdMs = 60_000;
-    const effectiveThreshold = Math.max(stallThresholdMs, minStallThresholdMs);
+    try {
+      const runTime = new Date(sig.lastRunAt);
+      const runMs = runTime.getTime();
 
-    const timeSinceLastRun = ctx.nowMs - new Date(sig.lastRunAt!).getTime();
+      const prevInterval = CronExpressionParser.parse(sig.scheduleExpression, { currentDate: runTime });
+      const prevTick = prevInterval.prev().toDate();
+      const nextInterval = CronExpressionParser.parse(sig.scheduleExpression, { currentDate: runTime });
+      const nextTick = nextInterval.next().toDate();
 
-    if (timeSinceLastRun > effectiveThreshold && sig.healthState !== 'stalled') {
-      ctx.counters.stalled++;
-      pushHealthTransition(ctx, sig._id, 'stalled');
+      const distToPrev = runMs - prevTick.getTime();
+      const distToNext = nextTick.getTime() - runMs;
 
-      const message = `Task "${sig.taskName}" appears stalled — no completion in ${Math.round(timeSinceLastRun / 1000)}s (avg: ${Math.round(sig.avgDuration / 1000)}s).`;
-      pushAnomaly(
-        ctx, service, sig, 'StalledTask', message,
-        `Watchdog detected stalled task "${sig.taskName}"\n` +
-        `Avg Duration: ${Math.round(sig.avgDuration)}ms\n` +
-        `Time Since Last Run: ${Math.round(timeSinceLastRun)}ms\n` +
-        `Stall Threshold: ${Math.round(effectiveThreshold)}ms (${multiplier}x avg)`,
-        { avgDuration: sig.avgDuration, timeSinceLastRun, stallMultiplier: multiplier }
-      );
-    } else if (sig.healthState === 'stalled' && timeSinceLastRun <= effectiveThreshold) {
-      ctx.counters.recovered++;
-      pushHealthTransition(ctx, sig._id, 'healthy');
+      if (distToPrev <= distToNext) {
+        if (distToPrev > DEFAULT_SCHEDULE_LATE_THRESHOLD_MS) {
+          ctx.counters.lateRuns++;
+          const message = `Cron "${sig.taskName}" started ${Math.round(distToPrev / 1000)}s late.`;
+          pushAnomaly(
+            ctx, service, sig, 'LateScheduleExecution', message,
+            `Watchdog detected late cron start for "${sig.taskName}"\n` +
+            `Schedule: ${sig.scheduleExpression}\n` +
+            `Expected: ${prevTick.toISOString()}\n` +
+            `Actual: ${runTime.toISOString()}\n` +
+            `Deviation: +${Math.round(distToPrev / 1000)}s\n` +
+            `Threshold: ${DEFAULT_SCHEDULE_LATE_THRESHOLD_MS / 1000}s`,
+            { expectedRun: prevTick, actualRun: runTime, deviationMs: distToPrev }
+          );
+        }
+      } else {
+        if (distToNext > DEFAULT_SCHEDULE_EARLY_THRESHOLD_MS) {
+          ctx.counters.earlyRuns++;
+          const message = `Cron "${sig.taskName}" started ${Math.round(distToNext / 1000)}s early.`;
+          pushAnomaly(
+            ctx, service, sig, 'EarlyScheduleExecution', message,
+            `Watchdog detected early cron start for "${sig.taskName}"\n` +
+            `Schedule: ${sig.scheduleExpression}\n` +
+            `Expected: ${nextTick.toISOString()}\n` +
+            `Actual: ${runTime.toISOString()}\n` +
+            `Deviation: -${Math.round(distToNext / 1000)}s\n` +
+            `Threshold: ${DEFAULT_SCHEDULE_EARLY_THRESHOLD_MS / 1000}s`,
+            { expectedRun: nextTick, actualRun: runTime, deviationMs: -distToNext }
+          );
+        }
+      }
+    } catch {
+      // Invalid cron expression — skip
     }
   }
 };
 
 // ─── Strategy 3: Failure Rate Detection ──────────────────────────────────────
+// Evaluates failure rate over a sliding 10-minute window.
+// Health transition: healthy → failing at ≥50%, recovers at <25% (hysteresis).
 
 const evaluateFailureRates = async (ctx: SweepContext) => {
   const activeServiceIds = Array.from(ctx.activeServices.keys()).map(
@@ -298,6 +329,11 @@ const evaluateFailureRates = async (ctx: SweepContext) => {
 };
 
 // ─── Strategy 4: Duration Anomaly Detection ──────────────────────────────────
+// Two sub-checks:
+//   Slow: maxDuration in window >= avgDuration × 3 (task took abnormally long)
+//   Fast: minDuration in window <= avgDuration × 0.1 (suspiciously quick — may have skipped work)
+// Both require avgDuration >= 1s to avoid noise on trivial tasks.
+// Anomaly events only — does NOT change health state.
 
 const evaluateDurationAnomalies = async (ctx: SweepContext) => {
   const activeServiceIds = Array.from(ctx.activeServices.keys()).map(
@@ -308,7 +344,7 @@ const evaluateDurationAnomalies = async (ctx: SweepContext) => {
 
   const windowStart = new Date(ctx.nowMs - DEFAULT_FAILURE_RATE_WINDOW_MS);
 
-  const recentMaxDurations = await TaskMetric.aggregate([
+  const recentDurations = await TaskMetric.aggregate([
     {
       $match: {
         serviceId: { $in: activeServiceIds },
@@ -319,6 +355,7 @@ const evaluateDurationAnomalies = async (ctx: SweepContext) => {
       $group: {
         _id: { serviceId: '$serviceId', taskName: '$taskName' },
         maxDuration: { $max: '$durationMax' },
+        minDuration: { $min: '$durationMin' },
         totalRuns: { $sum: '$runs' },
       },
     },
@@ -327,9 +364,9 @@ const evaluateDurationAnomalies = async (ctx: SweepContext) => {
     },
   ]);
 
-  if (recentMaxDurations.length === 0) return;
+  if (recentDurations.length === 0) return;
 
-  const signatureKeys = recentMaxDurations.map((m: any) => ({
+  const signatureKeys = recentDurations.map((m: any) => ({
     serviceId: m._id.serviceId,
     taskName: m._id.taskName,
   }));
@@ -343,33 +380,52 @@ const evaluateDurationAnomalies = async (ctx: SweepContext) => {
 
   const sigMap = new Map(signatures.map(s => [`${s.serviceId}_${s.taskName}`, s]));
 
-  for (const m of recentMaxDurations) {
+  for (const m of recentDurations) {
     const key = `${m._id.serviceId}_${m._id.taskName}`;
     const sig = sigMap.get(key);
-    if (!sig) continue;
+    if (!sig || sig.avgDuration < DEFAULT_DURATION_MIN_AVG_MS) continue;
 
     const service = ctx.activeServices.get(m._id.serviceId.toString());
     if (!service) continue;
 
-    const ratio = m.maxDuration / sig.avgDuration;
-    if (ratio >= DEFAULT_DURATION_ANOMALY_MULTIPLIER && sig.avgDuration > 1000) {
+    const slowRatio = m.maxDuration / sig.avgDuration;
+    if (slowRatio >= DEFAULT_DURATION_ANOMALY_MULTIPLIER) {
       ctx.counters.durationAnomalies++;
 
-      const message = `Task "${sig.taskName}" took ${Math.round(m.maxDuration)}ms (${ratio.toFixed(1)}x avg of ${Math.round(sig.avgDuration)}ms).`;
+      const message = `Task "${sig.taskName}" took ${Math.round(m.maxDuration)}ms (${slowRatio.toFixed(1)}x avg of ${Math.round(sig.avgDuration)}ms).`;
       pushAnomaly(
         ctx, service, sig, 'SlowTaskExecution', message,
         `Watchdog detected abnormally slow execution for "${sig.taskName}"\n` +
         `Max Duration (window): ${Math.round(m.maxDuration)}ms\n` +
         `Avg Duration (EMA): ${Math.round(sig.avgDuration)}ms\n` +
-        `Ratio: ${ratio.toFixed(1)}x\n` +
+        `Ratio: ${slowRatio.toFixed(1)}x\n` +
         `Threshold: ${DEFAULT_DURATION_ANOMALY_MULTIPLIER}x`,
-        { maxDuration: m.maxDuration, avgDuration: sig.avgDuration, ratio }
+        { maxDuration: m.maxDuration, avgDuration: sig.avgDuration, ratio: slowRatio }
       );
+    }
+
+    if (m.minDuration != null && m.minDuration > 0 && m.minDuration < Number.MAX_SAFE_INTEGER) {
+      const fastRatio = m.minDuration / sig.avgDuration;
+      if (fastRatio <= DEFAULT_DURATION_SHORT_RATIO) {
+        ctx.counters.shortDurations++;
+
+        const message = `Task "${sig.taskName}" completed in ${Math.round(m.minDuration)}ms (${(fastRatio * 100).toFixed(1)}% of avg ${Math.round(sig.avgDuration)}ms) — may have skipped work.`;
+        pushAnomaly(
+          ctx, service, sig, 'SuspiciouslyFastExecution', message,
+          `Watchdog detected abnormally fast execution for "${sig.taskName}"\n` +
+          `Min Duration (window): ${Math.round(m.minDuration)}ms\n` +
+          `Avg Duration (EMA): ${Math.round(sig.avgDuration)}ms\n` +
+          `Ratio: ${(fastRatio * 100).toFixed(1)}% of avg\n` +
+          `Threshold: <${(DEFAULT_DURATION_SHORT_RATIO * 100).toFixed(0)}% of avg`,
+          { minDuration: m.minDuration, avgDuration: sig.avgDuration, ratio: fastRatio }
+        );
+      }
     }
   }
 };
 
 // ─── Strategy 5: Service Heartbeat Staleness ─────────────────────────────────
+// Marks services as offline if no heartbeat (lastSeen) in 5 minutes.
 
 const evaluateHeartbeats = async (ctx: SweepContext) => {
   const staleThreshold = new Date(ctx.nowMs - DEFAULT_HEARTBEAT_TIMEOUT_MS);
@@ -411,6 +467,7 @@ const evaluateHeartbeats = async (ctx: SweepContext) => {
 };
 
 // ─── Strategy 6: Dead Letter Queue Monitoring ────────────────────────────────
+// Flags tasks accumulating ≥5 dead-lettered runs in 30 minutes. Alert only.
 
 const evaluateDeadLetters = async (ctx: SweepContext) => {
   const activeServiceIds = Array.from(ctx.activeServices.keys()).map(
@@ -587,7 +644,7 @@ export const runTaskWatchdogSweep = async () => {
 
     const strategies = [
       { name: 'MissedCron', fn: evaluateMissedCrons },
-      { name: 'StalledTask', fn: evaluateStalledTasks },
+      { name: 'ScheduleDeviation', fn: evaluateScheduleDeviations },
       { name: 'FailureRate', fn: evaluateFailureRates },
       { name: 'DurationAnomaly', fn: evaluateDurationAnomalies },
       { name: 'Heartbeat', fn: evaluateHeartbeats },
@@ -606,15 +663,17 @@ export const runTaskWatchdogSweep = async () => {
     const succeeded = results.filter(r => r.success).length;
     const failed = results.filter(r => !r.success);
 
-    const { missed, recovered, stalled, failing, heartbeatLost, deadLetters, durationAnomalies } = ctx.counters;
-    const totalAnomalies = missed + stalled + failing + heartbeatLost + deadLetters + durationAnomalies;
+    const c = ctx.counters;
+    const totalAnomalies = c.missed + c.failing + c.heartbeatLost + c.deadLetters +
+      c.durationAnomalies + c.shortDurations + c.lateRuns + c.earlyRuns;
 
     logger.info(
       `[Watchdog] Sweep complete in ${elapsed}ms | ` +
       `Strategies: ${succeeded}/${strategies.length} | ` +
-      `Anomalies: ${totalAnomalies} (missed=${missed} stalled=${stalled} failing=${failing} ` +
-      `heartbeat=${heartbeatLost} deadLetter=${deadLetters} duration=${durationAnomalies}) | ` +
-      `Recovered: ${recovered}`
+      `Anomalies: ${totalAnomalies} (missed=${c.missed} failing=${c.failing} ` +
+      `late=${c.lateRuns} early=${c.earlyRuns} slow=${c.durationAnomalies} fast=${c.shortDurations} ` +
+      `heartbeat=${c.heartbeatLost} deadLetter=${c.deadLetters}) | ` +
+      `Recovered: ${c.recovered}`
     );
 
     if (failed.length > 0) {

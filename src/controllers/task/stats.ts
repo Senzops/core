@@ -1,5 +1,4 @@
 import { Request, Response, NextFunction } from 'express';
-import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
 import { ErrorEvent } from '../../models/Error';
@@ -99,7 +98,6 @@ export const getTaskServiceDashboard = async (req: Request, res: Response, next:
       total: signatures.length,
       healthy: signatures.filter(s => s.healthState === 'healthy').length,
       missing: signatures.filter(s => s.healthState === 'missing').length,
-      stalled: signatures.filter(s => s.healthState === 'stalled').length,
       failing: signatures.filter(s => s.healthState === 'failing').length,
     };
 
@@ -132,7 +130,7 @@ export const getTaskEntityDetail = async (req: Request, res: Response, next: Nex
     const timeMatch = { $gte: startDate, $lte: endDate };
 
     const signature = await TaskSignature.findOne({ serviceId: serviceIdObj, taskName: decodedTaskName })
-      .select('taskType scheduleExpression healthState consecutiveMisses consecutiveFailures lastHealthTransition avgDuration lastRunAt lastStatus gracePeriodMs stallMultiplier failureRateThreshold')
+      .select('taskType scheduleExpression healthState consecutiveMisses consecutiveFailures lastHealthTransition avgDuration lastRunAt lastStatus gracePeriodMs failureRateThreshold')
       .lean();
 
     // 1. Task Specific Trend

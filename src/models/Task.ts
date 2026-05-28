@@ -28,12 +28,11 @@ export interface ITaskSignature extends Document {
   lastRunAt?: Date;
   lastStatus?: 'success' | 'failed';
   avgDuration: number;
-  healthState: 'healthy' | 'missing' | 'stalled' | 'failing';
+  healthState: 'healthy' | 'missing' | 'failing';
   consecutiveMisses: number;
   consecutiveFailures: number;
   lastHealthTransition?: Date;
   gracePeriodMs?: number;
-  stallMultiplier?: number;
   failureRateThreshold?: number;
 }
 const TaskSignatureSchema = new Schema<ITaskSignature>({
@@ -44,12 +43,11 @@ const TaskSignatureSchema = new Schema<ITaskSignature>({
   lastRunAt: { type: Date },
   lastStatus: { type: String, enum: ['success', 'failed'] },
   avgDuration: { type: Number, default: 0 },
-  healthState: { type: String, enum: ['healthy', 'missing', 'stalled', 'failing'], default: 'healthy' },
+  healthState: { type: String, enum: ['healthy', 'missing', 'failing'], default: 'healthy' },
   consecutiveMisses: { type: Number, default: 0 },
   consecutiveFailures: { type: Number, default: 0 },
   lastHealthTransition: { type: Date },
   gracePeriodMs: { type: Number },
-  stallMultiplier: { type: Number },
   failureRateThreshold: { type: Number }
 });
 // Critical for fast upserts during ingestion
@@ -112,6 +110,7 @@ export interface ITaskMetric extends Document {
   failures: number;
   durationSum: number;
   durationMax: number;
+  durationMin: number;
   queueDelaySum: number;
   attemptsSum: number;
 }
@@ -124,6 +123,7 @@ const TaskMetricSchema = new Schema<ITaskMetric>({
   failures: { type: Number, default: 0 },
   durationSum: { type: Number, default: 0 },
   durationMax: { type: Number, default: 0 },
+  durationMin: { type: Number, default: Number.MAX_SAFE_INTEGER },
   queueDelaySum: { type: Number, default: 0 },
   attemptsSum: { type: Number, default: 0 },
 });

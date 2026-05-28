@@ -103,7 +103,7 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[], lo
       metricsMap.set(bucketKey, {
         taskName: item.taskName,
         timestamp: bucketTime,
-        runs: 0, failures: 0, durationSum: 0, durationMax: 0, queueDelaySum: 0, attemptsSum: 0
+        runs: 0, failures: 0, durationSum: 0, durationMax: 0, durationMin: Infinity, queueDelaySum: 0, attemptsSum: 0
       });
     }
 
@@ -112,6 +112,7 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[], lo
     if (item.status === 'failed') m.failures++;
     m.durationSum += item.duration;
     if (item.duration > m.durationMax) m.durationMax = item.duration;
+    if (item.duration < m.durationMin) m.durationMin = item.duration;
     m.queueDelaySum += (item.queueDelay || 0);
     m.attemptsSum += (item.attempts || 1);
   }
@@ -240,7 +241,8 @@ const processTaskBatchBackground = async (data: { runs: any[], errors: any[], lo
           runs: m.runs, failures: m.failures, durationSum: m.durationSum,
           queueDelaySum: m.queueDelaySum, attemptsSum: m.attemptsSum
         },
-        $max: { durationMax: m.durationMax }
+        $max: { durationMax: m.durationMax },
+        $min: { durationMin: m.durationMin }
       },
       upsert: true
     }
