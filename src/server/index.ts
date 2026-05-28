@@ -59,7 +59,19 @@ import {
   createCondition,
   updateCondition,
   deleteCondition,
-  updateIncidentStatus
+  muteCondition,
+  unmuteCondition,
+  testCondition,
+  listIncidents,
+  getIncidentDetail,
+  updateIncidentStatus,
+  updateIncidentSeverity,
+  assignIncident,
+  addIncidentNote,
+  bulkUpdateIncidents,
+  createSilence,
+  listSilences,
+  deleteSilence,
 } from '../controllers/alerts';
 import {
   getSchemaDictionary,
@@ -278,7 +290,19 @@ apiRouter.delete('/alerts/policies/:id', deletePolicy);
 apiRouter.post('/alerts/conditions', requireServiceQuota('AlertCondition', 'Alert Condition'), createCondition);
 apiRouter.put('/alerts/conditions/:id', updateCondition);
 apiRouter.delete('/alerts/conditions/:id', deleteCondition);
+apiRouter.post('/alerts/conditions/:id/mute', muteCondition);
+apiRouter.post('/alerts/conditions/:id/unmute', unmuteCondition);
+apiRouter.post('/alerts/conditions/test', testCondition);
+apiRouter.get('/alerts/incidents', listIncidents);
+apiRouter.get('/alerts/incidents/:id', getIncidentDetail);
 apiRouter.patch('/alerts/incidents/:id/status', updateIncidentStatus);
+apiRouter.patch('/alerts/incidents/:id/severity', updateIncidentSeverity);
+apiRouter.patch('/alerts/incidents/:id/assign', assignIncident);
+apiRouter.post('/alerts/incidents/:id/notes', addIncidentNote);
+apiRouter.post('/alerts/incidents/bulk', bulkUpdateIncidents);
+apiRouter.post('/alerts/silences', createSilence);
+apiRouter.get('/alerts/silences', listSilences);
+apiRouter.delete('/alerts/silences/:id', deleteSilence);
 
 // --- SAVED VIEWS (CUSTOM DASHBOARDS) ---
 apiRouter.post('/views', requireServiceQuota('SavedView', 'Dashboard View'), createView);

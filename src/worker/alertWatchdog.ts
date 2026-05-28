@@ -1,9 +1,11 @@
 import cron from 'node-cron';
 import os from 'os';
-import { AlertCondition, AlertIncident, AlertPolicy, AlertDestination } from '../models/Alert';
+import {
+  AlertCondition, AlertIncident, AlertPolicy, AlertSilence,
+  getNextIncidentNumber, ITimelineEvent
+} from '../models/Alert';
 import { SystemLock } from '../models/Task';
 
-// Import all telemetry models AND their parent service models
 import { ApmTrace, ApmService } from '../models/Apm';
 import { RumTrace, RumService } from '../models/Rum';
 import { LogEvent } from '../models/Log';
@@ -16,28 +18,25 @@ import { logger } from '../utils/logger';
 
 const WORKER_ID = `alert-watchdog-${os.hostname()}-${process.pid}`;
 const LOCK_NAME = 'alert-watchdog-sweep';
-const LOCK_TTL_MS = 55 * 1000; // 55 seconds (Ensures lock releases before next minute tick)
+const LOCK_TTL_MS = 55 * 1000;
 
-// --- 1. Security: Safe MQL Sanitizer ---
+const BLOCKED_OPERATORS = ['$where', '$function', '$accumulator', '$expr', '$out', '$merge'];
+
+// --- Security: Safe MQL Sanitizer ---
 const sanitizeMql = (userQuery: any) => {
   const jsonStr = JSON.stringify(userQuery || {});
 
-  if (
-    jsonStr.includes('$where') ||
-    jsonStr.includes('$function') ||
-    jsonStr.includes('$accumulator') ||
-    jsonStr.includes('$expr') ||
-    jsonStr.includes('$out') ||    // Prevent pipeline write injections
-    jsonStr.includes('$merge')
-  ) {
-    logger.warn(`[Alerts] Blocked malicious MQL execution attempt: ${jsonStr}`);
-    return Array.isArray(userQuery) ? [] : {};
+  for (const op of BLOCKED_OPERATORS) {
+    if (jsonStr.includes(op)) {
+      logger.warn(`[Alerts] Blocked malicious MQL operator ${op}: ${jsonStr.slice(0, 200)}`);
+      return Array.isArray(userQuery) ? [] : {};
+    }
   }
 
   return userQuery || {};
 };
 
-// --- 2. Collection & Parent Router ---
+// --- Collection & Parent Router ---
 const getTargetModel = (target: string) => {
   switch (target) {
     case 'apm': return { model: ApmTrace, parentModel: ApmService, foreignKey: 'serviceId', timeField: 'timestamp' };
@@ -51,27 +50,163 @@ const getTargetModel = (target: string) => {
   }
 };
 
-// --- 3. Notification Dispatcher ---
-const triggerNotifications = async (incident: any, condition: any) => {
-  try {
-    const policy = await AlertPolicy.findById(condition.policyId).populate('destinations').lean();
-    if (!policy || !policy.destinations || policy.destinations.length === 0) return;
-
-    const dispatchPromises = policy.destinations.map((dest: any) =>
-      dispatchAlert(dest, incident, condition, policy)
-    );
-
-    await Promise.allSettled(dispatchPromises);
-  } catch (err: any) {
-    logger.error(`[Alerts] Notification dispatch failed for condition ${condition._id}: ${err.message}`);
+// --- Threshold Evaluation ---
+const evaluateThreshold = (count: number, operator: string, value: number): boolean => {
+  switch (operator) {
+    case 'gt': return count > value;
+    case 'lt': return count < value;
+    case 'eq': return count === value;
+    case 'gte': return count >= value;
+    case 'lte': return count <= value;
+    case 'neq': return count !== value;
+    default: return false;
   }
 };
 
-// --- 4. The Core Evaluation Loop ---
+// --- Build Aggregation Pipeline ---
+const buildPipeline = async (ownerId: string, target: string, query: any, windowMins: number) => {
+  const now = new Date();
+  const targetDef = getTargetModel(target);
+  if (!targetDef) return null;
+
+  const { model: CollectionModel, parentModel, foreignKey, timeField } = targetDef;
+  const windowStart = new Date(now.getTime() - (windowMins * 60 * 1000));
+
+  let tenantIsolationMatch: any = {};
+  if (parentModel) {
+    const ownedParents = await (parentModel as any).find({ ownerId }).select('_id').lean();
+    const ownedIds = ownedParents.map((p: any) => p._id);
+    tenantIsolationMatch = { [foreignKey]: { $in: ownedIds } };
+  } else {
+    tenantIsolationMatch = { [foreignKey]: ownerId };
+  }
+
+  const pipeline: any[] = [
+    { $match: { ...tenantIsolationMatch, [timeField]: { $gte: windowStart } } }
+  ];
+
+  if (parentModel) {
+    pipeline.push({
+      $lookup: {
+        from: parentModel.collection.name,
+        localField: foreignKey,
+        foreignField: '_id',
+        as: 'service'
+      }
+    });
+    pipeline.push({ $unwind: { path: '$service', preserveNullAndEmptyArrays: true } });
+  }
+
+  const sanitizedQuery = sanitizeMql(query);
+  if (Array.isArray(sanitizedQuery)) {
+    if (sanitizedQuery.length > 0) pipeline.push(...sanitizedQuery);
+  } else if (sanitizedQuery && Object.keys(sanitizedQuery).length > 0) {
+    pipeline.push({ $match: sanitizedQuery });
+  }
+
+  pipeline.push({ $count: 'total' });
+
+  return { CollectionModel, pipeline };
+};
+
+// --- Check Active Silence Windows ---
+const isConditionSilenced = async (condition: any, activeSilences: any[]): Promise<boolean> => {
+  if (condition.muteUntil && condition.muteUntil > new Date()) return true;
+
+  for (const silence of activeSilences) {
+    const scope = silence.scope || {};
+
+    if (scope.conditionIds?.length > 0 &&
+      scope.conditionIds.some((id: any) => id.toString() === condition._id.toString())) {
+      return true;
+    }
+
+    if (scope.policyIds?.length > 0 &&
+      scope.policyIds.some((id: any) => id.toString() === condition.policyId.toString())) {
+      return true;
+    }
+
+    if (scope.targets?.length > 0 && scope.targets.includes(condition.target)) {
+      return true;
+    }
+
+    if (scope.labels?.length > 0 &&
+      condition.labels?.some((label: string) => scope.labels.includes(label))) {
+      return true;
+    }
+
+    // Empty scope = global silence
+    const hasScope = (scope.conditionIds?.length > 0) ||
+      (scope.policyIds?.length > 0) ||
+      (scope.targets?.length > 0) ||
+      (scope.labels?.length > 0);
+
+    if (!hasScope) return true;
+  }
+
+  return false;
+};
+
+// --- Notification Dispatcher ---
+const triggerNotifications = async (incident: any, condition: any): Promise<boolean> => {
+  try {
+    const policy = await AlertPolicy.findById(condition.policyId).populate('destinations').lean();
+    if (!policy || !policy.destinations || policy.destinations.length === 0) return false;
+
+    const results = await Promise.allSettled(
+      policy.destinations.map((dest: any) => dispatchAlert(dest, incident, condition, policy))
+    );
+
+    const failures = results.filter(r => r.status === 'rejected');
+    if (failures.length > 0) {
+      logger.warn(`[Alerts] ${failures.length}/${results.length} notification(s) failed for incident ${incident._id}`);
+    }
+
+    return failures.length < results.length;
+  } catch (err: any) {
+    logger.error(`[Alerts] Notification dispatch failed for condition ${condition._id}: ${err.message}`);
+    return false;
+  }
+};
+
+// --- Public: Dry-Run Evaluation (for Test Condition API) ---
+export const evaluateConditionDryRun = async (
+  ownerId: string,
+  target: string,
+  query: any,
+  threshold: { operator: string; value: number; windowMins: number }
+) => {
+  const result = await buildPipeline(ownerId, target, query, threshold.windowMins);
+  if (!result) return { error: 'Invalid target', count: 0, breached: false };
+
+  const { CollectionModel, pipeline } = result;
+
+  try {
+    const aggResult = await CollectionModel.aggregate(pipeline);
+    const count = aggResult.length > 0 ? aggResult[0].total : 0;
+    const breached = evaluateThreshold(count, threshold.operator, threshold.value);
+
+    return {
+      count,
+      breached,
+      threshold: `${threshold.operator} ${threshold.value}`,
+      windowMins: threshold.windowMins,
+      evaluatedAt: new Date().toISOString()
+    };
+  } catch (err: any) {
+    return {
+      error: `Aggregation failed: ${err.message}`,
+      count: 0,
+      breached: false
+    };
+  }
+};
+
+// --- Core Evaluation Loop ---
 export const runAlertWatchdogSweep = async () => {
   const now = new Date();
 
-  // Cluster-Safe Distributed Lock
+  // Distributed Lock
   try {
     await SystemLock.findOneAndUpdate(
       { lockName: LOCK_NAME },
@@ -79,7 +214,7 @@ export const runAlertWatchdogSweep = async () => {
       { upsert: true, new: true, rawResult: true }
     );
   } catch (lockError: any) {
-    if (lockError.code === 11000) return; // Another worker holds the lock. Silently bypass.
+    if (lockError.code === 11000) return;
     throw lockError;
   }
 
@@ -87,113 +222,120 @@ export const runAlertWatchdogSweep = async () => {
   let evaluated = 0;
   let fired = 0;
   let resolved = 0;
+  let silenced = 0;
 
   try {
-    const activeConditions = await AlertCondition.find({ isActive: true }).lean();
+    const [activeConditions, activeSilences] = await Promise.all([
+      AlertCondition.find({ isActive: true }).lean(),
+      AlertSilence.find({ startsAt: { $lte: now }, endsAt: { $gt: now } }).lean()
+    ]);
 
     for (const condition of activeConditions) {
       try {
         evaluated++;
-        const targetDef = getTargetModel(condition.target);
-        if (!targetDef) continue;
 
-        const { model: CollectionModel, parentModel, foreignKey, timeField } = targetDef;
-        const windowStart = new Date(now.getTime() - (condition.threshold.windowMins * 60 * 1000));
-
-        // --- Robust Tenant Isolation ---
-        let tenantIsolationMatch: any = {};
-
-        if (parentModel) {
-          const ownedParents = await (parentModel as any).find({ ownerId: condition.ownerId }).select('_id').lean();
-          const ownedIds = ownedParents.map((p: any) => p._id);
-          tenantIsolationMatch = { [foreignKey]: { $in: ownedIds } };
-        } else {
-          tenantIsolationMatch = { [foreignKey]: condition.ownerId };
+        // Check silence windows and per-condition mutes
+        if (await isConditionSilenced(condition, activeSilences)) {
+          silenced++;
+          continue;
         }
 
-        const safeMatch = {
-          ...tenantIsolationMatch,
-          [timeField]: { $gte: windowStart }
-        };
+        const result = await buildPipeline(condition.ownerId, condition.target, condition.query, condition.threshold.windowMins);
+        if (!result) continue;
 
-        // --- ENTERPRISE FIX: Pipeline Builder for Alerts ---
-        const pipeline: any[] = [{ $match: safeMatch }];
-
-        // Join Parent Service Data
-        if (parentModel) {
-          pipeline.push({
-            $lookup: {
-              from: parentModel.collection.name,
-              localField: foreignKey,
-              foreignField: '_id',
-              as: 'service'
-            }
-          });
-          pipeline.push({
-            $unwind: {
-              path: '$service',
-              preserveNullAndEmptyArrays: true
-            }
-          });
-        }
-
-        // Apply User Query/Pipeline
-        const sanitizedQuery = sanitizeMql(condition.query);
-        if (Array.isArray(sanitizedQuery)) {
-          if (sanitizedQuery.length > 0) pipeline.push(...sanitizedQuery);
-        } else {
-          if (sanitizedQuery && Object.keys(sanitizedQuery).length > 0) {
-            pipeline.push({ $match: sanitizedQuery });
-          }
-        }
-
-        // Execute natively accelerated Count
-        pipeline.push({ $count: 'total' });
+        const { CollectionModel, pipeline } = result;
         const aggResult = await CollectionModel.aggregate(pipeline);
         const count = aggResult.length > 0 ? aggResult[0].total : 0;
 
-        // Evaluate Threshold
-        let isBreached = false;
-        if (condition.threshold.operator === 'gt') isBreached = count > condition.threshold.value;
-        else if (condition.threshold.operator === 'lt') isBreached = count < condition.threshold.value;
-        else if (condition.threshold.operator === 'eq') isBreached = count === condition.threshold.value;
+        const isBreached = evaluateThreshold(count, condition.threshold.operator, condition.threshold.value);
 
-        // State Machine Check
-        const openIncident = await AlertIncident.findOne({ conditionId: condition._id, status: 'open' });
+        const openIncident = await AlertIncident.findOne({ conditionId: condition._id, status: { $in: ['open', 'acknowledged'] } });
 
         if (isBreached) {
           if (!openIncident) {
-            // STATE: NORMAL ➔ FIRED
+            // STATE: NORMAL -> FIRED
+            const incidentNumber = await getNextIncidentNumber(condition.ownerId);
+
+            const operatorSymbol = ({ gt: '>', lt: '<', eq: '==', gte: '>=', lte: '<=', neq: '!=' } as any)[condition.threshold.operator] || condition.threshold.operator;
+            const title = `${condition.name} — ${count} ${operatorSymbol} ${condition.threshold.value} in ${condition.threshold.windowMins}m`;
+
+            const timelineEntry: ITimelineEvent = {
+              type: 'fired',
+              message: `Alert fired: count ${count} breached threshold (${operatorSymbol} ${condition.threshold.value}) over ${condition.threshold.windowMins}m window`,
+              timestamp: now
+            };
+
             const newIncident = await AlertIncident.create({
               ownerId: condition.ownerId,
               policyId: condition.policyId,
               conditionId: condition._id,
+              incidentNumber,
+              title,
+              severity: condition.severity || 'high',
               status: 'open',
               triggerValue: count,
+              labels: condition.labels || [],
+              timeline: [timelineEntry],
+              lastNotifiedAt: now,
               openedAt: now
             });
-            fired++;
-            await triggerNotifications(newIncident, condition);
-          } else {
-            // STATE: FIRED ➔ STILL FIRED
-            openIncident.triggerValue = count;
-            await openIncident.save();
 
-            // Suppress noise unless frequency is 'always'
-            if (condition.frequency === 'always') {
-              await triggerNotifications(openIncident, condition);
+            fired++;
+
+            const sent = await triggerNotifications(newIncident, condition);
+            if (sent) {
+              newIncident.timeline.push({
+                type: 'notification_sent',
+                message: 'Notifications dispatched to policy destinations',
+                timestamp: new Date()
+              });
+            } else {
+              newIncident.timeline.push({
+                type: 'notification_failed',
+                message: 'One or more notification channels failed',
+                timestamp: new Date()
+              });
             }
+            await newIncident.save();
+
+          } else {
+            // STATE: STILL BREACHED
+            openIncident.triggerValue = count;
+
+            if (condition.frequency === 'always') {
+              openIncident.lastNotifiedAt = now;
+              await triggerNotifications(openIncident, condition);
+              openIncident.timeline.push({
+                type: 'notification_sent',
+                message: `Re-notification sent (frequency=always), current value: ${count}`,
+                timestamp: now
+              });
+            }
+
+            await openIncident.save();
           }
         } else {
           if (openIncident) {
-            // STATE: FIRED ➔ RESOLVED
+            // STATE: BREACHED -> RESOLVED
             openIncident.status = 'resolved';
             openIncident.resolvedAt = now;
             openIncident.triggerValue = count;
-            await openIncident.save();
+            openIncident.timeline.push({
+              type: 'resolved',
+              message: `Auto-resolved: count ${count} no longer breaches threshold`,
+              timestamp: now
+            });
 
             resolved++;
-            await triggerNotifications(openIncident, condition);
+            const sent = await triggerNotifications(openIncident, condition);
+            if (sent) {
+              openIncident.timeline.push({
+                type: 'notification_sent',
+                message: 'Resolution notifications dispatched',
+                timestamp: new Date()
+              });
+            }
+            await openIncident.save();
           }
         }
 
@@ -204,20 +346,18 @@ export const runAlertWatchdogSweep = async () => {
 
     const elapsed = Date.now() - startTime;
     if (evaluated > 0) {
-      logger.info(`[Alerts] Sweep complete in ${elapsed}ms. Evaluated: ${evaluated}, Fired: ${fired}, Resolved: ${resolved}`);
+      logger.info(`[Alerts] Sweep complete in ${elapsed}ms. Evaluated: ${evaluated}, Fired: ${fired}, Resolved: ${resolved}, Silenced: ${silenced}`);
     }
 
   } catch (err: any) {
     logger.error(`[Alerts] Fatal Sweep Error: ${err.message}`);
   } finally {
-    // Release the lock
     await SystemLock.findOneAndDelete({ lockName: LOCK_NAME, lockedBy: WORKER_ID }).catch(() => { });
   }
 };
 
 export const startAlertWatchdog = () => {
   logger.info('[Worker] Alert Evaluation Engine Scheduled');
-  // Tick every 1 minute
   cron.schedule('* * * * *', async () => {
     try {
       await runAlertWatchdogSweep();
