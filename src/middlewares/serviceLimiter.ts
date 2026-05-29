@@ -13,7 +13,7 @@ import { logger } from '../utils/logger';
 export const requireServiceQuota = (modelName: string, serviceName: string) => {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
-      const ownerId = (req as any).user?.uid || (req as any).workspaceId;
+      const ownerId = (req as any).ownerId || (req as any).user?.uid || (req as any).workspaceId;
       if (!ownerId) {
         return res.status(401).json({ error: "Unauthorized: Missing user context." });
       }

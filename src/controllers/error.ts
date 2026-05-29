@@ -24,7 +24,7 @@ const mapErrorGroupDTO = (g: any) => {
 
 export const getGlobalErrors = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const search = req.query.search as string;
@@ -32,7 +32,7 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
     const reqServiceId = req.query.serviceId as string;
     const { range, start, end } = req.query;
 
-    const maxRetention = await getEffectiveRetention('errors', uid);
+    const maxRetention = await getEffectiveRetention('errors', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string, start: start as string, end: end as string },
       maxRetention
@@ -40,7 +40,7 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
     const { startDate, endDate, bucketFormat } = resolved;
     const meta = buildTimeRangeMeta(resolved, maxRetention);
 
-    const query: any = { ownerId: uid, lastSeen: { $gte: startDate, $lte: endDate } };
+    const query: any = { ownerId, lastSeen: { $gte: startDate, $lte: endDate } };
     if (status !== 'all') query.status = status;
     if (reqServiceId) query.serviceId = reqServiceId;
 
@@ -70,9 +70,9 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
     } else {
       // If no specific service is selected, aggregate across ALL services the user owns
       const [userApms, userTasks, userRums] = await Promise.all([
-        ApmService.find({ ownerId: uid }).select('_id').lean(),
-        TaskService.find({ ownerId: uid }).select('_id').lean(),
-        RumService.find({ ownerId: uid }).select('_id').lean() // NEW: Fetch RUM services
+        ApmService.find({ ownerId }).select('_id').lean(),
+        TaskService.find({ ownerId }).select('_id').lean(),
+        RumService.find({ ownerId }).select('_id').lean() // NEW: Fetch RUM services
       ]);
       serviceIdsMatch = [
         ...userApms.map(a => a._id),
@@ -91,7 +91,7 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
         { $match: { serviceId: { $in: serviceIdsMatch }, timestamp: { $gte: startDate, $lte: endDate } } },
         { $group: { _id: null, count: { $sum: 1 }, uniqueServices: { $addToSet: "$serviceId" } } }
       ]),
-      ErrorGroup.countDocuments({ ownerId: uid, status: 'unresolved', lastSeen: { $gte: startDate, $lte: endDate } })
+      ErrorGroup.countDocuments({ ownerId, status: 'unresolved', lastSeen: { $gte: startDate, $lte: endDate } })
     ]);
 
     const trend = fillTimeGaps(trendRaw, resolved, ERROR_TREND_DEFAULTS);
@@ -115,11 +115,11 @@ export const getGlobalErrors = async (req: Request, res: Response, next: NextFun
 
 export const getErrorGroupDetails = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { groupId } = req.params;
     const { range, start, end } = req.query;
 
-    const maxRetention = await getEffectiveRetention('errors', uid);
+    const maxRetention = await getEffectiveRetention('errors', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string, start: start as string, end: end as string },
       maxRetention
@@ -127,7 +127,7 @@ export const getErrorGroupDetails = async (req: Request, res: Response, next: Ne
     const { startDate, endDate, bucketFormat } = resolved;
     const detailMeta = buildTimeRangeMeta(resolved, maxRetention);
 
-    const groupRaw = await ErrorGroup.findOne({ _id: groupId, ownerId: uid })
+    const groupRaw = await ErrorGroup.findOne({ _id: groupId, ownerId })
       .populate('serviceId', 'name framework status domain') // Fetches domain if it's a RUM service
       .lean();
 
@@ -157,7 +157,7 @@ export const getErrorGroupDetails = async (req: Request, res: Response, next: Ne
 
 export const updateErrorStatus = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { groupId } = req.params;
     const { status } = req.body;
 
@@ -166,7 +166,7 @@ export const updateErrorStatus = async (req: Request, res: Response, next: NextF
     }
 
     const updated = await ErrorGroup.findOneAndUpdate(
-      { _id: groupId, ownerId: uid },
+      { _id: groupId, ownerId },
       { $set: { status } },
       { new: true }
     );

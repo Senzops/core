@@ -6,13 +6,13 @@ import { resolveTimeRange, getEffectiveRetention, buildTimeRangeMeta, TimeRangeE
 export const getDatabaseStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { range, start, end } = req.query;
 
-    const db = await DatabaseService.findOne({ _id: id, ownerId: uid }).select('-encryptedUri');
+    const db = await DatabaseService.findOne({ _id: id, ownerId }).select('-encryptedUri');
     if (!db) return res.status(404).json({ error: "Database not found" });
 
-    const maxRetention = await getEffectiveRetention('database', uid);
+    const maxRetention = await getEffectiveRetention('database', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string, start: start as string, end: end as string },
       maxRetention

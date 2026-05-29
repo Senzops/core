@@ -11,15 +11,15 @@ const GRAPH_DEFAULTS = {
 export const getApmStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { range, route, start, end } = req.query;
 
     // 1. Verify Ownership
-    const service = await ApmService.findOne({ _id: id, ownerId: uid });
+    const service = await ApmService.findOne({ _id: id, ownerId });
     if (!service) return res.status(404).json({ error: "Service not found" });
 
     // 2. Resolve Time Range
-    const maxRetention = await getEffectiveRetention('apm', uid);
+    const maxRetention = await getEffectiveRetention('apm', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string, start: start as string, end: end as string },
       maxRetention

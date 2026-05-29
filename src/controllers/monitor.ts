@@ -7,11 +7,12 @@ import { resolveTimeRange, getEffectiveRetention, TimeRangeError } from '../util
 // --- Register ---
 export const registerMonitor = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid, email } = (req as any).user;
+    const ownerId = (req as any).ownerId;
+    const { email } = (req as any).user;
     const { name, url, interval } = RegisterMonitorSchema.parse(req.body);
 
     const newMonitor = await Monitor.create({
-      ownerId: uid,
+      ownerId,
       name,
       url,
       interval,
@@ -27,8 +28,8 @@ export const registerMonitor = async (req: Request, res: Response, next: NextFun
 // --- List ---
 export const listMonitors = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
-    const list = await Monitor.find({ ownerId: uid }).sort({ createdAt: -1 });
+    const ownerId = (req as any).ownerId;
+    const list = await Monitor.find({ ownerId }).sort({ createdAt: -1 });
     res.json(list);
   } catch (error) {
     next(error);
@@ -38,7 +39,7 @@ export const listMonitors = async (req: Request, res: Response, next: NextFuncti
 // --- Update ---
 export const updateMonitor = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const updates = UpdateMonitorSchema.parse(req.body);
 
@@ -48,7 +49,7 @@ export const updateMonitor = async (req: Request, res: Response, next: NextFunct
     if (updates.interval !== undefined) updateFields.interval = updates.interval;
 
     const updated = await Monitor.findOneAndUpdate(
-      { _id: id, ownerId: uid },
+      { _id: id, ownerId },
       updateFields,
       { new: true, runValidators: true }
     );
@@ -63,10 +64,10 @@ export const updateMonitor = async (req: Request, res: Response, next: NextFunct
 // --- Delete ---
 export const deleteMonitor = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const result = await Monitor.findOneAndDelete({ _id: id, ownerId: uid });
+    const result = await Monitor.findOneAndDelete({ _id: id, ownerId });
     if (!result) return res.status(404).json({ error: 'Monitor not found' });
 
     await MonitorRun.deleteMany({ monitorId: id });
@@ -81,15 +82,15 @@ export const deleteMonitor = async (req: Request, res: Response, next: NextFunct
 export const getMonitorStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { range, start, end } = req.query;
 
     // 1. Verify Ownership
-    const monitor = await Monitor.findOne({ _id: id, ownerId: uid });
+    const monitor = await Monitor.findOne({ _id: id, ownerId });
     if (!monitor) return res.status(404).json({ error: "Monitor not found" });
 
     // 2. Resolve time range via centralized utility
-    const maxRetention = await getEffectiveRetention('monitor', uid);
+    const maxRetention = await getEffectiveRetention('monitor', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string | undefined, start: start as string | undefined, end: end as string | undefined },
       maxRetention

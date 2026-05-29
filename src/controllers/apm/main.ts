@@ -6,14 +6,14 @@ import { RegisterApmSchema, UpdateApmSchema } from '../../utils/validation';
 // --- Register New Service ---
 export const registerService = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { name, framework } = RegisterApmSchema.parse(req.body);
 
     // Generate specific APM Key (Prefix with sz_apm_ for clarity)
     const apiKey = `sz_apm_${crypto.randomBytes(24).toString('hex')}`;
 
     const newService = await ApmService.create({
-      ownerId: uid,
+      ownerId,
       name,
       apiKey,
       framework: framework || 'unknown'
@@ -32,8 +32,8 @@ export const registerService = async (req: Request, res: Response, next: NextFun
 // --- List Services ---
 export const listServices = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
-    const services = await ApmService.find({ ownerId: uid }).sort({ createdAt: -1 });
+    const ownerId = (req as any).ownerId;
+    const services = await ApmService.find({ ownerId }).sort({ createdAt: -1 });
     res.json(services);
   } catch (error) {
     next(error);
@@ -43,12 +43,12 @@ export const listServices = async (req: Request, res: Response, next: NextFuncti
 // --- Update Service ---
 export const updateService = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const updates = UpdateApmSchema.parse(req.body);
 
     const updated = await ApmService.findOneAndUpdate(
-      { _id: id, ownerId: uid },
+      { _id: id, ownerId },
       updates,
       { new: true, runValidators: true }
     );
@@ -63,10 +63,10 @@ export const updateService = async (req: Request, res: Response, next: NextFunct
 // --- Delete Service ---
 export const deleteService = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const result = await ApmService.findOneAndDelete({ _id: id, ownerId: uid });
+    const result = await ApmService.findOneAndDelete({ _id: id, ownerId });
     if (!result) return res.status(404).json({ error: 'Service not found' });
 
     // Cascade delete traces

@@ -93,6 +93,23 @@ import { cancelSubscription, changePlan, getActivePlans, getCurrentSubscription,
 import { deleteAccount, syncUser } from '../controllers/user';
 import { getDynamicSchema } from '../controllers/schema';
 import { getDashboardCapabilities } from '../controllers/dashboard/capabilities';
+import { resolveWorkspace } from '../middlewares/orgAuth';
+import {
+  createOrganization,
+  listOrganizations,
+  getOrganization,
+  updateOrganization,
+  deleteOrganization,
+  listMembers,
+  updateMember,
+  removeMember,
+  sendInvitation,
+  listInvitations,
+  revokeInvitation,
+  acceptInvitation,
+  getInvitationDetails,
+  transferOwnership,
+} from '../controllers/organization/main';
 
 
 if (!process.env.MONGO_URI) {
@@ -195,6 +212,7 @@ ingestRouter.post('/logs', apmLimiter, requireIngestionQuota, ingestGlobalLogs);
 // 2. VPS API (Frontend User)
 const apiRouter = express.Router();
 apiRouter.use(authenticateUser);
+apiRouter.use(resolveWorkspace);
 apiRouter.post('/vps/register', apiLimiter, requireServiceQuota('Vps', 'Server'), registerVps);
 apiRouter.get('/vps/list', listVps);
 apiRouter.put('/vps/:id', updateVps);
@@ -335,6 +353,26 @@ otlpRouter.post('/v1/traces', ingestOtlpTraces);
 otlpRouter.post('/v1/logs', ingestOtlpLogs);
 
 // ============================================================================
+// ORGANIZATION API
+// ============================================================================
+apiRouter.post('/org', createOrganization);
+apiRouter.get('/org', listOrganizations);
+apiRouter.get('/org/:orgId', getOrganization);
+apiRouter.put('/org/:orgId', updateOrganization);
+apiRouter.delete('/org/:orgId', deleteOrganization);
+
+apiRouter.get('/org/:orgId/members', listMembers);
+apiRouter.put('/org/:orgId/members/:memberId', updateMember);
+apiRouter.delete('/org/:orgId/members/:memberId', removeMember);
+apiRouter.post('/org/:orgId/members/:memberId/transfer', transferOwnership);
+
+apiRouter.post('/org/:orgId/invitations', sendInvitation);
+apiRouter.get('/org/:orgId/invitations', listInvitations);
+apiRouter.delete('/org/:orgId/invitations/:invitationId', revokeInvitation);
+
+apiRouter.post('/org/invitations/accept', acceptInvitation);
+
+// ============================================================================
 // BILLING & MONETIZATION API
 // ============================================================================
 // Billing Profile
@@ -352,8 +390,8 @@ billingRouter.get('/plans', getActivePlans);
 billingRouter.post('/paddle-webhook', webhookLimiter, handlePaddleWebhook);
 billingRouter.post('/dodo-webhook', webhookLimiter, handleDodoWebhook);
 
-// Protected Billing Routes (Requires User Auth)
-billingRouter.get('/subscription', authenticateUser, getCurrentSubscription);
+// Protected Billing Routes (Requires User Auth + Workspace Context)
+billingRouter.get('/subscription', authenticateUser, resolveWorkspace, getCurrentSubscription);
 
 // User Profile
 apiRouter.post('/user/sync', syncUser);
@@ -377,6 +415,9 @@ app.use('/api/ingest', ingestRouter);
 
 // Mount the OTLP router
 app.use('/api/otlp', otlpRouter);
+
+// Public Organization Routes (No Auth Required)
+app.get('/api/org/invitations/details', getInvitationDetails);
 
 // Mount Dashboard API SECOND.
 // This catches everything else starting with /api (like /api/vps/...)

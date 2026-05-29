@@ -9,10 +9,10 @@ const TASK_TREND_DEFAULTS = { runs: 0, failures: 0, durationSum: 0, queueDelaySu
 export const getTaskServiceDashboard = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { range, start, end } = req.query;
 
-    const maxRetention = await getEffectiveRetention('task', uid);
+    const maxRetention = await getEffectiveRetention('task', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string, start: start as string, end: end as string },
       maxRetention
@@ -20,7 +20,7 @@ export const getTaskServiceDashboard = async (req: Request, res: Response, next:
     const { startDate, endDate, bucketFormat } = resolved;
     const meta = buildTimeRangeMeta(resolved, maxRetention);
 
-    const service = await TaskService.findOne({ _id: id, ownerId: uid }).lean();
+    const service = await TaskService.findOne({ _id: id, ownerId }).lean();
     if (!service) return res.status(404).json({ error: "Service not found" });
 
     const serviceIdObj = new mongoose.Types.ObjectId(id);
@@ -111,10 +111,10 @@ export const getTaskServiceDashboard = async (req: Request, res: Response, next:
 export const getTaskEntityDetail = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id, taskName } = req.params;
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { range, start, end } = req.query;
 
-    const maxRetention = await getEffectiveRetention('task', uid);
+    const maxRetention = await getEffectiveRetention('task', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string, start: start as string, end: end as string },
       maxRetention
@@ -122,7 +122,7 @@ export const getTaskEntityDetail = async (req: Request, res: Response, next: Nex
     const { startDate, endDate, bucketFormat } = resolved;
     const meta = buildTimeRangeMeta(resolved, maxRetention);
 
-    const service = await TaskService.findOne({ _id: id, ownerId: uid }).lean();
+    const service = await TaskService.findOne({ _id: id, ownerId }).lean();
     if (!service) return res.status(404).json({ error: "Service not found" });
 
     const serviceIdObj = new mongoose.Types.ObjectId(id);

@@ -6,7 +6,7 @@ import { ErrorGroup, ErrorEvent } from '../../models/Error';
 // --- Register New RUM Service ---
 export const registerService = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { name, domains } = req.body; // 'domains' is expected as a comma-separated string
 
     if (!name || !domains) {
@@ -26,7 +26,7 @@ export const registerService = async (req: Request, res: Response, next: NextFun
     const apiKey = `sz_rum_${crypto.randomBytes(24).toString('hex')}`;
 
     const newService = await RumService.create({
-      ownerId: uid,
+      ownerId,
       name,
       domains: domainArray,
       apiKey,
@@ -47,8 +47,8 @@ export const registerService = async (req: Request, res: Response, next: NextFun
 // --- List RUM Services ---
 export const listServices = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
-    const services = await RumService.find({ ownerId: uid })
+    const ownerId = (req as any).ownerId;
+    const services = await RumService.find({ ownerId })
       .select('-apiKey')
       .sort({ createdAt: -1 })
       .lean();
@@ -62,7 +62,7 @@ export const listServices = async (req: Request, res: Response, next: NextFuncti
 // --- Update RUM Service ---
 export const updateRumService = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { name, domains } = req.body;
 
@@ -88,7 +88,7 @@ export const updateRumService = async (req: Request, res: Response, next: NextFu
     }
 
     const updated = await RumService.findOneAndUpdate(
-      { _id: id, ownerId: uid },
+      { _id: id, ownerId },
       updateFields,
       { new: true, runValidators: true }
     ).select('-apiKey');
@@ -103,10 +103,10 @@ export const updateRumService = async (req: Request, res: Response, next: NextFu
 // --- Delete RUM Service & Cascade Purge ---
 export const deleteService = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const result = await RumService.findOneAndDelete({ _id: id, ownerId: uid });
+    const result = await RumService.findOneAndDelete({ _id: id, ownerId });
     if (!result) return res.status(404).json({ error: 'RUM Service not found' });
 
     const traceDelete = RumTrace.deleteMany({ serviceId: id });

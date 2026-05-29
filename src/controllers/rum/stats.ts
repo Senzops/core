@@ -15,11 +15,11 @@ const safeAvg = (sum: number, count: number) => (count > 0 ? sum / count : 0);
 export const getRumDashboard = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { range, start, end } = req.query;
     const pathFilter = req.query.path as string;
 
-    const maxRetention = await getEffectiveRetention('rum', uid);
+    const maxRetention = await getEffectiveRetention('rum', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string, start: start as string, end: end as string },
       maxRetention
@@ -27,7 +27,7 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
     const { startDate, endDate, bucketFormat } = resolved;
     const meta = buildTimeRangeMeta(resolved, maxRetention);
 
-    const service = await RumService.findOne({ _id: id, ownerId: uid }).lean();
+    const service = await RumService.findOne({ _id: id, ownerId }).lean();
     if (!service) return res.status(404).json({ error: "RUM Service not found" });
 
     const serviceIdObj = new mongoose.Types.ObjectId(id);
@@ -158,7 +158,7 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
 export const getRumTraceDetail = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id, traceId } = req.params;
-    const { uid } = (req as any).user; // We need UID to securely fetch user's APM services
+    const ownerId = (req as any).ownerId; // We need UID to securely fetch user's APM services
 
     const trace = await RumTrace.findOne({ serviceId: id, traceId }).lean();
     if (!trace) return res.status(404).json({ error: "RUM Trace not found" });
@@ -177,7 +177,7 @@ export const getRumTraceDetail = async (req: Request, res: Response, next: NextF
 
     // 1. Find Related APM Services (Owned by the same user)
     // This ensures we only link downstream backend traces that belong to this tenant
-    const userServices = await ApmService.find({ ownerId: uid }).select('_id name').lean();
+    const userServices = await ApmService.find({ ownerId }).select('_id name').lean();
     const serviceIds = userServices.map(s => s._id);
 
     // Create a dictionary for instant O(1) mapping of Service ID -> Service Name

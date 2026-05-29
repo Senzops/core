@@ -15,7 +15,7 @@ import {
 // ============================================================================
 export const createDestination = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { name, type, config } = req.body;
 
     if (!name || !type || !config) {
@@ -30,27 +30,27 @@ export const createDestination = async (req: Request, res: Response, next: NextF
       return res.status(400).json({ error: `${type} destinations require a webhookUrl` });
     }
 
-    const destination = await AlertDestination.create({ ownerId: uid, name, type, config });
+    const destination = await AlertDestination.create({ ownerId, name, type, config });
     res.status(201).json({ destination });
   } catch (error) { next(error); }
 };
 
 export const listDestinations = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
-    const destinations = await AlertDestination.find({ ownerId: uid }).sort({ createdAt: -1 }).lean();
+    const ownerId = (req as any).ownerId;
+    const destinations = await AlertDestination.find({ ownerId }).sort({ createdAt: -1 }).lean();
     res.json({ destinations });
   } catch (error) { next(error); }
 };
 
 export const updateDestination = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { name, type, config } = req.body;
 
     const destination = await AlertDestination.findOneAndUpdate(
-      { _id: id, ownerId: uid },
+      { _id: id, ownerId },
       { name, type, config },
       { new: true }
     );
@@ -62,14 +62,14 @@ export const updateDestination = async (req: Request, res: Response, next: NextF
 
 export const deleteDestination = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const destination = await AlertDestination.findOneAndDelete({ _id: id, ownerId: uid });
+    const destination = await AlertDestination.findOneAndDelete({ _id: id, ownerId });
     if (!destination) return res.status(404).json({ error: 'Destination not found or access denied' });
 
     await AlertPolicy.updateMany(
-      { ownerId: uid, destinations: id },
+      { ownerId, destinations: id },
       { $pull: { destinations: id } }
     );
 
@@ -83,21 +83,21 @@ export const deleteDestination = async (req: Request, res: Response, next: NextF
 // ============================================================================
 export const createPolicy = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { name, description, destinations } = req.body;
 
     if (!name) return res.status(400).json({ error: 'Policy name is required' });
 
-    const policy = await AlertPolicy.create({ ownerId: uid, name, description, destinations });
+    const policy = await AlertPolicy.create({ ownerId, name, description, destinations });
     res.status(201).json({ policy });
   } catch (error) { next(error); }
 };
 
 export const listPolicies = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
 
-    const policies = await AlertPolicy.find({ ownerId: uid })
+    const policies = await AlertPolicy.find({ ownerId })
       .populate('destinations', 'name type')
       .sort({ createdAt: -1 })
       .lean();
@@ -117,10 +117,10 @@ export const listPolicies = async (req: Request, res: Response, next: NextFuncti
 
 export const getPolicyDetails = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const policy = await AlertPolicy.findOne({ _id: id, ownerId: uid }).populate('destinations').lean();
+    const policy = await AlertPolicy.findOne({ _id: id, ownerId }).populate('destinations').lean();
     if (!policy) return res.status(404).json({ error: 'Policy not found' });
 
     const conditions = await AlertCondition.find({ policyId: id }).sort({ createdAt: -1 }).lean();
@@ -137,12 +137,12 @@ export const getPolicyDetails = async (req: Request, res: Response, next: NextFu
 
 export const updatePolicy = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { name, description, destinations } = req.body;
 
     const policy = await AlertPolicy.findOneAndUpdate(
-      { _id: id, ownerId: uid },
+      { _id: id, ownerId },
       { name, description, destinations },
       { new: true }
     );
@@ -154,10 +154,10 @@ export const updatePolicy = async (req: Request, res: Response, next: NextFuncti
 
 export const deletePolicy = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const policy = await AlertPolicy.findOneAndDelete({ _id: id, ownerId: uid });
+    const policy = await AlertPolicy.findOneAndDelete({ _id: id, ownerId });
     if (!policy) return res.status(404).json({ error: 'Policy not found or access denied' });
 
     await Promise.all([
@@ -175,18 +175,18 @@ export const deletePolicy = async (req: Request, res: Response, next: NextFuncti
 // ============================================================================
 export const createCondition = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { policyId, name, description, target, query, threshold, severity, frequency, labels } = req.body;
 
     if (!policyId || !name || !target || !threshold) {
       return res.status(400).json({ error: 'policyId, name, target, and threshold are required' });
     }
 
-    const policy = await AlertPolicy.findOne({ _id: policyId, ownerId: uid });
+    const policy = await AlertPolicy.findOne({ _id: policyId, ownerId });
     if (!policy) return res.status(403).json({ error: 'Invalid Policy ID' });
 
     const condition = await AlertCondition.create({
-      ownerId: uid, policyId, name, description, target, query,
+      ownerId, policyId, name, description, target, query,
       threshold, severity: severity || 'high', frequency, labels
     });
 
@@ -196,11 +196,11 @@ export const createCondition = async (req: Request, res: Response, next: NextFun
 
 export const updateCondition = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { name, description, target, query, threshold, severity, frequency, labels, isActive } = req.body;
 
-    const conditionRaw = await AlertCondition.findOne({ _id: id, ownerId: uid }).lean();
+    const conditionRaw = await AlertCondition.findOne({ _id: id, ownerId }).lean();
     if (!conditionRaw) {
       return res.status(404).json({ error: 'Condition not found or access denied' });
     }
@@ -235,10 +235,10 @@ export const updateCondition = async (req: Request, res: Response, next: NextFun
 
 export const deleteCondition = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const condition = await AlertCondition.findOneAndDelete({ _id: id, ownerId: uid });
+    const condition = await AlertCondition.findOneAndDelete({ _id: id, ownerId });
     if (!condition) return res.status(404).json({ error: 'Condition not found or access denied' });
 
     await AlertIncident.deleteMany({ conditionId: id });
@@ -249,7 +249,7 @@ export const deleteCondition = async (req: Request, res: Response, next: NextFun
 
 export const muteCondition = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { durationMins } = req.body;
 
@@ -260,7 +260,7 @@ export const muteCondition = async (req: Request, res: Response, next: NextFunct
     const muteUntil = new Date(Date.now() + durationMins * 60 * 1000);
 
     const condition = await AlertCondition.findOneAndUpdate(
-      { _id: id, ownerId: uid },
+      { _id: id, ownerId },
       { muteUntil },
       { new: true }
     );
@@ -272,11 +272,11 @@ export const muteCondition = async (req: Request, res: Response, next: NextFunct
 
 export const unmuteCondition = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
     const condition = await AlertCondition.findOneAndUpdate(
-      { _id: id, ownerId: uid },
+      { _id: id, ownerId },
       { muteUntil: null },
       { new: true }
     );
@@ -288,7 +288,7 @@ export const unmuteCondition = async (req: Request, res: Response, next: NextFun
 
 export const testCondition = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { target, query, threshold } = req.body;
 
     if (!target || !threshold) {
@@ -297,7 +297,7 @@ export const testCondition = async (req: Request, res: Response, next: NextFunct
 
     // Dynamically import the evaluation logic
     const { evaluateConditionDryRun } = await import('../worker/alertWatchdog');
-    const result = await evaluateConditionDryRun(uid, target, query || [], threshold);
+    const result = await evaluateConditionDryRun(ownerId, target, query || [], threshold);
 
     res.json(result);
   } catch (error) { next(error); }
@@ -309,10 +309,10 @@ export const testCondition = async (req: Request, res: Response, next: NextFunct
 // ============================================================================
 export const listIncidents = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { status, severity, policyId, limit = '50', offset = '0', sort = '-openedAt' } = req.query;
 
-    const filter: any = { ownerId: uid };
+    const filter: any = { ownerId };
     if (status && status !== 'all') filter.status = status;
     if (severity && severity !== 'all') filter.severity = severity;
     if (policyId) filter.policyId = policyId;
@@ -330,7 +330,7 @@ export const listIncidents = async (req: Request, res: Response, next: NextFunct
         .lean(),
       AlertIncident.countDocuments(filter),
       AlertIncident.aggregate([
-        { $match: { ownerId: uid } },
+        { $match: { ownerId } },
         { $group: { _id: '$status', count: { $sum: 1 } } }
       ])
     ]);
@@ -348,10 +348,10 @@ export const listIncidents = async (req: Request, res: Response, next: NextFunct
 
 export const getIncidentDetail = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const incident = await AlertIncident.findOne({ _id: id, ownerId: uid })
+    const incident = await AlertIncident.findOne({ _id: id, ownerId })
       .populate('conditionId', 'name target severity threshold query description labels')
       .populate('policyId', 'name description destinations')
       .lean();
@@ -372,7 +372,7 @@ export const getIncidentDetail = async (req: Request, res: Response, next: NextF
 
 export const updateIncidentStatus = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { status } = req.body;
 
@@ -380,7 +380,7 @@ export const updateIncidentStatus = async (req: Request, res: Response, next: Ne
       return res.status(400).json({ error: 'Status must be acknowledged or resolved' });
     }
 
-    const incident = await AlertIncident.findOne({ _id: id, ownerId: uid });
+    const incident = await AlertIncident.findOne({ _id: id, ownerId });
     if (!incident) return res.status(404).json({ error: 'Incident not found or access denied' });
 
     if (incident.status === 'resolved' && status !== 'resolved') {
@@ -393,7 +393,7 @@ export const updateIncidentStatus = async (req: Request, res: Response, next: Ne
       message: status === 'acknowledged'
         ? 'Incident acknowledged by operator'
         : 'Incident manually resolved by operator',
-      userId: uid,
+      userId: (req as any).user?.uid,
       timestamp: now
     };
 
@@ -414,7 +414,7 @@ export const updateIncidentStatus = async (req: Request, res: Response, next: Ne
 
 export const updateIncidentSeverity = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { severity } = req.body;
 
@@ -422,7 +422,7 @@ export const updateIncidentSeverity = async (req: Request, res: Response, next: 
       return res.status(400).json({ error: 'Invalid severity level' });
     }
 
-    const incident = await AlertIncident.findOne({ _id: id, ownerId: uid });
+    const incident = await AlertIncident.findOne({ _id: id, ownerId });
     if (!incident) return res.status(404).json({ error: 'Incident not found or access denied' });
 
     const oldSeverity = incident.severity;
@@ -430,7 +430,7 @@ export const updateIncidentSeverity = async (req: Request, res: Response, next: 
     incident.timeline.push({
       type: 'severity_changed',
       message: `Severity changed from ${oldSeverity} to ${severity}`,
-      userId: uid,
+      userId: (req as any).user?.uid,
       timestamp: new Date()
     });
 
@@ -441,18 +441,18 @@ export const updateIncidentSeverity = async (req: Request, res: Response, next: 
 
 export const assignIncident = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { assigneeId } = req.body;
 
-    const incident = await AlertIncident.findOne({ _id: id, ownerId: uid });
+    const incident = await AlertIncident.findOne({ _id: id, ownerId });
     if (!incident) return res.status(404).json({ error: 'Incident not found or access denied' });
 
     incident.assigneeId = assigneeId || undefined;
     incident.timeline.push({
       type: 'assigned',
       message: assigneeId ? `Incident assigned to ${assigneeId}` : 'Incident unassigned',
-      userId: uid,
+      userId: (req as any).user?.uid,
       timestamp: new Date()
     });
 
@@ -463,7 +463,7 @@ export const assignIncident = async (req: Request, res: Response, next: NextFunc
 
 export const addIncidentNote = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { content } = req.body;
 
@@ -475,13 +475,13 @@ export const addIncidentNote = async (req: Request, res: Response, next: NextFun
       return res.status(400).json({ error: 'Note content must be under 2000 characters' });
     }
 
-    const incident = await AlertIncident.findOne({ _id: id, ownerId: uid });
+    const incident = await AlertIncident.findOne({ _id: id, ownerId });
     if (!incident) return res.status(404).json({ error: 'Incident not found or access denied' });
 
     incident.timeline.push({
       type: 'note',
       message: content.trim(),
-      userId: uid,
+      userId: (req as any).user?.uid,
       timestamp: new Date()
     });
 
@@ -492,7 +492,7 @@ export const addIncidentNote = async (req: Request, res: Response, next: NextFun
 
 export const bulkUpdateIncidents = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { incidentIds, action } = req.body;
 
     if (!Array.isArray(incidentIds) || incidentIds.length === 0) {
@@ -515,7 +515,7 @@ export const bulkUpdateIncidents = async (req: Request, res: Response, next: Nex
     const timelineEntry = {
       type: status,
       message: `Incident bulk ${status} by operator`,
-      userId: uid,
+      userId: (req as any).user?.uid,
       timestamp: now
     };
 
@@ -528,7 +528,7 @@ export const bulkUpdateIncidents = async (req: Request, res: Response, next: Nex
     if (status === 'resolved') update.resolvedAt = now;
 
     const result = await AlertIncident.updateMany(
-      { _id: { $in: incidentIds }, ownerId: uid, ...statusFilter },
+      { _id: { $in: incidentIds }, ownerId, ...statusFilter },
       update
     );
 
@@ -542,7 +542,7 @@ export const bulkUpdateIncidents = async (req: Request, res: Response, next: Nex
 // ============================================================================
 export const createSilence = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { name, reason, startsAt, endsAt, scope } = req.body;
 
     if (!name || !reason || !startsAt || !endsAt) {
@@ -561,10 +561,10 @@ export const createSilence = async (req: Request, res: Response, next: NextFunct
     }
 
     const silence = await AlertSilence.create({
-      ownerId: uid, name, reason,
+      ownerId, name, reason,
       startsAt: start, endsAt: end,
       scope: scope || {},
-      createdBy: uid
+      createdBy: (req as any).user?.uid
     });
 
     res.status(201).json({ silence });
@@ -573,10 +573,10 @@ export const createSilence = async (req: Request, res: Response, next: NextFunct
 
 export const listSilences = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { active } = req.query;
 
-    const filter: any = { ownerId: uid };
+    const filter: any = { ownerId };
     if (active === 'true') {
       const now = new Date();
       filter.startsAt = { $lte: now };
@@ -590,10 +590,10 @@ export const listSilences = async (req: Request, res: Response, next: NextFuncti
 
 export const deleteSilence = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const silence = await AlertSilence.findOneAndDelete({ _id: id, ownerId: uid });
+    const silence = await AlertSilence.findOneAndDelete({ _id: id, ownerId });
     if (!silence) return res.status(404).json({ error: 'Silence window not found or access denied' });
 
     res.json({ success: true, message: 'Silence window cancelled.' });

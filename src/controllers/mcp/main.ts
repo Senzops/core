@@ -4,20 +4,20 @@ import { McpApiKey, McpUsage } from '../../models/Mcp';
 
 export const getMcpKeys = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
-    const keys = await McpApiKey.find({ ownerId: uid }).select('-__v').sort({ createdAt: -1 }).lean();
+    const ownerId = (req as any).ownerId;
+    const keys = await McpApiKey.find({ ownerId }).select('-__v').sort({ createdAt: -1 }).lean();
     res.json({ keys });
   } catch (error) { next(error); }
 };
 
 export const createMcpKey = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { name } = req.body;
     if (!name || typeof name !== 'string') return res.status(400).json({ error: 'A valid integration name is required' });
 
     const rawKey = `sz_mcp_${crypto.randomBytes(24).toString('hex')}`;
-    const newKey = await McpApiKey.create({ ownerId: uid, name, key: rawKey, status: 'active' });
+    const newKey = await McpApiKey.create({ ownerId, name, key: rawKey, status: 'active' });
 
     res.status(201).json({ _id: newKey._id, name: newKey.name, key: rawKey, createdAt: newKey.createdAt });
   } catch (error) { next(error); }
@@ -25,9 +25,9 @@ export const createMcpKey = async (req: Request, res: Response, next: NextFuncti
 
 export const revokeMcpKey = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
-    const key = await McpApiKey.findOneAndUpdate({ _id: id, ownerId: uid }, { status: 'revoked' }, { new: true });
+    const key = await McpApiKey.findOneAndUpdate({ _id: id, ownerId }, { status: 'revoked' }, { new: true });
     if (!key) return res.status(404).json({ error: 'Key not found' });
     res.json({ success: true, message: 'Key successfully revoked' });
   } catch (error) { next(error); }
@@ -35,7 +35,7 @@ export const revokeMcpKey = async (req: Request, res: Response, next: NextFuncti
 
 export const getMcpUsage = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const range = req.query.range as string || '7d';
 
     const startDate = new Date();
@@ -48,17 +48,17 @@ export const getMcpUsage = async (req: Request, res: Response, next: NextFunctio
     if (range === '7d' || range === '30d') dateFormat = "%Y-%m-%d";
 
     const trendRaw = await McpUsage.aggregate([
-      { $match: { ownerId: uid, timestamp: { $gte: startDate } } },
+      { $match: { ownerId, timestamp: { $gte: startDate } } },
       { $group: { _id: { $dateToString: { format: dateFormat, date: "$timestamp" } }, queries: { $sum: "$totalQueries" } } },
       { $sort: { "_id": 1 } }
     ]);
 
     const statsAgg = await McpUsage.aggregate([
-      { $match: { ownerId: uid, timestamp: { $gte: startDate } } },
+      { $match: { ownerId, timestamp: { $gte: startDate } } },
       { $group: { _id: null, totalQueries: { $sum: "$totalQueries" } } }
     ]);
 
-    const usages = await McpUsage.find({ ownerId: uid, timestamp: { $gte: startDate } }).select('toolCalls').lean();
+    const usages = await McpUsage.find({ ownerId, timestamp: { $gte: startDate } }).select('toolCalls').lean();
     const mergedToolCalls: Record<string, number> = {};
     usages.forEach(u => {
       if (u.toolCalls) {

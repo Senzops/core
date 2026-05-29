@@ -8,15 +8,15 @@ import { resolveTimeRange, getEffectiveRetention, TimeRangeError } from '../../u
 export const getInvocations = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { range, start, end, route, status, minDuration } = req.query;
 
     // 1. Verify Ownership
-    const service = await ApmService.findOne({ _id: id, ownerId: uid });
+    const service = await ApmService.findOne({ _id: id, ownerId });
     if (!service) return res.status(404).json({ error: "Service not found" });
 
     // 2. Resolve time range via centralized utility
-    const maxRetention = await getEffectiveRetention('apm', uid);
+    const maxRetention = await getEffectiveRetention('apm', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string | undefined, start: start as string | undefined, end: end as string | undefined },
       maxRetention
@@ -54,9 +54,9 @@ export const getInvocations = async (req: Request, res: Response, next: NextFunc
 export const getTraceDetail = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id, traceId } = req.params;
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
 
-    const service = await ApmService.findOne({ _id: id, ownerId: uid });
+    const service = await ApmService.findOne({ _id: id, ownerId });
     if (!service) return res.status(404).json({ error: "Service not found" });
 
     // 1. Fetch Main Trace
@@ -82,7 +82,7 @@ export const getTraceDetail = async (req: Request, res: Response, next: NextFunc
     trace.spans = normalizeSpans(trace.spans || [], trace.timestamp);
 
     // 2. Find Related APM Services (Owned by same user)
-    const userServices = await ApmService.find({ ownerId: uid }).select('_id name').lean();
+    const userServices = await ApmService.find({ ownerId }).select('_id name').lean();
     const serviceIds = userServices.map(s => s._id);
 
     // Helper Map: ServiceID -> ServiceName
@@ -140,7 +140,7 @@ export const getTraceDetail = async (req: Request, res: Response, next: NextFunc
     // If no APM parent exists, but a RUM trace shares the identical global traceId, 
     // it means this backend trace was triggered by a frontend fetch/XHR!
     if (!parentTrace && trace.traceId) {
-      const rumServices = await RumService.find({ ownerId: uid }).select('_id name').lean();
+      const rumServices = await RumService.find({ ownerId }).select('_id name').lean();
       if (rumServices.length > 0) {
         const rumParent = await RumTrace.findOne({
           serviceId: { $in: rumServices.map(s => s._id) },

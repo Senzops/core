@@ -39,7 +39,7 @@ export const getActivePlans = async (req: Request, res: Response) => {
 
 export const getCurrentSubscription = async (req: Request, res: Response) => {
   try {
-    const ownerId = (req as any).user?.uid;
+    const ownerId = (req as any).ownerId;
 
     if (!ownerId) {
       return res.status(401).json({ error: "Unauthorized. Missing user context." });
@@ -86,7 +86,7 @@ export const getCurrentSubscription = async (req: Request, res: Response) => {
 
 export const getStorageStats = async (req: Request, res: Response) => {
   try {
-    const ownerId = (req as any).user?.uid;
+    const ownerId = (req as any).ownerId;
     const mongoose = await import('mongoose');
 
     // Fetch subscription (authoritative ingestion counter) and service IDs in parallel
@@ -132,7 +132,7 @@ export const getStorageStats = async (req: Request, res: Response) => {
 
 export const getTransactions = async (req: Request, res: Response) => {
   try {
-    const ownerId = (req as any).user?.uid;
+    const ownerId = (req as any).ownerId;
     const transactions = await Transaction.find({ ownerId })
       .sort({ billedAt: -1 })
       .limit(24)
@@ -156,7 +156,7 @@ export const getTransactions = async (req: Request, res: Response) => {
 
 export const getTransactionReceipt = async (req: Request, res: Response) => {
   try {
-    const ownerId = (req as any).user?.uid;
+    const ownerId = (req as any).ownerId;
     const { transactionId } = req.params;
 
     const tx = await Transaction.findOne({
@@ -223,7 +223,7 @@ export const getTransactionReceipt = async (req: Request, res: Response) => {
 
 export const createCheckoutSession = async (req: Request, res: Response) => {
   try {
-    const ownerId = (req as any).user?.uid;
+    const ownerId = (req as any).ownerId;
     const userEmail = (req as any).user?.email;
     const userName = (req as any).user?.name || '';
     const { productId, themeMode } = req.body;
@@ -288,7 +288,7 @@ export const createCheckoutSession = async (req: Request, res: Response) => {
 
 export const cancelSubscription = async (req: Request, res: Response) => {
   try {
-    const ownerId = (req as any).user?.uid;
+    const ownerId = (req as any).ownerId;
     const sub = await Subscription.findOne({ ownerId });
 
     if (!sub || sub.planId === 'starter') {
@@ -394,7 +394,7 @@ export const cancelSubscription = async (req: Request, res: Response) => {
 
 export const changePlan = async (req: Request, res: Response) => {
   try {
-    const ownerId = (req as any).user?.uid;
+    const ownerId = (req as any).ownerId;
     const { productId } = req.body;
 
     if (!productId) {

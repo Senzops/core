@@ -84,18 +84,18 @@ export const getSchemaDictionary = async (req: Request, res: Response, next: Nex
 // ============================================================================
 export const createView = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { name, description } = req.body;
 
-    const view = await SavedView.create({ ownerId: uid, name, description, layout: [] });
+    const view = await SavedView.create({ ownerId, name, description, layout: [] });
     res.status(201).json({ view });
   } catch (error) { next(error); }
 };
 
 export const listViews = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
-    const views = await SavedView.find({ ownerId: uid }).sort({ createdAt: -1 }).lean();
+    const ownerId = (req as any).ownerId;
+    const views = await SavedView.find({ ownerId }).sort({ createdAt: -1 }).lean();
 
     const enrichedViews = await Promise.all(views.map(async (v) => {
       const widgetCount = await ViewWidget.countDocuments({ viewId: v._id });
@@ -108,10 +108,10 @@ export const listViews = async (req: Request, res: Response, next: NextFunction)
 
 export const getViewById = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const view = await SavedView.findOne({ _id: id, ownerId: uid }).lean();
+    const view = await SavedView.findOne({ _id: id, ownerId }).lean();
     if (!view) return res.status(404).json({ error: "Saved View not found" });
 
     const widgets = await ViewWidget.find({ viewId: id }).lean();
@@ -122,12 +122,12 @@ export const getViewById = async (req: Request, res: Response, next: NextFunctio
 
 export const updateViewLayout = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { name, description, layout } = req.body;
 
     const view = await SavedView.findOneAndUpdate(
-      { _id: id, ownerId: uid },
+      { _id: id, ownerId },
       { name, description, layout },
       { new: true }
     );
@@ -139,10 +139,10 @@ export const updateViewLayout = async (req: Request, res: Response, next: NextFu
 
 export const deleteView = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const view = await SavedView.findOneAndDelete({ _id: id, ownerId: uid });
+    const view = await SavedView.findOneAndDelete({ _id: id, ownerId });
     if (!view) return res.status(404).json({ error: "View not found" });
 
     // CASCADE: Delete all widgets mapped to this view
@@ -157,14 +157,14 @@ export const deleteView = async (req: Request, res: Response, next: NextFunction
 // ============================================================================
 export const createWidget = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { viewId, name, target, query, visualization, config } = req.body;
 
-    const view = await SavedView.findOne({ _id: viewId, ownerId: uid });
+    const view = await SavedView.findOne({ _id: viewId, ownerId });
     if (!view) return res.status(403).json({ error: "Invalid View ID" });
 
     const widget = await ViewWidget.create({
-      ownerId: uid, viewId, name, target, query, visualization, config
+      ownerId, viewId, name, target, query, visualization, config
     });
 
     const maxY = view.layout.reduce((max, item) => Math.max(max, item.y || 0), 0);
@@ -178,12 +178,12 @@ export const createWidget = async (req: Request, res: Response, next: NextFuncti
 
 export const updateWidget = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { name, target, query, visualization, config } = req.body;
 
     // 1. Fetch using .lean() to get pure BSON
-    const widgetRaw = await ViewWidget.findOne({ _id: id, ownerId: uid }).lean();
+    const widgetRaw = await ViewWidget.findOne({ _id: id, ownerId }).lean();
 
     if (!widgetRaw) {
       return res.status(404).json({ error: "Widget not found" });
@@ -226,15 +226,15 @@ export const updateWidget = async (req: Request, res: Response, next: NextFuncti
 
 export const deleteWidget = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const widget = await ViewWidget.findOneAndDelete({ _id: id, ownerId: uid });
+    const widget = await ViewWidget.findOneAndDelete({ _id: id, ownerId });
     if (!widget) return res.status(404).json({ error: "Widget not found" });
 
     // Clean up the layout array in the parent view
     await SavedView.updateOne(
-      { _id: widget.viewId, ownerId: uid },
+      { _id: widget.viewId, ownerId },
       { $pull: { layout: { i: id } } }
     );
 

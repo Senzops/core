@@ -39,13 +39,13 @@ const getOwnerIdFromKey = async (apiKey: string): Promise<string | null> => {
 // --- 1. Dashboard: Fetch & Search Logs ---
 export const getDashboardLogs = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 100;
     const search = req.query.search as string || '';
     const { range, start, end } = req.query;
 
-    const maxRetention = await getEffectiveRetention('logs', uid);
+    const maxRetention = await getEffectiveRetention('logs', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string, start: start as string, end: end as string },
       maxRetention
@@ -54,7 +54,7 @@ export const getDashboardLogs = async (req: Request, res: Response, next: NextFu
     const meta = buildTimeRangeMeta(resolved, maxRetention);
 
     // Parse the New Relic style query
-    const query = parseLogQuery(search, uid, startDate);
+    const query = parseLogQuery(search, ownerId, startDate);
 
     // Fetch Logs + Total Count
     const [logs, total] = await Promise.all([
@@ -90,10 +90,10 @@ export const getDashboardLogs = async (req: Request, res: Response, next: NextFu
 // --- 2. Trace Detail: Fetch Logs for specific Trace ---
 export const getTraceLogs = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { traceId } = req.params;
 
-    const logs = await LogEvent.find({ ownerId: uid, traceId })
+    const logs = await LogEvent.find({ ownerId, traceId })
       .sort({ timestamp: 1 }) // Chronological order for traces makes more sense
       .lean();
 
@@ -106,12 +106,12 @@ export const getTraceLogs = async (req: Request, res: Response, next: NextFuncti
 // --- 3. API Key Management ---
 export const getLogApiKey = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
-    let apiKeyRecord = await LogApiKey.findOne({ ownerId: uid });
+    const ownerId = (req as any).ownerId;
+    let apiKeyRecord = await LogApiKey.findOne({ ownerId });
     
     if (!apiKeyRecord) {
       const key = `sz_log_${crypto.randomBytes(24).toString('hex')}`;
-      apiKeyRecord = await LogApiKey.create({ ownerId: uid, key });
+      apiKeyRecord = await LogApiKey.create({ ownerId, key });
     }
 
     res.json({ key: apiKeyRecord.key });
@@ -209,10 +209,10 @@ export const ingestGlobalLogs = async (req: Request, res: Response) => {
 // --- 5. Fetch Single Log by ID (For Permalinks & Hard Refreshes) ---
 export const getLogById = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const log = await LogEvent.findOne({ _id: id, ownerId: uid })
+    const log = await LogEvent.findOne({ _id: id, ownerId })
       .populate('serviceId', 'name')
       .lean();
 

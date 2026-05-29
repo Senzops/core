@@ -38,15 +38,15 @@ const RUNTIME_METRIC_DEFAULTS = {
 export const getRuntimeStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { range, start, end } = req.query;
 
     // Verify ownership
-    const service = await ApmService.findOne({ _id: id, ownerId: uid });
+    const service = await ApmService.findOne({ _id: id, ownerId });
     if (!service) return res.status(404).json({ error: 'Service not found' });
 
     // Resolve time range via centralized utility
-    const maxRetention = await getEffectiveRetention('apm', uid);
+    const maxRetention = await getEffectiveRetention('apm', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string | undefined, start: start as string | undefined, end: end as string | undefined },
       maxRetention

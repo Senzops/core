@@ -15,7 +15,7 @@ const RegisterDbSchema = z.object({
 
 export const registerDatabase = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { name, type, uri, interval } = RegisterDbSchema.parse(req.body);
 
     if (type === 'mongodb') {
@@ -48,7 +48,7 @@ export const registerDatabase = async (req: Request, res: Response, next: NextFu
     const encryptedUri = encrypt(uri);
 
     const newDb = await DatabaseService.create({
-      ownerId: uid,
+      ownerId,
       name,
       type,
       encryptedUri,
@@ -65,8 +65,8 @@ export const registerDatabase = async (req: Request, res: Response, next: NextFu
 
 export const listDatabases = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
-    const dbs = await DatabaseService.find({ ownerId: uid }).select('-encryptedUri').sort({ createdAt: -1 });
+    const ownerId = (req as any).ownerId;
+    const dbs = await DatabaseService.find({ ownerId }).select('-encryptedUri').sort({ createdAt: -1 });
     res.json(dbs);
   } catch (error) {
     next(error);
@@ -75,11 +75,11 @@ export const listDatabases = async (req: Request, res: Response, next: NextFunct
 
 export const updateDatabase = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const updates = UpdateDbSchema.parse(req.body);
 
-    const existing = await DatabaseService.findOne({ _id: id, ownerId: uid });
+    const existing = await DatabaseService.findOne({ _id: id, ownerId });
     if (!existing) return res.status(404).json({ error: 'Database not found' });
 
     const updateFields: Record<string, any> = {};
@@ -124,7 +124,7 @@ export const updateDatabase = async (req: Request, res: Response, next: NextFunc
     }
 
     const updated = await DatabaseService.findOneAndUpdate(
-      { _id: id, ownerId: uid },
+      { _id: id, ownerId },
       updateFields,
       { new: true, runValidators: true }
     ).select('-encryptedUri');
@@ -137,10 +137,10 @@ export const updateDatabase = async (req: Request, res: Response, next: NextFunc
 
 export const deleteDatabase = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const result = await DatabaseService.findOneAndDelete({ _id: id, ownerId: uid });
+    const result = await DatabaseService.findOneAndDelete({ _id: id, ownerId });
     if (!result) return res.status(404).json({ error: 'Database not found' });
 
     await DbMetric.deleteMany({ dbId: id });

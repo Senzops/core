@@ -9,16 +9,16 @@ const WEB_GRAPH_DEFAULTS = { views: 0, visitors: 0 };
 export const getWebStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { range, start, end } = req.query;
 
     const cleanId = id.trim();
     const webIdObj = new mongoose.Types.ObjectId(cleanId);
 
-    const site = await Website.findOne({ _id: cleanId, ownerId: uid });
+    const site = await Website.findOne({ _id: cleanId, ownerId });
     if (!site) return res.status(404).json({ error: "Website not found" });
 
-    const maxRetention = await getEffectiveRetention('web', uid);
+    const maxRetention = await getEffectiveRetention('web', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string, start: start as string, end: end as string },
       maxRetention

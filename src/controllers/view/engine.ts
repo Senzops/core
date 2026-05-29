@@ -74,7 +74,7 @@ export const sanitizeMql = (userQuery: any) => {
 // CORE PIPELINE BUILDER (Optimized for Native Pipelines & Service Joins)
 // ============================================================================
 const buildAndExecutePipeline = async (
-  uid: string,
+  ownerId: string,
   target: string,
   rangeParams: { range?: string; start?: string; end?: string },
   query: any
@@ -84,7 +84,7 @@ const buildAndExecutePipeline = async (
   const { model: TargetModel, parentModel, foreignKey, timeField } = targetDef;
 
   // 1. Time Boundary Calculation
-  const maxRetention = await getEffectiveRetention(target, uid);
+  const maxRetention = await getEffectiveRetention(target, ownerId);
   const resolved = resolveTimeRange(rangeParams, maxRetention);
   const { startDate, endDate } = resolved;
 
@@ -94,12 +94,12 @@ const buildAndExecutePipeline = async (
   if (parentModel) {
     // If the telemetry relies on a parent service (APM, VPS, Tasks), 
     // fetch all service IDs owned by this user to verify access.
-    const ownedParents = await (parentModel as any).find({ ownerId: uid }).select('_id').lean();
+    const ownedParents = await (parentModel as any).find({ ownerId }).select('_id').lean();
     const ownedIds = ownedParents.map((p: any) => p._id);
     tenantIsolationMatch = { [foreignKey]: { $in: ownedIds } };
   } else {
     // If the telemetry has native ownerId (Logs), query it directly.
-    tenantIsolationMatch = { [foreignKey]: uid };
+    tenantIsolationMatch = { [foreignKey]: ownerId };
   }
 
   const safeMatch: any = {
@@ -157,15 +157,15 @@ const buildAndExecutePipeline = async (
 // ============================================================================
 export const getWidgetData = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { range, start, end } = req.query;
 
-    const widget = await ViewWidget.findOne({ _id: id, ownerId: uid }).lean();
+    const widget = await ViewWidget.findOne({ _id: id, ownerId }).lean();
     if (!widget) return res.status(404).json({ error: "Widget not found" });
 
     const data = await buildAndExecutePipeline(
-      uid, widget.target, { range: range as string, start: start as string, end: end as string }, widget.query
+      ownerId, widget.target, { range: range as string, start: start as string, end: end as string }, widget.query
     );
 
     res.json({ data });
@@ -179,7 +179,7 @@ export const getWidgetData = async (req: Request, res: Response, next: NextFunct
 // ============================================================================
 export const executeLivePreview = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { target, query, range, start, end } = req.body;
 
     if (!target) {
@@ -187,7 +187,7 @@ export const executeLivePreview = async (req: Request, res: Response, next: Next
     }
 
     const data = await buildAndExecutePipeline(
-      uid, target, { range: range || '24h', start, end }, query
+      ownerId, target, { range: range || '24h', start, end }, query
     );
 
     res.json({ data });

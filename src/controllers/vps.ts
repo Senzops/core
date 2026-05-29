@@ -9,14 +9,15 @@ import { logger } from '../utils/logger';
 
 export const registerVps = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid, email } = (req as any).user;
+    const ownerId = (req as any).ownerId;
+    const { email } = (req as any).user;
     const { name } = RegisterVpsSchema.parse(req.body);
 
     // Generate a secure API Key
     const apiKey = crypto.randomBytes(24).toString('hex');
 
     const newVps = await Vps.create({
-      ownerId: uid,
+      ownerId,
       name,
       apiKey, // Stored in DB. In strict prod, hash this. For now, returning it once.
       status: 'offline',
@@ -34,8 +35,8 @@ export const registerVps = async (req: Request, res: Response, next: NextFunctio
 
 export const listVps = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
-    const list = await Vps.find({ ownerId: uid }).sort({ createdAt: -1 });
+    const ownerId = (req as any).ownerId;
+    const list = await Vps.find({ ownerId }).sort({ createdAt: -1 });
     res.json(list);
   } catch (error) {
     next(error);
@@ -44,10 +45,10 @@ export const listVps = async (req: Request, res: Response, next: NextFunction) =
 
 export const deleteVps = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
 
-    const result = await Vps.findOneAndDelete({ _id: id, ownerId: uid });
+    const result = await Vps.findOneAndDelete({ _id: id, ownerId });
     if (!result) return res.status(404).json({ error: 'VPS not found' });
 
     // Cascade delete runs (Optional, or let TTL handle it)
@@ -61,12 +62,12 @@ export const deleteVps = async (req: Request, res: Response, next: NextFunction)
 
 export const updateVps = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { id } = req.params;
     const { name } = UpdateVpsSchema.parse(req.body);
 
     const updated = await Vps.findOneAndUpdate(
-      { _id: id, ownerId: uid },
+      { _id: id, ownerId },
       { name },
       { new: true, runValidators: true }
     );
@@ -196,14 +197,14 @@ function fillVpsTimeGaps(data: any[], resolved: ResolvedTimeRange) {
 export const getVpsStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const { id } = req.params;
-    const { uid } = (req as any).user;
+    const ownerId = (req as any).ownerId;
     const { range, start, end } = req.query;
 
-    const vps = await Vps.findOne({ _id: id, ownerId: uid });
+    const vps = await Vps.findOne({ _id: id, ownerId });
     if (!vps) return res.status(404).json({ error: "VPS not found" });
 
     // Resolve time range via centralized utility
-    const maxRetention = await getEffectiveRetention('server', uid);
+    const maxRetention = await getEffectiveRetention('server', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string | undefined, start: start as string | undefined, end: end as string | undefined },
       maxRetention

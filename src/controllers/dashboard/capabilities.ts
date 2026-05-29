@@ -3,8 +3,8 @@ import { getAllRetentionLimits, RELATIVE_RANGES } from '../../utils/timeRange';
 
 export const getDashboardCapabilities = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { uid } = (req as any).user;
-    const retentionLimits = await getAllRetentionLimits(uid);
+    const ownerId = (req as any).ownerId;
+    const retentionLimits = await getAllRetentionLimits(ownerId);
 
     res.json({
       relativeRanges: RELATIVE_RANGES,
