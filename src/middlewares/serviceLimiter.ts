@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import mongoose from 'mongoose';
 import { Subscription } from '../models/Subscription';
+import { Organization } from '../models/Organization';
 import { getPlanConfig } from '../config/pricing';
 import { logger } from '../utils/logger';
 
@@ -45,4 +46,43 @@ export const requireServiceQuota = (modelName: string, serviceName: string) => {
       res.status(500).json({ error: "Failed to validate service quotas." });
     }
   };
+};
+
+/**
+ * Limits organization creation based on the USER's personal billing plan.
+ * Counts orgs where `createdBy = user.uid` (i.e., orgs the user owns/created).
+ * Being invited to someone else's org does NOT count against this limit.
+ *
+ * Unlike requireServiceQuota which checks the workspace's subscription,
+ * this always checks the user's personal subscription — because org creation
+ * is a user-level privilege, not a workspace-level one.
+ */
+export const requireOrgCreationQuota = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const uid = (req as any).user?.uid;
+    if (!uid) {
+      return res.status(401).json({ error: "Unauthorized: Missing user context." });
+    }
+
+    // Always check the user's PERSONAL subscription, not the active workspace
+    const sub = await Subscription.findOne({ ownerId: uid }).select('planId').lean();
+    const plan = getPlanConfig(sub?.planId);
+
+    const currentOrgCount = await Organization.countDocuments({ createdBy: uid });
+
+    if (currentOrgCount >= plan.maxOrganizations) {
+      return res.status(402).json({
+        error: "Organization Limit Reached.",
+        details: `Your ${plan.name} plan allows up to ${plan.maxOrganizations} organization${plan.maxOrganizations !== 1 ? 's' : ''}. Please upgrade your billing plan to create more.`,
+        code: "ORG_LIMIT_EXCEEDED",
+        currentCount: currentOrgCount,
+        maxAllowed: plan.maxOrganizations,
+      });
+    }
+
+    next();
+  } catch (error: any) {
+    logger.error(`[Service Limiter] Org quota error: ${error.message}`);
+    res.status(500).json({ error: "Failed to validate organization quotas." });
+  }
 };

@@ -10,6 +10,7 @@ export interface PlanConfig {
   priceAnnual: number;
   maxServicesPerType: number;
   maxIngestionBytes: number;
+  maxOrganizations: number;
   retentionDays: number;
   paddlePriceIdMonthly: string | null;
   paddlePriceIdAnnual: string | null;
@@ -25,6 +26,7 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     priceAnnual: 0,
     maxServicesPerType: 1,
     maxIngestionBytes: 2 * GB,
+    maxOrganizations: 1,
     retentionDays: 3,
     paddlePriceIdMonthly: null,
     paddlePriceIdAnnual: null,
@@ -38,6 +40,7 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     priceAnnual: 278, // ~$23/mo (20% off)
     maxServicesPerType: 5,
     maxIngestionBytes: 15 * GB,
+    maxOrganizations: 3,
     retentionDays: 15,
     paddlePriceIdMonthly: 'pri_01knfdyzk9gsjwfh4vq3hfg2q0',
     paddlePriceIdAnnual: 'pri_01knfe0d96abaf790xead78y0m',  
@@ -51,6 +54,7 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     priceAnnual: 950, // ~$79/mo (20% off)
     maxServicesPerType: 99999,
     maxIngestionBytes: 100 * GB,
+    maxOrganizations: 10,
     retentionDays: 30,
     paddlePriceIdMonthly: 'pri_01knfe2b0s6yycykn1y4x2mrrk',
     paddlePriceIdAnnual: 'pri_01knfe3g8941dyr18vvy9tc2qy',
@@ -64,6 +68,7 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     priceAnnual: -1,
     maxServicesPerType: 99999,
     maxIngestionBytes: 1000 * GB,
+    maxOrganizations: 99999,
     retentionDays: 90,
     paddlePriceIdMonthly: null,
     paddlePriceIdAnnual: null,

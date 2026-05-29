@@ -26,6 +26,7 @@ export const getActivePlans = async (req: Request, res: Response) => {
       priceAnnual: plan.priceAnnual,
       maxServicesPerType: plan.maxServicesPerType,
       maxIngestionBytes: plan.maxIngestionBytes,
+      maxOrganizations: plan.maxOrganizations,
       retentionDays: plan.retentionDays,
       dodoProductIdMonthly: plan.dodoProductIdMonthly,
       dodoProductIdAnnual: plan.dodoProductIdAnnual,

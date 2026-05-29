@@ -88,7 +88,7 @@ import { executeLivePreview, getWidgetData } from '../controllers/view/engine';
 import { authenticateOtlp } from '../middlewares/otlpAuth';
 import { ingestOtlpLogs, ingestOtlpTraces } from '../controllers/otlp/gateway';
 import { requireIngestionQuota } from '../middlewares/ingestionLimiter';
-import { requireServiceQuota } from '../middlewares/serviceLimiter';
+import { requireServiceQuota, requireOrgCreationQuota } from '../middlewares/serviceLimiter';
 import { cancelSubscription, changePlan, getActivePlans, getCurrentSubscription, getStorageStats, getTransactionReceipt, getTransactions, handlePaddleWebhook, handleDodoWebhook, createCheckoutSession } from '../controllers/billing';
 import { deleteAccount, syncUser } from '../controllers/user';
 import { getDynamicSchema } from '../controllers/schema';
@@ -355,7 +355,7 @@ otlpRouter.post('/v1/logs', ingestOtlpLogs);
 // ============================================================================
 // ORGANIZATION API
 // ============================================================================
-apiRouter.post('/org', createOrganization);
+apiRouter.post('/org', requireOrgCreationQuota, createOrganization);
 apiRouter.get('/org', listOrganizations);
 apiRouter.get('/org/:orgId', getOrganization);
 apiRouter.put('/org/:orgId', updateOrganization);
