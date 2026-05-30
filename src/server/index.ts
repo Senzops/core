@@ -111,6 +111,10 @@ import {
   getInvitationDetails,
   transferOwnership,
 } from '../controllers/organization/main';
+import { exportConfig } from '../controllers/data/exportConfig';
+import { previewConfigImport, importConfig } from '../controllers/data/importConfig';
+import { exportTelemetry } from '../controllers/data/exportTelemetry';
+import { importTelemetry } from '../controllers/data/importTelemetry';
 
 
 if (!process.env.MONGO_URI) {
@@ -166,12 +170,18 @@ app.use(cors({
   origin: true, // Reflects the request origin (Allows all)
   credentials: true,
 }));
-app.use(express.json({
-  limit: '1mb',
-  verify: (req: any, res, buf) => {
-    req.rawBody = buf;
+// Body parser — skip for telemetry import route (it uses a higher limit via its own router)
+app.use((req, res, next) => {
+  if (req.path === '/api/data/import/telemetry') {
+    return next();
   }
-})); // Body parser
+  express.json({
+    limit: '1mb',
+    verify: (req: any, res, buf) => {
+      req.rawBody = buf;
+    }
+  })(req, res, next);
+});
 app.use(morgan('tiny')); // Logging
 
 // --- Rate Limiters ---
@@ -406,6 +416,37 @@ billingRouter.post('/dodo-webhook', webhookLimiter, handleDodoWebhook);
 // Protected Billing Routes (Requires User Auth + Workspace Context)
 billingRouter.get('/subscription', authenticateUser, resolveWorkspace, getCurrentSubscription);
 
+// ============================================================================
+// DATA IMPORT / EXPORT API
+// ============================================================================
+// Rate limiter for data operations (stricter than general API)
+const dataExportLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 10,                  // 10 exports per hour per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Export rate limit exceeded. Please try again later.' },
+});
+
+const dataImportLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5,                   // 5 imports per hour per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Import rate limit exceeded. Please try again later.' },
+});
+
+// Config export/import (fits within the default 1MB body limit)
+apiRouter.get('/data/export/config', dataExportLimiter, exportConfig);
+apiRouter.post('/data/import/config/preview', dataImportLimiter, previewConfigImport);
+apiRouter.post('/data/import/config', dataImportLimiter, importConfig);
+
+// Telemetry export (request body is small — just type/time filters)
+apiRouter.post('/data/export/telemetry', dataExportLimiter, exportTelemetry);
+
+// NOTE: Telemetry import is mounted as a separate router below (before the
+// global body parser) because it needs a 50MB body limit. See dataImportRouter.
+
 // User Profile
 apiRouter.post('/user/sync', syncUser);
 apiRouter.delete('/user/account', deleteAccount);
@@ -436,6 +477,16 @@ authRouter.post('/otp/send', apiLimiter, sendOtp);
 authRouter.post('/otp/verify', apiLimiter, verifyOtp);
 authRouter.post('/revoke-sessions', apiLimiter, revokeSessions);
 app.use('/api/auth', authRouter);
+
+// Telemetry Import Router (separate from apiRouter for higher body limit)
+// Mounted before the apiRouter so it's matched first. Uses its own body parser
+// with a 50MB limit since telemetry payloads can be large.
+const dataImportRouter = express.Router();
+dataImportRouter.use(express.json({ limit: '50mb' }));
+dataImportRouter.use(authenticateUser);
+dataImportRouter.use(resolveWorkspace);
+dataImportRouter.post('/data/import/telemetry', dataImportLimiter, importTelemetry);
+app.use('/api', dataImportRouter);
 
 // Public Organization Routes (No Auth Required)
 app.get('/api/org/invitations/details', getInvitationDetails);
