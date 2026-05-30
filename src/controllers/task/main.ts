@@ -1,7 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import mongoose from 'mongoose';
-import { TaskService, TaskRun, TaskMetric } from '../../models/Task';
+import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
+import { ErrorGroup, ErrorEvent } from '../../models/Error';
+import { LogEvent } from '../../models/Log';
 
 
 export const registerTaskService = async (req: Request, res: Response, next: NextFunction) => {
@@ -58,13 +60,17 @@ export const deleteTaskService = async (req: Request, res: Response, next: NextF
     const result = await TaskService.findOneAndDelete({ _id: id, ownerId });
     if (!result) return res.status(404).json({ error: 'Service not found' });
 
-    // Background cleanup
-    setImmediate(async () => {
-      await TaskRun.deleteMany({ serviceId: id });
-      await TaskMetric.deleteMany({ serviceId: id });
-    });
+    // Cascade delete all telemetry associated with this service
+    await Promise.all([
+      TaskRun.deleteMany({ serviceId: id }),
+      TaskMetric.deleteMany({ serviceId: id }),
+      TaskSignature.deleteMany({ serviceId: id }),
+      ErrorGroup.deleteMany({ serviceId: id, serviceModel: 'TaskService' }),
+      ErrorEvent.deleteMany({ serviceId: id, serviceModel: 'TaskService' }),
+      LogEvent.deleteMany({ serviceId: id, serviceModel: 'TaskService' }),
+    ]);
 
-    res.json({ message: 'Service Deleted' });
+    res.json({ message: 'Task service and all associated telemetry successfully purged.' });
   } catch (error) {
     next(error);
   }

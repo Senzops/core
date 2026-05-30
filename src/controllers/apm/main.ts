@@ -1,6 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
-import { ApmService, ApmTrace } from '../../models/Apm';
+import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
+import { RuntimeMetric } from '../../models/RuntimeMetric';
+import { ErrorGroup, ErrorEvent } from '../../models/Error';
+import { LogEvent } from '../../models/Log';
 import { RegisterApmSchema, UpdateApmSchema } from '../../utils/validation';
 
 // --- Register New Service ---
@@ -60,7 +63,7 @@ export const updateService = async (req: Request, res: Response, next: NextFunct
   }
 };
 
-// --- Delete Service ---
+// --- Delete Service & Cascade Purge ---
 export const deleteService = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ownerId = (req as any).ownerId;
@@ -69,10 +72,17 @@ export const deleteService = async (req: Request, res: Response, next: NextFunct
     const result = await ApmService.findOneAndDelete({ _id: id, ownerId });
     if (!result) return res.status(404).json({ error: 'Service not found' });
 
-    // Cascade delete traces
-    await ApmTrace.deleteMany({ serviceId: id });
+    // Cascade delete all telemetry associated with this service
+    await Promise.all([
+      ApmTrace.deleteMany({ serviceId: id }),
+      ApmMetric.deleteMany({ serviceId: id }),
+      RuntimeMetric.deleteMany({ serviceId: id }),
+      ErrorGroup.deleteMany({ serviceId: id, serviceModel: 'ApmService' }),
+      ErrorEvent.deleteMany({ serviceId: id, serviceModel: 'ApmService' }),
+      LogEvent.deleteMany({ serviceId: id, serviceModel: 'ApmService' }),
+    ]);
 
-    res.json({ message: 'Service and traces deleted' });
+    res.json({ message: 'Service and all associated telemetry successfully purged.' });
   } catch (error) {
     next(error);
   }
