@@ -1,6 +1,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
+import compression from 'compression';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import dotenv from 'dotenv';
@@ -170,6 +171,24 @@ app.use(cors({
   origin: true, // Reflects the request origin (Allows all)
   credentials: true,
 }));
+
+// HTTP Response Compression (gzip / deflate)
+// Placed after CORS, before body parser — compresses all outgoing responses.
+// Reduces JSON payload sizes by 70-85%, zero client-side changes needed.
+app.use(compression({
+  level: 6,           // Balanced compression (1=fast/low, 9=slow/max). 6 is zlib default.
+  threshold: 1024,    // Skip compression for responses < 1KB (overhead > savings)
+  filter: (req, res) => {
+    // Never compress SSE streams — compression buffers chunks, breaking real-time delivery
+    const contentType = res.getHeader('Content-Type');
+    if (typeof contentType === 'string' && contentType.includes('text/event-stream')) {
+      return false;
+    }
+    // Default filter: compress JSON, HTML, text, SVG, etc. Skip images/binary.
+    return compression.filter(req, res);
+  },
+}));
+
 // Body parser — skip for telemetry import route (it uses a higher limit via its own router)
 app.use((req, res, next) => {
   if (req.path === '/api/data/import/telemetry') {
