@@ -91,6 +91,7 @@ import { requireIngestionQuota } from '../middlewares/ingestionLimiter';
 import { requireServiceQuota, requireOrgCreationQuota } from '../middlewares/serviceLimiter';
 import { cancelSubscription, changePlan, getActivePlans, getCurrentSubscription, getStorageStats, getTransactionReceipt, getTransactions, handlePaddleWebhook, handleDodoWebhook, createCheckoutSession } from '../controllers/billing';
 import { deleteAccount, syncUser } from '../controllers/user';
+import { sendOtp, verifyOtp } from '../controllers/auth/otp';
 import { getDynamicSchema } from '../controllers/schema';
 import { getDashboardCapabilities } from '../controllers/dashboard/capabilities';
 import { resolveWorkspace } from '../middlewares/orgAuth';
@@ -415,6 +416,13 @@ app.use('/api/ingest', ingestRouter);
 
 // Mount the OTLP router
 app.use('/api/otlp', otlpRouter);
+
+// Auth OTP Routes (Require Firebase Auth, NOT workspace context)
+const authRouter = express.Router();
+authRouter.use(authenticateUser);
+authRouter.post('/otp/send', apiLimiter, sendOtp);
+authRouter.post('/otp/verify', apiLimiter, verifyOtp);
+app.use('/api/auth', authRouter);
 
 // Public Organization Routes (No Auth Required)
 app.get('/api/org/invitations/details', getInvitationDetails);
