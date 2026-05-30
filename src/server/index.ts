@@ -91,7 +91,7 @@ import { requireIngestionQuota } from '../middlewares/ingestionLimiter';
 import { requireServiceQuota, requireOrgCreationQuota } from '../middlewares/serviceLimiter';
 import { cancelSubscription, changePlan, getActivePlans, getCurrentSubscription, getStorageStats, getTransactionReceipt, getTransactions, handlePaddleWebhook, handleDodoWebhook, createCheckoutSession } from '../controllers/billing';
 import { deleteAccount, syncUser } from '../controllers/user';
-import { sendOtp, verifyOtp } from '../controllers/auth/otp';
+import { sendOtp, verifyOtp, revokeSessions } from '../controllers/auth/otp';
 import { getDynamicSchema } from '../controllers/schema';
 import { getDashboardCapabilities } from '../controllers/dashboard/capabilities';
 import { resolveWorkspace } from '../middlewares/orgAuth';
@@ -434,6 +434,7 @@ const authRouter = express.Router();
 authRouter.use(authenticateUser);
 authRouter.post('/otp/send', apiLimiter, sendOtp);
 authRouter.post('/otp/verify', apiLimiter, verifyOtp);
+authRouter.post('/revoke-sessions', apiLimiter, revokeSessions);
 app.use('/api/auth', authRouter);
 
 // Public Organization Routes (No Auth Required)

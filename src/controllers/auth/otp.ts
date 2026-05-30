@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import { Request, Response } from 'express';
+import admin from 'firebase-admin';
 import { OtpCode } from '../../models/OtpCode';
 import { sendOtpEmail } from '../../services/email';
 import { logger } from '../../utils/logger';
@@ -104,5 +105,20 @@ export const verifyOtp = async (req: Request, res: Response) => {
   } catch (error: any) {
     logger.error(`[Auth] Verify OTP failed: ${error.message}`);
     res.status(500).json({ error: 'Failed to verify code.' });
+  }
+};
+
+export const revokeSessions = async (req: Request, res: Response) => {
+  try {
+    const uid = (req as any).user?.uid;
+    if (!uid) return res.status(401).json({ error: 'Missing authentication context.' });
+
+    await admin.auth().revokeRefreshTokens(uid);
+
+    logger.info(`[Auth] All sessions revoked for ${uid}`);
+    res.json({ revoked: true });
+  } catch (error: any) {
+    logger.error(`[Auth] Revoke sessions failed for ${(req as any).user?.uid}: ${error.message}`);
+    res.status(500).json({ error: 'Failed to revoke sessions.' });
   }
 };
