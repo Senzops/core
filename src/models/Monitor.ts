@@ -14,6 +14,18 @@ export interface ISslInfo {
   error: string | null;
 }
 
+export interface IDomainInfo {
+  registeredDomain: string;
+  registrar: string;
+  expiresAt: Date | null;
+  registeredAt: Date | null;
+  daysRemaining: number;
+  nameServers: string[];
+  status: string[];
+  lastCheckedAt: Date | null;
+  error: string | null;
+}
+
 export interface IMonitor extends Document {
   ownerId: string;
   name: string;
@@ -35,6 +47,9 @@ export interface IMonitor extends Document {
   // SSL certificate info
   ssl: ISslInfo;
 
+  // Domain registration info
+  domain: IDomainInfo;
+
   // Locking for Concurrency
   isLocked: boolean;
   lockTime: Date;
@@ -48,6 +63,18 @@ const SslInfoSchema = new Schema<ISslInfo>({
   validTo: { type: Date, default: null },
   daysRemaining: { type: Number, default: -1 },
   protocol: { type: String, default: '' },
+  lastCheckedAt: { type: Date, default: null },
+  error: { type: String, default: null },
+}, { _id: false });
+
+const DomainInfoSchema = new Schema<IDomainInfo>({
+  registeredDomain: { type: String, default: '' },
+  registrar: { type: String, default: '' },
+  expiresAt: { type: Date, default: null },
+  registeredAt: { type: Date, default: null },
+  daysRemaining: { type: Number, default: -1 },
+  nameServers: { type: [String], default: [] },
+  status: { type: [String], default: [] },
   lastCheckedAt: { type: Date, default: null },
   error: { type: String, default: null },
 }, { _id: false });
@@ -71,8 +98,9 @@ const MonitorSchema = new Schema<IMonitor>({
   // Uptime tracking
   lastDownAt: { type: Date, default: null },
 
-  // SSL
+  // SSL & Domain
   ssl: { type: SslInfoSchema, default: () => ({}) },
+  domain: { type: DomainInfoSchema, default: () => ({}) },
 
   isLocked: { type: Boolean, default: false },
   lockTime: { type: Date, default: null }
