@@ -154,18 +154,43 @@ export const WebIngestSchema = z.object({
 });
 
 // --- Uptime Schemas ---
+
+const MonitorHeaderSchema = z.record(z.string().max(500))
+  .refine(
+    (headers) => Object.keys(headers).length <= 10,
+    { message: 'Maximum 10 custom headers allowed' }
+  )
+  .refine(
+    (headers) => Object.keys(headers).every(k => /^[a-zA-Z0-9\-_]+$/.test(k) && k.length <= 64),
+    { message: 'Header names must be alphanumeric (with hyphens/underscores), max 64 chars' }
+  )
+  .refine(
+    (headers) => !Object.keys(headers).some(k => /^(host|content-length|transfer-encoding|cookie|set-cookie)$/i.test(k)),
+    { message: 'host, content-length, transfer-encoding, and cookie headers are not allowed' }
+  );
+
+export const VALID_INTERVALS = [1, 2, 3, 5, 10, 15, 30, 60] as const;
+export const PREMIUM_INTERVALS = [1, 2, 3] as const;
+
 export const RegisterMonitorSchema = z.object({
   name: z.string().min(1).max(50),
   url: z.string().url(),
-  interval: z.enum(['15', '30', '60']).transform(Number), // accept strings, convert to number
+  interval: z.enum(['1', '2', '3', '5', '10', '15', '30', '60']).transform(Number),
+  method: z.enum(['GET', 'POST', 'HEAD', 'PUT', 'PATCH', 'OPTIONS']).default('GET'),
+  headers: MonitorHeaderSchema.optional().default({}),
+  body: z.string().max(4096).optional().default(''),
+  expectedStatus: z.number().int().min(0).max(599).optional().default(0),
 });
-
 
 export const UpdateMonitorSchema = z.object({
   name: z.string().min(1).max(50).optional(),
   url: z.string().url().optional(),
-  interval: z.enum(['15', '30', '60']).transform(Number).optional(),
-}).refine(data => data.name || data.url || data.interval !== undefined, { message: 'At least one field must be provided' });
+  interval: z.enum(['1', '2', '3', '5', '10', '15', '30', '60']).transform(Number).optional(),
+  method: z.enum(['GET', 'POST', 'HEAD', 'PUT', 'PATCH', 'OPTIONS']).optional(),
+  headers: MonitorHeaderSchema.optional(),
+  body: z.string().max(4096).optional(),
+  expectedStatus: z.number().int().min(0).max(599).optional(),
+}).refine(data => data.name || data.url || data.interval !== undefined || data.method || data.headers || data.body !== undefined || data.expectedStatus !== undefined, { message: 'At least one field must be provided' });
 
 // Log Payload
 export const LogPayloadSchema = z.object({
