@@ -136,6 +136,18 @@ if (!admin.apps.length) {
       credential: admin.credential.cert(serviceAccount)
     });
     logger.info("Firebase Admin Initialized");
+
+    admin.auth().projectConfigManager().updateProjectConfig({
+      multiFactorConfig: {
+        state: 'ENABLED',
+        providerConfigs: [{
+          state: 'ENABLED',
+          totpProviderConfig: { adjacentIntervals: 5 },
+        }],
+      },
+    }).catch((err: any) => {
+      logger.warn(`[Firebase] TOTP MFA config skipped: ${err.message}`);
+    });
   } catch (e) {
     logger.error("Firebase Init Failed (Check env vars)", e);
   }
