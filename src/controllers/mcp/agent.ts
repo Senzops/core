@@ -19,7 +19,21 @@ const activeSessions = new Map<string, { transport: SSEServerTransport, server: 
 mcpAgentRouter.get('/sse', authenticateMcp, async (req: Request, res: Response) => {
   try {
     const ownerId = (req as any).ownerId;
-    const mcpServer = new Server({ name: "Senzor MCP", version: "1.0.0" }, { capabilities: { tools: {} } });
+    const mcpServer = new Server(
+      {
+        name: "Senzor MCP",
+        version: "1.0.0",
+        title: "Senzor",
+        description: "Observability platform — APM, RUM, Logs, Uptime, Infrastructure, Errors, and more.",
+        websiteUrl: "https://senzor.dev",
+        icons: [{
+          src: "https://senzor.dev/icons/icon512_maskable.png",
+          mimeType: "image/png",
+          sizes: ["512x512"],
+        }],
+      },
+      { capabilities: { tools: {} } }
+    );
 
     registerSenzorTools(mcpServer, ownerId);
 
