@@ -37,6 +37,7 @@ const simulateExpressCall = async (
 ): Promise<{ status: number; data: any }> => {
   return new Promise((resolve, reject) => {
     const req = {
+      ownerId,
       user: { uid: ownerId },
       params,
       query,

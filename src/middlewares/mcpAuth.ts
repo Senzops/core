@@ -21,8 +21,9 @@ export const authenticateMcp = async (req: Request, res: Response, next: NextFun
       return res.status(403).json({ error: 'Invalid or revoked MCP API Key' });
     }
 
-    // Attach owner context
+    // Attach owner context for both legacy (user.uid) and workspace-aware (ownerId) patterns
     (req as any).user = { uid: keyRecord.ownerId };
+    (req as any).ownerId = keyRecord.ownerId;
 
     // Fire & Forget: Update last used timestamp stat
     McpApiKey.findByIdAndUpdate(keyRecord._id, { lastUsedAt: new Date() }).catch(() => { });

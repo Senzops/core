@@ -18,7 +18,7 @@ const activeSessions = new Map<string, { transport: SSEServerTransport, server: 
 // 1. AI Connects to SSE
 mcpAgentRouter.get('/sse', authenticateMcp, async (req: Request, res: Response) => {
   try {
-    const ownerId = (req as any).ownerId || (req as any).user.uid;
+    const ownerId = (req as any).ownerId;
     const mcpServer = new Server({ name: "Senzor MCP", version: "1.0.0" }, { capabilities: { tools: {} } });
 
     registerSenzorTools(mcpServer, ownerId);
