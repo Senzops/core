@@ -21,6 +21,8 @@ export const ApmService = mongoose.model<IApmService>('ApmService', ApmServiceSc
 
 // --- 2. Trace Spans (NEW) ---
 export interface ISpan {
+  spanId?: string;
+  parentSpanId?: string;
   name: string;       // e.g. "SELECT * FROM users", "External /api/stripe"
   type: string;       // 'db', 'http', 'custom', 'middleware'
   startTime: number;  // Offset in ms from trace start
@@ -66,6 +68,7 @@ export interface IApmTrace extends Document {
 
 const SpanSchema = new Schema({
   spanId: String,
+  parentSpanId: String,
   name: String,
   type: String,
   startTime: Number,

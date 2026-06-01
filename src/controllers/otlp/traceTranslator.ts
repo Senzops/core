@@ -1,14 +1,54 @@
-import mongoose from 'mongoose';
 import { OtlpContext } from '../../middlewares/otlpAuth';
 import { ApmTrace, ApmMetric } from '../../models/Apm';
 import { TaskRun, TaskMetric } from '../../models/Task';
 import { RumTrace } from '../../models/Rum';
 import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/Error';
+import { UAParser } from 'ua-parser-js';
+import { normaliseIP } from '../../utils/getClientIp';
+import { getGeoData } from '../../utils/getGeoData';
 
-const getAttribute = (attributes: any[], key: string) => {
-  const attr = attributes?.find(a => a.key === key);
-  if (!attr || !attr.value) return undefined;
-  return attr.value.stringValue || attr.value.intValue || attr.value.boolValue || attr.value.doubleValue;
+// ---------------------------------------------------------------------------
+// OTel Attribute Helpers
+// ---------------------------------------------------------------------------
+
+const MAX_SPAN_META_KEYS = 50;
+
+const extractValue = (valueObj: any): any => {
+  if (!valueObj) return undefined;
+  if (valueObj.stringValue !== undefined) return valueObj.stringValue;
+  if (valueObj.intValue !== undefined) return valueObj.intValue;
+  if (valueObj.doubleValue !== undefined) return valueObj.doubleValue;
+  if (valueObj.boolValue !== undefined) return valueObj.boolValue;
+  if (valueObj.arrayValue?.values) return valueObj.arrayValue.values.map(extractValue);
+  if (valueObj.kvlistValue?.values) {
+    const obj: Record<string, any> = {};
+    for (const kv of valueObj.kvlistValue.values) {
+      obj[kv.key] = extractValue(kv.value);
+    }
+    return obj;
+  }
+  return undefined;
+};
+
+const getAttribute = (attributes: any[], key: string): any => {
+  const attr = attributes?.find((a: any) => a.key === key);
+  if (!attr?.value) return undefined;
+  return extractValue(attr.value);
+};
+
+const collectAttributes = (attributes: any[]): Record<string, any> => {
+  if (!attributes?.length) return {};
+  const result: Record<string, any> = {};
+  let count = 0;
+  for (const attr of attributes) {
+    if (count >= MAX_SPAN_META_KEYS) break;
+    const val = extractValue(attr.value);
+    if (val !== undefined && val !== null && val !== '') {
+      result[attr.key] = val;
+      count++;
+    }
+  }
+  return result;
 };
 
 const cleanMessageForFingerprint = (message: string): string => {
@@ -18,7 +58,72 @@ const cleanMessageForFingerprint = (message: string): string => {
     .replace(/\d+/g, '<num>');
 };
 
-export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: any[]) => {
+// ---------------------------------------------------------------------------
+// IP / Geo / User-Agent Extraction
+// ---------------------------------------------------------------------------
+
+const extractClientIp = (attributes: any[], resourceAttrs: any[], requestIp: string | null): string | null => {
+  const raw =
+    getAttribute(attributes, 'http.client_ip') ||
+    getAttribute(attributes, 'net.sock.peer.addr') ||
+    getAttribute(attributes, 'net.peer.ip') ||
+    getAttribute(resourceAttrs, 'net.host.ip');
+
+  if (raw) {
+    const ip = normaliseIP(String(raw));
+    if (ip) return ip;
+  }
+
+  return requestIp ? normaliseIP(requestIp) : null;
+};
+
+const extractUserAgent = (attributes: any[], resourceAttrs: any[], requestUserAgent?: string): string => {
+  return (
+    getAttribute(attributes, 'user_agent.original') ||
+    getAttribute(attributes, 'http.user_agent') ||
+    getAttribute(resourceAttrs, 'user_agent.original') ||
+    requestUserAgent ||
+    ''
+  );
+};
+
+const parseUserAgent = (ua: string) => {
+  if (!ua) return { browser: 'Unknown', os: 'Unknown', device: 'Desktop' };
+  const parser = new UAParser(ua);
+  return {
+    browser: parser.getBrowser().name || 'Unknown',
+    os: parser.getOS().name || 'Unknown',
+    device: parser.getDevice().type || 'Desktop',
+  };
+};
+
+// ---------------------------------------------------------------------------
+// Metric Increment Helpers (mirrors native APM ingest)
+// ---------------------------------------------------------------------------
+
+const inc = (obj: Record<string, number>, key: string) => {
+  const safeKey = key.replace(/\./g, '_').replace(/\$/g, '');
+  obj[safeKey] = (obj[safeKey] || 0) + 1;
+};
+
+const incRoute = (obj: Record<string, any>, key: string, isError: boolean, duration: number) => {
+  const safeKey = key.replace(/\./g, '_').replace(/\$/g, '');
+  if (!obj[safeKey]) obj[safeKey] = { count: 0, errors: 0, duration: 0 };
+  obj[safeKey].count += 1;
+  if (isError) obj[safeKey].errors += 1;
+  obj[safeKey].duration += duration;
+};
+
+// ---------------------------------------------------------------------------
+// Main Translator
+// ---------------------------------------------------------------------------
+
+export const translateOtlpTraces = async (
+  context: OtlpContext,
+  resourceSpans: any[],
+  requestIp: string | null,
+  requestUserAgent?: string
+) => {
   const apmTraceOps: any[] = [];
   const taskRunOps: any[] = [];
   const rumTraceOps: any[] = [];
@@ -30,6 +135,8 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
   const errorGroupsMap = new Map<string, any>();
 
   for (const rs of resourceSpans) {
+    const resourceAttrs = rs.resource?.attributes || [];
+
     for (const ss of rs.scopeSpans || []) {
       for (const span of ss.spans || []) {
         const spanId = span.spanId;
@@ -54,7 +161,6 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
         const httpStatusCode = getAttribute(attributes, 'http.response.status_code') || getAttribute(attributes, 'http.status_code');
 
         const dbSystem = getAttribute(attributes, 'db.system');
-        const dbStatement = getAttribute(attributes, 'db.statement') || getAttribute(attributes, 'db.query.text');
 
         const errorMsg = getAttribute(attributes, 'error.message') || getAttribute(attributes, 'exception.message');
         const errorType = getAttribute(attributes, 'error.type') || getAttribute(attributes, 'exception.type');
@@ -68,48 +174,64 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
         const isRoot = kind === 2 || kind === 5; // SERVER or CONSUMER
 
         if (isRoot) {
-          // --- 1. ROOT SPAN REGISTRATION ---
+          // -----------------------------------------------------------------
+          // 1. ROOT SPAN REGISTRATION
+          // -----------------------------------------------------------------
           if (context.target === 'apm') {
             const route = httpRoute || httpTarget || name || 'Unknown Route';
             const path = httpTarget || httpUrl || name || 'Unknown Path';
             const method = httpMethod || 'INTERNAL';
+
+            // --- IP / Geo / UA extraction (parity with native APM ingest) ---
+            const ip = extractClientIp(attributes, resourceAttrs, requestIp);
+            const { country, city } = getGeoData(ip);
+            const userAgent = extractUserAgent(attributes, resourceAttrs, requestUserAgent);
+            const { browser, os, device } = parseUserAgent(userAgent);
 
             apmTraceOps.push({
               updateOne: {
                 filter: { traceId, serviceId: context.serviceId },
                 update: {
                   $set: {
-                    serviceId: context.serviceId, traceId, parentSpanId,
-                    method, route, path, status: spanStatus, duration, timestamp, hasErrors: isError
+                    serviceId: context.serviceId, traceId,
+                    parentSpanId,
+                    method, route, path, status: spanStatus, duration, timestamp,
+                    hasErrors: isError,
+                    ip: ip ?? 'Unknown',
+                    country, city,
+                    userAgent: userAgent || 'Unknown',
+                    browser, os, device,
                   }
                 },
                 upsert: true
               }
             });
 
-            // Aggregate APM Metrics
+            // --- Aggregate APM Metrics (full dimension parity) ---
             const bucketTime = new Date(timestamp);
             bucketTime.setSeconds(0, 0);
             const bucketKey = bucketTime.toISOString();
+
             if (!apmMetricsMap.has(bucketKey)) {
-              apmMetricsMap.set(bucketKey, { timestamp: bucketTime, requests: 0, errorCount: 0, durationSum: 0, durationMax: 0, routes: {}, statusCodes: {} });
+              apmMetricsMap.set(bucketKey, {
+                timestamp: bucketTime,
+                requests: 0, errorCount: 0, durationSum: 0, durationMax: 0,
+                routes: {}, statusCodes: {},
+                countries: {}, browsers: {}, os: {}, devices: {},
+              });
             }
             const m = apmMetricsMap.get(bucketKey);
             m.requests++;
             if (isError) m.errorCount++;
             m.durationSum += duration;
             if (duration > m.durationMax) m.durationMax = duration;
-            const safeRoute = `${method} ${route}`.replace(/\./g, '_').replace(/\$/g, '');
-            
-            // Enterprise Object tracking for routes
-            if (!m.routes[safeRoute]) {
-              m.routes[safeRoute] = { count: 0, errors: 0, duration: 0 };
-            }
-            m.routes[safeRoute].count += 1;
-            if (isError) m.routes[safeRoute].errors += 1;
-            m.routes[safeRoute].duration += duration;
 
-            m.statusCodes[spanStatus] = (m.statusCodes[spanStatus] || 0) + 1;
+            incRoute(m.routes, `${method} ${route}`, isError, duration);
+            inc(m.statusCodes, String(spanStatus));
+            inc(m.countries, country);
+            inc(m.browsers, browser);
+            inc(m.os, os);
+            inc(m.devices, device);
 
           } else if (context.target === 'task') {
             const taskName = name;
@@ -142,16 +264,26 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
             if (duration > m.durationMax) m.durationMax = duration;
 
           } else if (context.target === 'rum') {
+            // --- RUM: extract browser/OS/device from resource/span attributes ---
+            const ip = extractClientIp(attributes, resourceAttrs, requestIp);
+            const { country, city } = getGeoData(ip);
+            const userAgent = extractUserAgent(attributes, resourceAttrs, requestUserAgent);
+            const { browser, os, device } = parseUserAgent(userAgent);
+
             rumTraceOps.push({
               updateOne: {
                 filter: { traceId, serviceId: context.serviceId },
                 update: {
                   $set: {
                     serviceId: context.serviceId, traceId,
-                    sessionId: getAttribute(attributes, 'session.id') || 'unknown',
-                    traceType: 'route_change', url: httpUrl || 'unknown', path: httpTarget || name || 'Unknown Path',
+                    sessionId: getAttribute(attributes, 'session.id') || getAttribute(resourceAttrs, 'session.id') || 'unknown',
+                    traceType: 'route_change', url: httpUrl || 'unknown',
+                    path: httpTarget || name || 'Unknown Path',
                     duration, timestamp,
-                    ip: '0.0.0.0', country: 'Unknown', city: 'Unknown', userAgent: 'OTel-Agent', browser: 'Unknown', os: 'Unknown', device: 'Unknown'
+                    ip: ip ?? 'Unknown',
+                    country, city,
+                    userAgent: userAgent || 'Unknown',
+                    browser, os, device,
                   }
                 },
                 upsert: true
@@ -160,22 +292,27 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
           }
 
         } else {
-          // --- 2. CHILD SPAN REGISTRATION ---
+          // -----------------------------------------------------------------
+          // 2. CHILD SPAN REGISTRATION
+          // -----------------------------------------------------------------
           const type = dbSystem ? 'db' : (httpMethod ? 'http' : 'custom');
+
+          const spanMeta = collectAttributes(attributes);
+
           const childSpan = {
-            spanId, name, type,
+            spanId, parentSpanId, name, type,
             // Storing absolute MS. Read controllers will dynamically map to relative MS for the Waterfall UI.
             startTime: startTimeMs,
             duration, status: spanStatus,
-            meta: { 'db.system': dbSystem, 'db.statement': dbStatement, 'http.url': httpUrl, 'error': errorMsg }
+            meta: spanMeta
           };
 
           // Partial Trace Protection
           if (context.target === 'apm') {
-            apmTraceOps.push({ 
-              updateOne: { 
-                filter: { traceId, serviceId: context.serviceId }, 
-                update: { 
+            apmTraceOps.push({
+              updateOne: {
+                filter: { traceId, serviceId: context.serviceId },
+                update: {
                   $push: { spans: childSpan },
                   $setOnInsert: {
                     timestamp,
@@ -184,17 +321,19 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
                     route: name || 'Internal Operation',
                     path: name || 'Internal Operation',
                     status: 200,
-                    hasErrors: isError
+                    hasErrors: isError,
+                    ip: 'Unknown', country: 'Unknown', city: 'Unknown',
+                    userAgent: 'Unknown', browser: 'Unknown', os: 'Unknown', device: 'Desktop',
                   }
-                }, 
-                upsert: true 
-              } 
+                },
+                upsert: true
+              }
             });
           } else if (context.target === 'task') {
-            taskRunOps.push({ 
-              updateOne: { 
-                filter: { runId: traceId, serviceId: context.serviceId }, 
-                update: { 
+            taskRunOps.push({
+              updateOne: {
+                filter: { runId: traceId, serviceId: context.serviceId },
+                update: {
                   $push: { spans: childSpan },
                   $setOnInsert: {
                     timestamp,
@@ -204,15 +343,15 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
                     taskType: 'custom',
                     metadata: { source: 'opentelemetry' }
                   }
-                }, 
-                upsert: true 
-              } 
+                },
+                upsert: true
+              }
             });
           } else if (context.target === 'rum') {
-            rumTraceOps.push({ 
-              updateOne: { 
-                filter: { traceId, serviceId: context.serviceId }, 
-                update: { 
+            rumTraceOps.push({
+              updateOne: {
+                filter: { traceId, serviceId: context.serviceId },
+                update: {
                   $push: { spans: childSpan },
                   $setOnInsert: {
                     timestamp,
@@ -221,26 +360,32 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
                     path: name || 'Internal',
                     traceType: 'resource',
                     sessionId: 'unknown',
-                    ip: '0.0.0.0', country: 'Unknown', city: 'Unknown', userAgent: 'OTel-Agent', browser: 'Unknown', os: 'Unknown', device: 'Unknown'
+                    ip: 'Unknown', country: 'Unknown', city: 'Unknown',
+                    userAgent: 'Unknown', browser: 'Unknown', os: 'Unknown', device: 'Desktop',
                   }
-                }, 
-                upsert: true 
-              } 
+                },
+                upsert: true
+              }
             });
           }
         }
 
-        // --- 3. UNIVERSAL ERROR TRACKING ---
+        // -----------------------------------------------------------------
+        // 3. UNIVERSAL ERROR TRACKING
+        // -----------------------------------------------------------------
         if (isError || errorMsg) {
           const finalErrorClass = errorType || 'OTelException';
           const finalErrorMsg = errorMsg || span.status?.message || 'Unknown span error';
           const fingerprint = generateErrorFingerprint(context.serviceId, finalErrorClass, cleanMessageForFingerprint(finalErrorMsg));
 
+          const errorContext = collectAttributes(attributes);
+          errorContext._spanName = name;
+
           errorEvents.push({
             serviceId: context.serviceId,
             serviceModel: context.target === 'task' ? 'TaskService' : context.target === 'rum' ? 'RumService' : 'ApmService',
             traceId, fingerprint, stackTrace: errorStack || '',
-            context: { spanName: name, attributes: attributes.reduce((acc: any, curr: any) => { acc[curr.key] = curr.value.stringValue || curr.value.intValue; return acc; }, {}) },
+            context: errorContext,
             timestamp
           });
 
@@ -256,7 +401,9 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
     }
   }
 
-  // --- 4. EXECUTE PARALLEL BULK WRITES ---
+  // -----------------------------------------------------------------------
+  // 4. EXECUTE PARALLEL BULK WRITES
+  // -----------------------------------------------------------------------
   const promises = [];
 
   if (apmTraceOps.length > 0) promises.push(ApmTrace.bulkWrite(apmTraceOps, { ordered: false }));
@@ -265,14 +412,35 @@ export const translateOtlpTraces = async (context: OtlpContext, resourceSpans: a
 
   if (apmMetricsMap.size > 0) {
     const apmMetOps = Array.from(apmMetricsMap.values()).map(m => {
-      const incUpdate: any = { requests: m.requests, errorCount: m.errorCount, durationSum: m.durationSum };
-      Object.entries(m.routes).forEach(([k, v]: [string, any]) => {
-        incUpdate[`routes.${k}.count`] = v.count;
-        incUpdate[`routes.${k}.errors`] = v.errors;
-        incUpdate[`routes.${k}.duration`] = v.duration;
-      });
-      Object.entries(m.statusCodes).forEach(([k, v]) => incUpdate[`statusCodes.${k}`] = v);
-      return { updateOne: { filter: { serviceId: context.serviceId, timestamp: m.timestamp }, update: { $inc: incUpdate, $max: { durationMax: m.durationMax } }, upsert: true } };
+      const incUpdate: Record<string, any> = {
+        requests: m.requests, errorCount: m.errorCount, durationSum: m.durationSum
+      };
+
+      for (const [k, v] of Object.entries(m.routes)) {
+        incUpdate[`routes.${k}.count`] = (v as any).count;
+        incUpdate[`routes.${k}.errors`] = (v as any).errors;
+        incUpdate[`routes.${k}.duration`] = (v as any).duration;
+      }
+
+      const addMapToInc = (prefix: string, obj: Record<string, number>) => {
+        for (const [k, v] of Object.entries(obj)) {
+          incUpdate[`${prefix}.${k}`] = v;
+        }
+      };
+
+      addMapToInc('statusCodes', m.statusCodes);
+      addMapToInc('countries', m.countries);
+      addMapToInc('browsers', m.browsers);
+      addMapToInc('os', m.os);
+      addMapToInc('devices', m.devices);
+
+      return {
+        updateOne: {
+          filter: { serviceId: context.serviceId, timestamp: m.timestamp },
+          update: { $inc: incUpdate, $max: { durationMax: m.durationMax } },
+          upsert: true
+        }
+      };
     });
     promises.push(ApmMetric.bulkWrite(apmMetOps, { ordered: false }));
   }

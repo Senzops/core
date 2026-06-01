@@ -91,6 +91,7 @@ export interface IRumTrace extends Document {
 
 const RumSpanSchema = new Schema({
   spanId: String,
+  parentSpanId: String,
   name: String,
   type: String,
   method: String,

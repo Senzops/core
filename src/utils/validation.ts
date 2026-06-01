@@ -216,6 +216,7 @@ export const UpdateApmSchema = z.object({
 
 const ApmSpanSchema = z.object({
   spanId: z.string().optional(),
+  parentSpanId: z.string().optional(),
   name: z.string(),
   type: z.string(),
   startTime: z.number().min(0),
@@ -355,6 +356,7 @@ export const ApmErrorIngestSchema = z.object({
 // --- TASK MONITORING SCHEMAS ---
 const TaskSpanSchema = z.object({
   spanId: z.string().optional(),
+  parentSpanId: z.string().optional(),
   name: z.string(),
   type: z.string(),
   startTime: z.number().min(0),
@@ -426,6 +428,7 @@ export const RegisterRumSchema = z.object({
 
 const RumSpanSchema = z.object({
   spanId: z.string(),
+  parentSpanId: z.string().optional(),
   name: z.string(),
   type: z.enum(['fetch', 'xhr', 'http', 'resource', 'long-task', 'longtask', 'click', 'custom', 'visibility', 'interaction', 'navigation_stage']),
   method: z.string().optional(),

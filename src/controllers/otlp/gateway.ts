@@ -6,6 +6,7 @@ import { ApmService } from '../../models/Apm';
 import { RumService } from '../../models/Rum';
 import { TaskService } from '../../models/Task';
 import { OtlpContext } from '../../middlewares/otlpAuth';
+import { getClientIp } from '../../utils/getClientIp';
 
 // --- Enterprise Fix: Centralized Async Heartbeat ---
 // Updates the service's lastSeen timestamp without blocking the high-throughput OTLP pipeline.
@@ -37,11 +38,14 @@ export const ingestOtlpTraces = async (req: Request, res: Response, next: NextFu
       return res.status(400).json({ error: "Invalid OTLP payload: Missing resourceSpans array" });
     }
 
+    const requestIp = getClientIp(req);
+    const requestUserAgent = req.headers['user-agent'] || undefined;
+
     // Acknowledge receipt immediately to free up the client SDK (Standard OTel behavior)
     res.status(202).json({ message: "Traces accepted for processing" });
 
     // Offload the heavy translation and MongoDB upserts to the background engine
-    translateOtlpTraces(context, resourceSpans).catch(err => {
+    translateOtlpTraces(context, resourceSpans, requestIp, requestUserAgent).catch(err => {
       logger.error(`[OTLP Traces] Translation failed for ${context.serviceName}: ${err.message}`);
     });
 
