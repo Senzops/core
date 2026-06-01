@@ -2,6 +2,7 @@ import { Server as HttpServer } from 'http';
 import { Server, Socket } from 'socket.io';
 import admin from 'firebase-admin';
 import { Vps } from '../models/Vps';
+import { OrganizationMember } from '../models/Organization';
 import { logger } from '../utils/logger';
 
 // Map to track active agents: vpsId -> socketId
@@ -36,12 +37,13 @@ export const initSocketServer = (httpServer: HttpServer) => {
 
       // 2. Client Auth
       if (type === 'client') {
-        const { token } = socket.handshake.auth;
+        const { token, orgId } = socket.handshake.auth;
         if (!token) return next(new Error('Missing Auth Token'));
 
         // Handle Demo Token
         if (token === 'demo-token') {
           socket.data.uid = 'demo-user';
+          socket.data.ownerId = orgId ? `org_${orgId}` : 'demo-user';
           socket.data.role = 'client';
           socket.data.isDemo = true;
           return next();
@@ -50,6 +52,15 @@ export const initSocketServer = (httpServer: HttpServer) => {
         const decodedToken = await admin.auth().verifyIdToken(token);
         socket.data.uid = decodedToken.uid;
         socket.data.role = 'client';
+
+        if (orgId) {
+          const member = await OrganizationMember.findOne({ orgId, userId: decodedToken.uid }).lean();
+          if (!member) return next(new Error('Not a member of this organization'));
+          socket.data.ownerId = `org_${orgId}`;
+        } else {
+          socket.data.ownerId = decodedToken.uid;
+        }
+
         return next();
       }
 
@@ -95,9 +106,8 @@ const handleClientConnection = (socket: Socket, io: Server) => {
   let currentVpsId: string | null = null;
 
   socket.on('term:connect', async ({ vpsId }) => {
-    // 1. Verify Access (Skip DB check for Demo, or mock it)
     if (!socket.data.isDemo) {
-      const vps = await Vps.findOne({ _id: vpsId, ownerId: socket.data.uid });
+      const vps = await Vps.findOne({ _id: vpsId, ownerId: socket.data.ownerId });
       if (!vps) {
         socket.emit('term:error', 'Access Denied');
         return;
