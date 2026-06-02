@@ -10,6 +10,16 @@ import { startBillingCron } from './billing';
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/senzor';
 
+// Prevent uncaught exceptions and unhandled rejections from crashing the worker process.
+// Each cron job runs independently — a single failure does not invalidate process state.
+process.on('uncaughtException', (error) => {
+  logger.error('[Worker] Uncaught exception:', error);
+});
+
+process.on('unhandledRejection', (reason: any) => {
+  logger.error('[Worker] Unhandled rejection:', reason);
+});
+
 // --- Standalone Worker Process ---
 const initWorker = async () => {
   try {
