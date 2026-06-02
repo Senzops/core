@@ -3,6 +3,15 @@ import { MongoClient } from 'mongodb';
 import Redis from 'ioredis';
 import pg from 'pg';
 import mysql2 from 'mysql2';
+
+// Runtime hotfix for @senzops/apm-node callback query .then() bug
+try {
+  const dummyQuery = (mysql2.Connection as any).createQuery('SELECT 1', [], () => {}, {});
+  const QueryProto = Object.getPrototypeOf(dummyQuery);
+  if (QueryProto && typeof QueryProto.then === 'function') {
+    delete QueryProto.then;
+  }
+} catch (e) {}
 import { DatabaseService, DbCollectionStat, DbMetric } from '../models/Database';
 import { decrypt } from '../utils/crypto';
 import { logger } from '../utils/logger';
