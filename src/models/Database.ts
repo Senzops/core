@@ -4,12 +4,13 @@ import mongoose, { Schema, Document } from 'mongoose';
 export interface IDatabaseService extends Document {
   ownerId: string;
   name: string;
-  type: 'mongodb' | 'postgresql' | 'mysql' | 'redis'; // Added redis
+  type: 'mongodb' | 'postgresql' | 'mysql' | 'redis';
   encryptedUri: string;
   interval: number;
   status: 'online' | 'offline' | 'error';
   lastCheck?: Date;
   errorMessage?: string;
+  version?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -22,7 +23,8 @@ const DatabaseServiceSchema = new Schema<IDatabaseService>({
   interval: { type: Number, default: 5 },
   status: { type: String, enum: ['online', 'offline', 'error'], default: 'offline' },
   lastCheck: { type: Date },
-  errorMessage: { type: String }
+  errorMessage: { type: String },
+  version: { type: String }
 }, { timestamps: true });
 
 // --- 2. Database Metrics (Time Series) ---
@@ -64,6 +66,7 @@ export interface IDbMetric extends Document {
     expiredKeys: number;
     usedMemoryPeak: number;
     fragmentationRatio: number;
+    blockedClients: number;
   };
 
   // SQL Specific Metrics (PostgreSQL & MySQL)
@@ -115,7 +118,8 @@ const DbMetricSchema = new Schema<IDbMetric>({
     evictedKeys: { type: Number, default: 0 },
     expiredKeys: { type: Number, default: 0 },
     usedMemoryPeak: { type: Number, default: 0 },
-    fragmentationRatio: { type: Number, default: 0 }
+    fragmentationRatio: { type: Number, default: 0 },
+    blockedClients: { type: Number, default: 0 }
   },
 
   // SQL Specifics (PostgreSQL & MySQL)

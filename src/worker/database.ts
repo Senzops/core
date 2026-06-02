@@ -112,7 +112,8 @@ const processRedis = async (dbObj: any, checkTime: Date) => {
     let redisStats = {
       keyspaceHits: 0, keyspaceMisses: 0, evictedKeys: 0, expiredKeys: 0, hitRate: 0,
       usedMemoryPeak: safeNum(info.used_memory_peak) / (1024*1024),
-      fragmentationRatio: safeNum(info.mem_fragmentation_ratio)
+      fragmentationRatio: safeNum(info.mem_fragmentation_ratio),
+      blockedClients: safeNum(info.blocked_clients)
     };
 
     if (prev) {
@@ -203,7 +204,8 @@ const processRedis = async (dbObj: any, checkTime: Date) => {
       redis: redisStats
     });
 
-    await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'online', lastCheck: checkTime, errorMessage: '' });
+    const versionStr = info.redis_version || '';
+    await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'online', lastCheck: checkTime, errorMessage: '', ...(versionStr && { version: versionStr }) });
 
   } catch (error: any) {
     if (client) {
@@ -377,9 +379,10 @@ const processMongoDB = async (dbObj: any, checkTime: Date) => {
     });
 
     // 6. Update Registry Status
+    const mongoVersion = serverStatus.version || '';
     await DatabaseService.updateOne(
       { _id: dbObj._id },
-      { status: 'online', lastCheck: checkTime, errorMessage: '' }
+      { status: 'online', lastCheck: checkTime, errorMessage: '', ...(mongoVersion && { version: mongoVersion }) }
     );
 
   } catch (error: any) {
@@ -436,7 +439,8 @@ const processPostgreSQL = async (dbObj: any, checkTime: Date) => {
         count(*) AS total
         FROM pg_stat_activity WHERE backend_type = 'client backend'`),
       pool.query(`SELECT name, setting FROM pg_settings WHERE name IN ('max_connections', 'shared_buffers', 'work_mem')`),
-      pool.query(`SELECT pg_database_size(current_database()) AS db_size`),
+      pool.query(`SELECT pg_database_size(current_database()) AS db_size,
+        (SELECT COALESCE(SUM(pg_indexes_size(c.oid)), 0) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relkind = 'r' AND n.nspname NOT IN ('pg_catalog', 'information_schema')) AS total_index_size`),
       pool.query(`SELECT
         CASE WHEN pg_is_in_recovery() THEN
           COALESCE(EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp())) * 1000, -1)
@@ -453,6 +457,7 @@ const processPostgreSQL = async (dbObj: any, checkTime: Date) => {
     for (const row of settingsRes.rows) settingsMap[row.name] = row.setting;
     const maxConn = safeNum(settingsMap['max_connections'], 100);
     const dbSizeBytes = safeNum(dbSizeRes.rows[0]?.db_size);
+    const totalIndexSizeBytes = safeNum(dbSizeRes.rows[0]?.total_index_size);
     const replLagMs = safeNum(replRes.rows[0]?.lag_ms, -1);
     const lockStats = locksRes.rows[0] || {};
 
@@ -576,15 +581,26 @@ const processPostgreSQL = async (dbObj: any, checkTime: Date) => {
       }
     } catch {}
 
-    // 6. Uptime
-    const uptimeRes = await pool.query(`SELECT EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time())) AS uptime`);
+    // 6. Uptime & version
+    const [uptimeRes, versionRes] = await Promise.all([
+      pool.query(`SELECT EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time())) AS uptime`),
+      pool.query(`SHOW server_version`).catch(() => ({ rows: [] }))
+    ]);
     const uptimeSeconds = safeNum(uptimeRes.rows[0]?.uptime);
+    const pgVersion = versionRes.rows[0]?.server_version || '';
 
-    // 7. Memory estimation (shared_buffers in 8KB pages)
+    // 7. Slow queries (active queries running > 1 second)
+    let slowQueriesCount = 0;
+    try {
+      const slowRes = await pool.query(`SELECT count(*) AS cnt FROM pg_stat_activity WHERE state = 'active' AND backend_type = 'client backend' AND now() - query_start > interval '1 second'`);
+      slowQueriesCount = safeNum(slowRes.rows[0]?.cnt);
+    } catch {}
+
+    // 8. Memory estimation (shared_buffers in 8KB pages)
     const sharedBufferPages = safeNum(settingsMap['shared_buffers']);
     const sharedBuffersMB = (sharedBufferPages * 8192) / (1024 * 1024);
 
-    // 8. Save metric
+    // 9. Save metric
     const currentConns = safeNum(activity.total);
     await DbMetric.create({
       dbId: dbObj._id,
@@ -605,7 +621,7 @@ const processPostgreSQL = async (dbObj: any, checkTime: Date) => {
       network,
       storage: {
         dataSize: dbSizeBytes / (1024 * 1024),
-        indexSize: 0,
+        indexSize: totalIndexSizeBytes / (1024 * 1024),
         storageSize: dbSizeBytes / (1024 * 1024),
         objects: 0
       },
@@ -629,11 +645,11 @@ const processPostgreSQL = async (dbObj: any, checkTime: Date) => {
         transactionsCommitted: sqlRates.txCommitted,
         transactionsRolledBack: sqlRates.txRolledBack,
         waitEvents: safeNum(activity.blocked),
-        slowQueries: 0
+        slowQueries: slowQueriesCount
       }
     });
 
-    await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'online', lastCheck: checkTime, errorMessage: '' });
+    await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'online', lastCheck: checkTime, errorMessage: '', ...(pgVersion && { version: pgVersion }) });
 
   } catch (error: any) {
     logger.warn(`[DB Engine] Failed to poll PostgreSQL ${dbId}: ${error.message}`);
@@ -823,21 +839,23 @@ const processMySQL = async (dbObj: any, checkTime: Date) => {
       dbSizeBytes = safeNum((sizeRows as any[])[0]?.total);
     } catch {}
 
-    // Active / blocked queries
-    let activeQueries = 0;
-    let blockedQueries = 0;
+    // Active / blocked queries — Threads_running is more accurate than PROCESSLIST parsing
+    const activeQueries = safeNum(status['Threads_running']);
+    const blockedQueries = safeNum(status['Innodb_row_lock_current_waits']);
+
+    // Index size aggregate
+    let totalIndexSizeBytes = 0;
     try {
-      const [procRows] = await pool.query(`
-        SELECT
-          SUM(CASE WHEN COMMAND != 'Sleep' THEN 1 ELSE 0 END) AS active,
-          SUM(CASE WHEN STATE LIKE '%lock%' OR STATE LIKE '%waiting%' THEN 1 ELSE 0 END) AS blocked
-        FROM information_schema.PROCESSLIST
-        WHERE USER != 'system user'
+      const [idxRows] = await pool.query(`
+        SELECT COALESCE(SUM(INDEX_LENGTH), 0) AS total_idx
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
       `);
-      const procRow = (procRows as any[])[0];
-      activeQueries = safeNum(procRow?.active);
-      blockedQueries = safeNum(procRow?.blocked);
+      totalIndexSizeBytes = safeNum((idxRows as any[])[0]?.total_idx);
     } catch {}
+
+    // MySQL version
+    const mysqlVersion = variables['version'] || '';
 
     // 6. Save metric
     await DbMetric.create({
@@ -859,7 +877,7 @@ const processMySQL = async (dbObj: any, checkTime: Date) => {
       network,
       storage: {
         dataSize: dbSizeBytes / (1024 * 1024),
-        indexSize: 0,
+        indexSize: totalIndexSizeBytes / (1024 * 1024),
         storageSize: dbSizeBytes / (1024 * 1024),
         objects: 0
       },
@@ -887,7 +905,7 @@ const processMySQL = async (dbObj: any, checkTime: Date) => {
       }
     });
 
-    await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'online', lastCheck: checkTime, errorMessage: '' });
+    await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'online', lastCheck: checkTime, errorMessage: '', ...(mysqlVersion && { version: mysqlVersion }) });
 
   } catch (error: any) {
     logger.warn(`[DB Engine] Failed to poll MySQL ${dbId}: ${error.message}`);

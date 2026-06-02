@@ -76,6 +76,7 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
             redisExpired: { $avg: "$redis.expiredKeys" },
             redisMemPeak: { $max: "$redis.usedMemoryPeak" },
             redisFragRatio: { $avg: "$redis.fragmentationRatio" },
+            redisBlockedClients: { $max: "$redis.blockedClients" },
 
             // SQL Specifics (PostgreSQL & MySQL)
             sqlActiveQueries: { $avg: "$sql.activeQueries" },
@@ -105,7 +106,7 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
             storageData: 1, storageIndex: 1, storageTotal: 1,
             locksAR: 1, locksAW: 1, locksQR: 1, locksQW: 1,
             connections: 1, netIn: 1, netOut: 1, netRequests: 1,
-            redisHits: 1, redisMisses: 1, redisHitRate: 1, redisEvicted: 1, redisExpired: 1, redisMemPeak: 1, redisFragRatio: 1,
+            redisHits: 1, redisMisses: 1, redisHitRate: 1, redisEvicted: 1, redisExpired: 1, redisMemPeak: 1, redisFragRatio: 1, redisBlockedClients: 1,
             sqlActiveQueries: 1, sqlBlockedQueries: 1, sqlDeadlocks: 1, sqlCacheHitRate: 1, sqlTempBytes: 1, sqlReplicationLag: 1,
             sqlTableScans: 1, sqlIndexScans: 1, sqlRowsReturned: 1, sqlRowsModified: 1, sqlTxCommitted: 1, sqlTxRolledBack: 1, sqlWaitEvents: 1, sqlSlowQueries: 1
           }
