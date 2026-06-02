@@ -174,12 +174,19 @@ export function getChannel(referrer?: string | null, requestUrl?: string | null)
     }
 
     // Internal referrer (same site) — classify as Internal, not Referral
-    if (referrer && requestUrl && (new URL(referrer).hostname === new URL(requestUrl).hostname)) {
-      result.channel = 'Internal';
-      result.medium = 'internal';
-      result.source = host;
-      result.matchedRule = 'internal-host-referrer';
-      return result;
+    if (refUrl && requestUrl) {
+      try {
+        const reqUrl = new URL(requestUrl);
+        if (refUrl.hostname === reqUrl.hostname) {
+          result.channel = 'Internal';
+          result.medium = 'internal';
+          result.source = host;
+          result.matchedRule = 'internal-host-referrer';
+          return result;
+        }
+      } catch {
+        // malformed requestUrl — skip internal-referrer check
+      }
     }
 
     // Generic referral
