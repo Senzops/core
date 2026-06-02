@@ -2,7 +2,7 @@ import cron from 'node-cron';
 import { MongoClient } from 'mongodb';
 import Redis from 'ioredis';
 import pg from 'pg';
-import mysql from 'mysql2/promise';
+import mysql2 from 'mysql2';
 import { DatabaseService, DbCollectionStat, DbMetric } from '../models/Database';
 import { decrypt } from '../utils/crypto';
 import { logger } from '../utils/logger';
@@ -660,14 +660,18 @@ const processPostgreSQL = async (dbObj: any, checkTime: Date) => {
   }
 };
 
-// --- MYSQL PROCESSOR (Connection-per-poll: avoids mysql2 pool promise wrapper bug) ---
+// --- MYSQL PROCESSOR ---
+// Uses base mysql2 module with .promise() wrapper to avoid mysql2/promise module issues.
+// Connection-per-poll pattern: fresh connection each cycle, closed in finally block.
 const processMySQL = async (dbObj: any, checkTime: Date) => {
   const dbId = dbObj._id.toString();
   const uri = decrypt(dbObj.encryptedUri);
-  let conn: Awaited<ReturnType<typeof mysql.createConnection>> | null = null;
+  let rawConn: ReturnType<typeof mysql2.createConnection> | null = null;
 
   try {
-    conn = await mysql.createConnection({ uri, connectTimeout: 5000 });
+    rawConn = mysql2.createConnection({ uri, connectTimeout: 5000 });
+    rawConn.on('error', () => {}); // Prevent uncaught exception; query failures surface in try/catch
+    const conn = rawConn.promise();
 
     // 1. Measure ping latency
     const pingStart = performance.now();
@@ -895,7 +899,7 @@ const processMySQL = async (dbObj: any, checkTime: Date) => {
     logger.warn(`[DB Engine] Failed to poll MySQL ${dbId}: ${error.message}`);
     await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'error', lastCheck: checkTime, errorMessage: error.message });
   } finally {
-    if (conn) await conn.end().catch(() => {});
+    if (rawConn) rawConn.end(() => {});
   }
 };
 
