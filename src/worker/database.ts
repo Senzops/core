@@ -2,8 +2,7 @@ import cron from 'node-cron';
 import { MongoClient } from 'mongodb';
 import Redis from 'ioredis';
 import pg from 'pg';
-import mysql2 from 'mysql2';
-import type { Pool as MySQLPromisePool } from 'mysql2/promise';
+import mysql from 'mysql2/promise';
 import { DatabaseService, DbCollectionStat, DbMetric } from '../models/Database';
 import { decrypt } from '../utils/crypto';
 import { logger } from '../utils/logger';
@@ -12,7 +11,6 @@ import { logger } from '../utils/logger';
 const mongoPool = new Map<string, MongoClient>();
 const redisPool = new Map<string, Redis>();
 const pgPool = new Map<string, pg.Pool>();
-const mysqlPool = new Map<string, MySQLPromisePool>();
 
 const previousState = new Map<string, any>();
 
@@ -662,32 +660,23 @@ const processPostgreSQL = async (dbObj: any, checkTime: Date) => {
   }
 };
 
-// --- MYSQL PROCESSOR ---
+// --- MYSQL PROCESSOR (Connection-per-poll: avoids mysql2 pool promise wrapper bug) ---
 const processMySQL = async (dbObj: any, checkTime: Date) => {
   const dbId = dbObj._id.toString();
-  let pool = mysqlPool.get(dbId);
+  const uri = decrypt(dbObj.encryptedUri);
+  let conn: Awaited<ReturnType<typeof mysql.createConnection>> | null = null;
 
   try {
-    if (!pool) {
-      const uri = decrypt(dbObj.encryptedUri);
-      const basePool = mysql2.createPool({
-        uri,
-        waitForConnections: true,
-        connectionLimit: 2,
-        connectTimeout: 5000
-      });
-      pool = basePool.promise();
-      mysqlPool.set(dbId, pool);
-    }
+    conn = await mysql.createConnection({ uri, connectTimeout: 5000 });
 
     // 1. Measure ping latency
     const pingStart = performance.now();
-    await pool.query('SELECT 1');
+    await conn.query('SELECT 1');
     const pingLatency = performance.now() - pingStart;
 
     // 2. Gather metrics
-    const [statusRows] = await pool.query('SHOW GLOBAL STATUS');
-    const [variablesRows] = await pool.query('SHOW GLOBAL VARIABLES');
+    const [statusRows] = await conn.query('SHOW GLOBAL STATUS');
+    const [variablesRows] = await conn.query('SHOW GLOBAL VARIABLES');
 
     const status: Record<string, string> = {};
     for (const row of statusRows as any[]) status[row.Variable_name] = row.Value;
@@ -782,7 +771,7 @@ const processMySQL = async (dbObj: any, checkTime: Date) => {
     const ONE_HOUR_MS = 60 * 60 * 1000;
     if (currentTs - lastCollectionCheck > ONE_HOUR_MS) {
       try {
-        const [tableRows] = await pool.query(`
+        const [tableRows] = await conn.query(`
           SELECT
             CONCAT(TABLE_SCHEMA, '.', TABLE_NAME) AS name,
             TABLE_ROWS AS \`count\`,
@@ -822,7 +811,7 @@ const processMySQL = async (dbObj: any, checkTime: Date) => {
     // Replication lag
     let replicationLagMs = -1;
     try {
-      const [replRows] = await pool.query('SHOW REPLICA STATUS');
+      const [replRows] = await conn.query('SHOW REPLICA STATUS');
       const replRow = (replRows as any[])[0];
       if (replRow) {
         replicationLagMs = safeNum(replRow.Seconds_Behind_Source, -1) * 1000;
@@ -830,31 +819,24 @@ const processMySQL = async (dbObj: any, checkTime: Date) => {
       }
     } catch {}
 
-    // DB size
+    // DB size + index size in a single query
     let dbSizeBytes = 0;
+    let totalIndexSizeBytes = 0;
     try {
-      const [sizeRows] = await pool.query(`
-        SELECT SUM(DATA_LENGTH + INDEX_LENGTH) AS total
+      const [sizeRows] = await conn.query(`
+        SELECT
+          COALESCE(SUM(DATA_LENGTH + INDEX_LENGTH), 0) AS total,
+          COALESCE(SUM(INDEX_LENGTH), 0) AS total_idx
         FROM information_schema.TABLES
         WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
       `);
       dbSizeBytes = safeNum((sizeRows as any[])[0]?.total);
+      totalIndexSizeBytes = safeNum((sizeRows as any[])[0]?.total_idx);
     } catch {}
 
-    // Active / blocked queries — Threads_running is more accurate than PROCESSLIST parsing
+    // Active / blocked queries
     const activeQueries = safeNum(status['Threads_running']);
     const blockedQueries = safeNum(status['Innodb_row_lock_current_waits']);
-
-    // Index size aggregate
-    let totalIndexSizeBytes = 0;
-    try {
-      const [idxRows] = await pool.query(`
-        SELECT COALESCE(SUM(INDEX_LENGTH), 0) AS total_idx
-        FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
-      `);
-      totalIndexSizeBytes = safeNum((idxRows as any[])[0]?.total_idx);
-    } catch {}
 
     // MySQL version
     const mysqlVersion = variables['version'] || '';
@@ -911,11 +893,9 @@ const processMySQL = async (dbObj: any, checkTime: Date) => {
 
   } catch (error: any) {
     logger.warn(`[DB Engine] Failed to poll MySQL ${dbId}: ${error.message}`);
-    if (pool) {
-      await pool.end().catch(() => {});
-      mysqlPool.delete(dbId);
-    }
     await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'error', lastCheck: checkTime, errorMessage: error.message });
+  } finally {
+    if (conn) await conn.end().catch(() => {});
   }
 };
 
@@ -957,13 +937,6 @@ const cleanupPool = async () => {
     if (!activeIdStrings.includes(dbId)) {
       await pool.end().catch(() => {});
       pgPool.delete(dbId);
-      previousState.delete(dbId);
-    }
-  }
-  for (const [dbId, pool] of mysqlPool.entries()) {
-    if (!activeIdStrings.includes(dbId)) {
-      await pool.end().catch(() => {});
-      mysqlPool.delete(dbId);
       previousState.delete(dbId);
     }
   }
