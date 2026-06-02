@@ -1,6 +1,8 @@
 import { Request, Response, NextFunction } from 'express';
 import { MongoClient } from 'mongodb';
 import Redis from 'ioredis';
+import pg from 'pg';
+import mysql from 'mysql2/promise';
 import { DatabaseService, DbMetric, DbCollectionStat } from '../../models/Database';
 import { encrypt } from '../../utils/crypto';
 import { UpdateDbSchema } from '../../utils/validation';
@@ -40,6 +42,27 @@ export const registerDatabase = async (req: Request, res: Response, next: NextFu
         await redis.quit();
       } catch (err: any) {
         return res.status(400).json({ error: 'Redis Connection Failed', details: err.message });
+      }
+    } else if (type === 'postgresql') {
+      let client: pg.Client | null = null;
+      try {
+        client = new pg.Client({ connectionString: uri, connectionTimeoutMillis: 5000, statement_timeout: 5000 });
+        await client.connect();
+        await client.query('SELECT 1');
+      } catch (err: any) {
+        return res.status(400).json({ error: 'PostgreSQL Connection Failed', details: err.message });
+      } finally {
+        if (client) await client.end().catch(() => {});
+      }
+    } else if (type === 'mysql') {
+      let conn: mysql.Connection | null = null;
+      try {
+        conn = await mysql.createConnection({ uri, connectTimeout: 5000 });
+        await conn.query('SELECT 1');
+      } catch (err: any) {
+        return res.status(400).json({ error: 'MySQL Connection Failed', details: err.message });
+      } finally {
+        if (conn) await conn.end().catch(() => {});
       }
     } else {
       return res.status(400).json({ error: `Adapter for ${type} is not yet implemented.` });
@@ -112,6 +135,27 @@ export const updateDatabase = async (req: Request, res: Response, next: NextFunc
           await redis.quit();
         } catch (err: any) {
           return res.status(400).json({ error: 'Redis Connection Failed', details: err.message });
+        }
+      } else if (effectiveType === 'postgresql') {
+        let client: pg.Client | null = null;
+        try {
+          client = new pg.Client({ connectionString: updates.uri, connectionTimeoutMillis: 5000, statement_timeout: 5000 });
+          await client.connect();
+          await client.query('SELECT 1');
+        } catch (err: any) {
+          return res.status(400).json({ error: 'PostgreSQL Connection Failed', details: err.message });
+        } finally {
+          if (client) await client.end().catch(() => {});
+        }
+      } else if (effectiveType === 'mysql') {
+        let conn: mysql.Connection | null = null;
+        try {
+          conn = await mysql.createConnection({ uri: updates.uri, connectTimeout: 5000 });
+          await conn.query('SELECT 1');
+        } catch (err: any) {
+          return res.status(400).json({ error: 'MySQL Connection Failed', details: err.message });
+        } finally {
+          if (conn) await conn.end().catch(() => {});
         }
       } else {
         return res.status(400).json({ error: `Adapter for ${effectiveType} is not yet implemented.` });

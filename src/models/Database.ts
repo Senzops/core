@@ -65,6 +65,24 @@ export interface IDbMetric extends Document {
     usedMemoryPeak: number;
     fragmentationRatio: number;
   };
+
+  // SQL Specific Metrics (PostgreSQL & MySQL)
+  sql?: {
+    activeQueries: number;
+    blockedQueries: number;
+    deadlocks: number;
+    cacheHitRate: number;
+    tempBytesWritten: number;
+    replicationLagMs: number;
+    tableScans: number;
+    indexScans: number;
+    rowsReturned: number;
+    rowsModified: number;
+    transactionsCommitted: number;
+    transactionsRolledBack: number;
+    waitEvents: number;
+    slowQueries: number;
+  };
 }
 
 const DbMetricSchema = new Schema<IDbMetric>({
@@ -98,6 +116,24 @@ const DbMetricSchema = new Schema<IDbMetric>({
     expiredKeys: { type: Number, default: 0 },
     usedMemoryPeak: { type: Number, default: 0 },
     fragmentationRatio: { type: Number, default: 0 }
+  },
+
+  // SQL Specifics (PostgreSQL & MySQL)
+  sql: {
+    activeQueries: { type: Number, default: 0 },
+    blockedQueries: { type: Number, default: 0 },
+    deadlocks: { type: Number, default: 0 },
+    cacheHitRate: { type: Number, default: 0 },
+    tempBytesWritten: { type: Number, default: 0 },
+    replicationLagMs: { type: Number, default: -1 },
+    tableScans: { type: Number, default: 0 },
+    indexScans: { type: Number, default: 0 },
+    rowsReturned: { type: Number, default: 0 },
+    rowsModified: { type: Number, default: 0 },
+    transactionsCommitted: { type: Number, default: 0 },
+    transactionsRolledBack: { type: Number, default: 0 },
+    waitEvents: { type: Number, default: 0 },
+    slowQueries: { type: Number, default: 0 }
   }
 });
 

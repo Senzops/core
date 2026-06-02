@@ -75,7 +75,23 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
             redisEvicted: { $avg: "$redis.evictedKeys" },
             redisExpired: { $avg: "$redis.expiredKeys" },
             redisMemPeak: { $max: "$redis.usedMemoryPeak" },
-            redisFragRatio: { $avg: "$redis.fragmentationRatio" }
+            redisFragRatio: { $avg: "$redis.fragmentationRatio" },
+
+            // SQL Specifics (PostgreSQL & MySQL)
+            sqlActiveQueries: { $avg: "$sql.activeQueries" },
+            sqlBlockedQueries: { $avg: "$sql.blockedQueries" },
+            sqlDeadlocks: { $sum: "$sql.deadlocks" },
+            sqlCacheHitRate: { $avg: "$sql.cacheHitRate" },
+            sqlTempBytes: { $avg: "$sql.tempBytesWritten" },
+            sqlReplicationLag: { $avg: "$sql.replicationLagMs" },
+            sqlTableScans: { $avg: "$sql.tableScans" },
+            sqlIndexScans: { $avg: "$sql.indexScans" },
+            sqlRowsReturned: { $avg: "$sql.rowsReturned" },
+            sqlRowsModified: { $avg: "$sql.rowsModified" },
+            sqlTxCommitted: { $avg: "$sql.transactionsCommitted" },
+            sqlTxRolledBack: { $avg: "$sql.transactionsRolledBack" },
+            sqlWaitEvents: { $avg: "$sql.waitEvents" },
+            sqlSlowQueries: { $sum: "$sql.slowQueries" }
           }
         },
         { $sort: { "_id": 1 } },
@@ -89,7 +105,9 @@ export const getDatabaseStats = async (req: Request, res: Response, next: NextFu
             storageData: 1, storageIndex: 1, storageTotal: 1,
             locksAR: 1, locksAW: 1, locksQR: 1, locksQW: 1,
             connections: 1, netIn: 1, netOut: 1, netRequests: 1,
-            redisHits: 1, redisMisses: 1, redisHitRate: 1, redisEvicted: 1, redisExpired: 1, redisMemPeak: 1, redisFragRatio: 1
+            redisHits: 1, redisMisses: 1, redisHitRate: 1, redisEvicted: 1, redisExpired: 1, redisMemPeak: 1, redisFragRatio: 1,
+            sqlActiveQueries: 1, sqlBlockedQueries: 1, sqlDeadlocks: 1, sqlCacheHitRate: 1, sqlTempBytes: 1, sqlReplicationLag: 1,
+            sqlTableScans: 1, sqlIndexScans: 1, sqlRowsReturned: 1, sqlRowsModified: 1, sqlTxCommitted: 1, sqlTxRolledBack: 1, sqlWaitEvents: 1, sqlSlowQueries: 1
           }
         }
       ]),

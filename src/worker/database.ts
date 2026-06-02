@@ -1,6 +1,8 @@
 import cron from 'node-cron';
 import { MongoClient } from 'mongodb';
 import Redis from 'ioredis';
+import pg from 'pg';
+import mysql from 'mysql2/promise';
 import { DatabaseService, DbCollectionStat, DbMetric } from '../models/Database';
 import { decrypt } from '../utils/crypto';
 import { logger } from '../utils/logger';
@@ -8,6 +10,8 @@ import { logger } from '../utils/logger';
 // --- IN-MEMORY STATE ---
 const mongoPool = new Map<string, MongoClient>();
 const redisPool = new Map<string, Redis>();
+const pgPool = new Map<string, pg.Pool>();
+const mysqlPool = new Map<string, mysql.Pool>();
 
 const previousState = new Map<string, any>();
 
@@ -32,6 +36,8 @@ const pollDatabases = async () => {
   const promises = dueDbs.map(db => {
     if (db.type === 'mongodb') return processMongoDB(db, now);
     if (db.type === 'redis') return processRedis(db, now);
+    if (db.type === 'postgresql') return processPostgreSQL(db, now);
+    if (db.type === 'mysql') return processMySQL(db, now);
     return Promise.resolve();
   });
   await Promise.allSettled(promises);
@@ -391,6 +397,508 @@ const processMongoDB = async (dbObj: any, checkTime: Date) => {
   }
 };
 
+// --- POSTGRESQL PROCESSOR ---
+const processPostgreSQL = async (dbObj: any, checkTime: Date) => {
+  const dbId = dbObj._id.toString();
+  let pool = pgPool.get(dbId);
+
+  try {
+    if (!pool) {
+      const uri = decrypt(dbObj.encryptedUri);
+      pool = new pg.Pool({
+        connectionString: uri,
+        max: 2,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 5000,
+        statement_timeout: 5000
+      });
+      pgPool.set(dbId, pool);
+    }
+
+    // 1. Measure ping latency
+    const pingStart = performance.now();
+    await pool.query('SELECT 1');
+    const pingLatency = performance.now() - pingStart;
+
+    // 2. Gather metrics in parallel
+    const [
+      dbStatsRes,
+      activityRes,
+      settingsRes,
+      dbSizeRes,
+      replRes,
+      locksRes
+    ] = await Promise.all([
+      pool.query(`SELECT * FROM pg_stat_database WHERE datname = current_database()`),
+      pool.query(`SELECT
+        count(*) FILTER (WHERE state = 'active') AS active,
+        count(*) FILTER (WHERE wait_event_type IS NOT NULL AND state = 'active') AS blocked,
+        count(*) AS total
+        FROM pg_stat_activity WHERE backend_type = 'client backend'`),
+      pool.query(`SELECT name, setting FROM pg_settings WHERE name IN ('max_connections', 'shared_buffers', 'work_mem')`),
+      pool.query(`SELECT pg_database_size(current_database()) AS db_size`),
+      pool.query(`SELECT
+        CASE WHEN pg_is_in_recovery() THEN
+          COALESCE(EXTRACT(EPOCH FROM (now() - pg_last_xact_replay_timestamp())) * 1000, -1)
+        ELSE -1 END AS lag_ms`),
+      pool.query(`SELECT
+        count(*) FILTER (WHERE granted) AS granted,
+        count(*) FILTER (WHERE NOT granted) AS waiting
+        FROM pg_locks`)
+    ]);
+
+    const dbStats = dbStatsRes.rows[0] || {};
+    const activity = activityRes.rows[0] || {};
+    const settingsMap: Record<string, string> = {};
+    for (const row of settingsRes.rows) settingsMap[row.name] = row.setting;
+    const maxConn = safeNum(settingsMap['max_connections'], 100);
+    const dbSizeBytes = safeNum(dbSizeRes.rows[0]?.db_size);
+    const replLagMs = safeNum(replRes.rows[0]?.lag_ms, -1);
+    const lockStats = locksRes.rows[0] || {};
+
+    // 3. Process deltas
+    const currentTs = Date.now();
+    const prev = previousState.get(dbId);
+    let lastCollectionCheck = prev?.lastCollectionCheck || 0;
+
+    let throughput = { read: 0, write: 0 };
+    let network = { bytesIn: 0, bytesOut: 0, numRequests: 0 };
+    let sqlRates = {
+      tableScans: 0, indexScans: 0,
+      rowsReturned: 0, rowsModified: 0,
+      deadlocks: 0,
+      txCommitted: 0, txRolledBack: 0,
+      slowQueries: 0,
+      tempBytesWritten: 0
+    };
+
+    const tupReturned = safeNum(dbStats.tup_returned);
+    const tupFetched = safeNum(dbStats.tup_fetched);
+    const tupInserted = safeNum(dbStats.tup_inserted);
+    const tupUpdated = safeNum(dbStats.tup_updated);
+    const tupDeleted = safeNum(dbStats.tup_deleted);
+    const xactCommit = safeNum(dbStats.xact_commit);
+    const xactRollback = safeNum(dbStats.xact_rollback);
+    const deadlocks = safeNum(dbStats.deadlocks);
+    const tempBytes = safeNum(dbStats.temp_bytes);
+    const blksRead = safeNum(dbStats.blks_read);
+    const blksHit = safeNum(dbStats.blks_hit);
+
+    if (prev) {
+      const timeDeltaSec = (currentTs - prev.timestamp) / 1000;
+      if (timeDeltaSec > 0) {
+        const reads = tupFetched - prev.tupFetched;
+        const writes = (tupInserted - prev.tupInserted) + (tupUpdated - prev.tupUpdated) + (tupDeleted - prev.tupDeleted);
+        throughput.read = Math.max(0, reads / timeDeltaSec);
+        throughput.write = Math.max(0, writes / timeDeltaSec);
+
+        sqlRates.txCommitted = Math.max(0, (xactCommit - prev.xactCommit) / timeDeltaSec);
+        sqlRates.txRolledBack = Math.max(0, (xactRollback - prev.xactRollback) / timeDeltaSec);
+        sqlRates.deadlocks = Math.max(0, deadlocks - prev.deadlocks);
+        sqlRates.rowsReturned = Math.max(0, (tupReturned - prev.tupReturned) / timeDeltaSec);
+        sqlRates.rowsModified = Math.max(0, writes / timeDeltaSec);
+        sqlRates.tempBytesWritten = Math.max(0, (tempBytes - prev.tempBytes) / (1024 * 1024));
+
+        network.bytesIn = 0;
+        network.bytesOut = 0;
+        network.numRequests = throughput.read + throughput.write;
+      }
+    }
+
+    // Cache hit rate
+    const totalBlocks = blksHit + blksRead;
+    const cacheHitRate = totalBlocks > 0 ? (blksHit / totalBlocks) * 100 : 0;
+
+    previousState.set(dbId, {
+      timestamp: currentTs,
+      tupReturned, tupFetched, tupInserted, tupUpdated, tupDeleted,
+      xactCommit, xactRollback, deadlocks, tempBytes,
+      blksRead, blksHit,
+      lastCollectionCheck
+    });
+
+    // 4. Hourly table stats
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    if (currentTs - lastCollectionCheck > ONE_HOUR_MS) {
+      try {
+        const tableRes = await pool.query(`
+          SELECT
+            schemaname || '.' || relname AS name,
+            n_live_tup AS count,
+            pg_total_relation_size(relid) AS total_size,
+            pg_relation_size(relid) AS data_size,
+            pg_indexes_size(relid) AS index_size
+          FROM pg_stat_user_tables
+          ORDER BY pg_total_relation_size(relid) DESC
+          LIMIT 100
+        `);
+
+        const collections = tableRes.rows.map((r: any) => ({
+          name: r.name,
+          count: safeNum(r.count),
+          size: safeNum(r.data_size) / (1024 * 1024),
+          storageSize: safeNum(r.total_size) / (1024 * 1024),
+          indexSize: safeNum(r.index_size) / (1024 * 1024)
+        }));
+
+        await DbCollectionStat.findOneAndUpdate(
+          { dbId: dbObj._id },
+          { lastCheck: new Date(), collections },
+          { upsert: true }
+        );
+        const updatedState = previousState.get(dbId);
+        if (updatedState) updatedState.lastCollectionCheck = currentTs;
+      } catch (err: any) {
+        logger.warn(`[DB Engine] Failed to fetch table stats for PG ${dbId}: ${err.message}`);
+      }
+    }
+
+    // 5. Fetch index scan vs seq scan stats
+    let tableScansRate = 0;
+    let indexScansRate = 0;
+    try {
+      const scanRes = await pool.query(`
+        SELECT COALESCE(sum(seq_scan), 0) AS seq_scans, COALESCE(sum(idx_scan), 0) AS idx_scans
+        FROM pg_stat_user_tables
+      `);
+      const row = scanRes.rows[0];
+      if (prev?.seqScans !== undefined) {
+        const timeDeltaSec = (currentTs - prev.timestamp) / 1000;
+        if (timeDeltaSec > 0) {
+          tableScansRate = Math.max(0, (safeNum(row.seq_scans) - prev.seqScans) / timeDeltaSec);
+          indexScansRate = Math.max(0, (safeNum(row.idx_scans) - prev.idxScans) / timeDeltaSec);
+        }
+      }
+      const prevState = previousState.get(dbId);
+      if (prevState) {
+        prevState.seqScans = safeNum(row.seq_scans);
+        prevState.idxScans = safeNum(row.idx_scans);
+      }
+    } catch {}
+
+    // 6. Uptime
+    const uptimeRes = await pool.query(`SELECT EXTRACT(EPOCH FROM (now() - pg_postmaster_start_time())) AS uptime`);
+    const uptimeSeconds = safeNum(uptimeRes.rows[0]?.uptime);
+
+    // 7. Memory estimation (shared_buffers in 8KB pages)
+    const sharedBufferPages = safeNum(settingsMap['shared_buffers']);
+    const sharedBuffersMB = (sharedBufferPages * 8192) / (1024 * 1024);
+
+    // 8. Save metric
+    const currentConns = safeNum(activity.total);
+    await DbMetric.create({
+      dbId: dbObj._id,
+      timestamp: checkTime,
+      throughput,
+      latency: { read: { avg: 0, max: 0 }, write: { avg: 0, max: 0 }, ping: pingLatency },
+      uptimeSeconds,
+      connections: {
+        current: currentConns,
+        available: Math.max(0, maxConn - currentConns),
+        totalCreated: 0
+      },
+      memory: {
+        resident: sharedBuffersMB,
+        virtual: sharedBuffersMB + (safeNum(settingsMap['work_mem']) * currentConns / 1024),
+        mapped: 0
+      },
+      network,
+      storage: {
+        dataSize: dbSizeBytes / (1024 * 1024),
+        indexSize: 0,
+        storageSize: dbSizeBytes / (1024 * 1024),
+        objects: 0
+      },
+      locks: {
+        activeReaders: safeNum(lockStats.granted),
+        activeWriters: 0,
+        queuedReaders: 0,
+        queuedWriters: safeNum(lockStats.waiting)
+      },
+      sql: {
+        activeQueries: safeNum(activity.active),
+        blockedQueries: safeNum(activity.blocked),
+        deadlocks: sqlRates.deadlocks,
+        cacheHitRate,
+        tempBytesWritten: sqlRates.tempBytesWritten,
+        replicationLagMs: replLagMs,
+        tableScans: tableScansRate,
+        indexScans: indexScansRate,
+        rowsReturned: sqlRates.rowsReturned,
+        rowsModified: sqlRates.rowsModified,
+        transactionsCommitted: sqlRates.txCommitted,
+        transactionsRolledBack: sqlRates.txRolledBack,
+        waitEvents: safeNum(activity.blocked),
+        slowQueries: 0
+      }
+    });
+
+    await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'online', lastCheck: checkTime, errorMessage: '' });
+
+  } catch (error: any) {
+    logger.warn(`[DB Engine] Failed to poll PostgreSQL ${dbId}: ${error.message}`);
+    if (pool) {
+      await pool.end().catch(() => {});
+      pgPool.delete(dbId);
+    }
+    await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'error', lastCheck: checkTime, errorMessage: error.message });
+  }
+};
+
+// --- MYSQL PROCESSOR ---
+const processMySQL = async (dbObj: any, checkTime: Date) => {
+  const dbId = dbObj._id.toString();
+  let pool = mysqlPool.get(dbId);
+
+  try {
+    if (!pool) {
+      const uri = decrypt(dbObj.encryptedUri);
+      pool = mysql.createPool({
+        uri,
+        waitForConnections: true,
+        connectionLimit: 2,
+        connectTimeout: 5000
+      });
+      mysqlPool.set(dbId, pool);
+    }
+
+    // 1. Measure ping latency
+    const pingStart = performance.now();
+    await pool.query('SELECT 1');
+    const pingLatency = performance.now() - pingStart;
+
+    // 2. Gather metrics
+    const [statusRows] = await pool.query('SHOW GLOBAL STATUS');
+    const [variablesRows] = await pool.query('SHOW GLOBAL VARIABLES');
+
+    const status: Record<string, string> = {};
+    for (const row of statusRows as any[]) status[row.Variable_name] = row.Value;
+
+    const variables: Record<string, string> = {};
+    for (const row of variablesRows as any[]) variables[row.Variable_name] = row.Value;
+
+    const maxConn = safeNum(variables['max_connections'], 151);
+    const currentConns = safeNum(status['Threads_connected']);
+
+    // InnoDB buffer pool
+    const bpReadRequests = safeNum(status['Innodb_buffer_pool_read_requests']);
+    const bpReads = safeNum(status['Innodb_buffer_pool_reads']);
+    const cacheHitRate = bpReadRequests > 0 ? ((bpReadRequests - bpReads) / bpReadRequests) * 100 : 0;
+
+    const bpPagesFree = safeNum(status['Innodb_buffer_pool_pages_free']);
+    const bpPagesTotal = safeNum(status['Innodb_buffer_pool_pages_total']);
+    const bpPageSize = safeNum(variables['innodb_page_size'], 16384);
+    const bpUsedMB = ((bpPagesTotal - bpPagesFree) * bpPageSize) / (1024 * 1024);
+    const bpTotalMB = (bpPagesTotal * bpPageSize) / (1024 * 1024);
+
+    // Counters for delta tracking
+    const comSelect = safeNum(status['Com_select']);
+    const comInsert = safeNum(status['Com_insert']);
+    const comUpdate = safeNum(status['Com_update']);
+    const comDelete = safeNum(status['Com_delete']);
+    const bytesReceived = safeNum(status['Bytes_received']);
+    const bytesSent = safeNum(status['Bytes_sent']);
+    const questions = safeNum(status['Questions']);
+    const xactCommit = safeNum(status['Com_commit']);
+    const xactRollback = safeNum(status['Com_rollback']);
+    const deadlocks = safeNum(status['Innodb_deadlocks']);
+    const selectScan = safeNum(status['Select_scan']);
+    const selectRange = safeNum(status['Select_range']);
+    const slowQueries = safeNum(status['Slow_queries']);
+    const tmpDiskTables = safeNum(status['Created_tmp_disk_tables']);
+    const rowsRead = safeNum(status['Innodb_rows_read']);
+    const rowsInserted = safeNum(status['Innodb_rows_inserted']);
+    const rowsUpdated = safeNum(status['Innodb_rows_updated']);
+    const rowsDeleted = safeNum(status['Innodb_rows_deleted']);
+
+    // 3. Process deltas
+    const currentTs = Date.now();
+    const prev = previousState.get(dbId);
+    let lastCollectionCheck = prev?.lastCollectionCheck || 0;
+
+    let throughput = { read: 0, write: 0 };
+    let network = { bytesIn: 0, bytesOut: 0, numRequests: 0 };
+    let sqlRates = {
+      tableScans: 0, indexScans: 0,
+      rowsReturned: 0, rowsModified: 0,
+      deadlocks: 0,
+      txCommitted: 0, txRolledBack: 0,
+      slowQueries: 0,
+      tmpDiskTablesCreated: 0
+    };
+
+    if (prev) {
+      const timeDeltaSec = (currentTs - prev.timestamp) / 1000;
+      if (timeDeltaSec > 0) {
+        throughput.read = Math.max(0, (comSelect - prev.comSelect) / timeDeltaSec);
+        throughput.write = Math.max(0, ((comInsert - prev.comInsert) + (comUpdate - prev.comUpdate) + (comDelete - prev.comDelete)) / timeDeltaSec);
+
+        network.bytesIn = Math.max(0, (bytesReceived - prev.bytesReceived) / timeDeltaSec);
+        network.bytesOut = Math.max(0, (bytesSent - prev.bytesSent) / timeDeltaSec);
+        network.numRequests = Math.max(0, (questions - prev.questions) / timeDeltaSec);
+
+        sqlRates.txCommitted = Math.max(0, (xactCommit - prev.xactCommit) / timeDeltaSec);
+        sqlRates.txRolledBack = Math.max(0, (xactRollback - prev.xactRollback) / timeDeltaSec);
+        sqlRates.deadlocks = Math.max(0, deadlocks - prev.deadlocks);
+        sqlRates.tableScans = Math.max(0, (selectScan - prev.selectScan) / timeDeltaSec);
+        sqlRates.indexScans = Math.max(0, (selectRange - prev.selectRange) / timeDeltaSec);
+        sqlRates.slowQueries = Math.max(0, slowQueries - prev.slowQueries);
+        sqlRates.rowsReturned = Math.max(0, (rowsRead - prev.rowsRead) / timeDeltaSec);
+        sqlRates.rowsModified = Math.max(0, ((rowsInserted - prev.rowsInserted) + (rowsUpdated - prev.rowsUpdated) + (rowsDeleted - prev.rowsDeleted)) / timeDeltaSec);
+        sqlRates.tmpDiskTablesCreated = Math.max(0, tmpDiskTables - prev.tmpDiskTables);
+      }
+    }
+
+    previousState.set(dbId, {
+      timestamp: currentTs,
+      comSelect, comInsert, comUpdate, comDelete,
+      bytesReceived, bytesSent, questions,
+      xactCommit, xactRollback, deadlocks,
+      selectScan, selectRange, slowQueries,
+      rowsRead, rowsInserted, rowsUpdated, rowsDeleted,
+      tmpDiskTables,
+      lastCollectionCheck
+    });
+
+    // 4. Hourly table stats
+    const ONE_HOUR_MS = 60 * 60 * 1000;
+    if (currentTs - lastCollectionCheck > ONE_HOUR_MS) {
+      try {
+        const [tableRows] = await pool.query(`
+          SELECT
+            CONCAT(TABLE_SCHEMA, '.', TABLE_NAME) AS name,
+            TABLE_ROWS AS \`count\`,
+            DATA_LENGTH AS data_size,
+            INDEX_LENGTH AS index_size,
+            (DATA_LENGTH + INDEX_LENGTH) AS total_size
+          FROM information_schema.TABLES
+          WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+            AND TABLE_TYPE = 'BASE TABLE'
+          ORDER BY (DATA_LENGTH + INDEX_LENGTH) DESC
+          LIMIT 100
+        `);
+
+        const collections = (tableRows as any[]).map((r: any) => ({
+          name: r.name,
+          count: safeNum(r.count),
+          size: safeNum(r.data_size) / (1024 * 1024),
+          storageSize: safeNum(r.total_size) / (1024 * 1024),
+          indexSize: safeNum(r.index_size) / (1024 * 1024)
+        }));
+
+        await DbCollectionStat.findOneAndUpdate(
+          { dbId: dbObj._id },
+          { lastCheck: new Date(), collections },
+          { upsert: true }
+        );
+        const updatedState = previousState.get(dbId);
+        if (updatedState) updatedState.lastCollectionCheck = currentTs;
+      } catch (err: any) {
+        logger.warn(`[DB Engine] Failed to fetch table stats for MySQL ${dbId}: ${err.message}`);
+      }
+    }
+
+    // 5. Uptime & storage
+    const uptimeSeconds = safeNum(status['Uptime']);
+
+    // Replication lag
+    let replicationLagMs = -1;
+    try {
+      const [replRows] = await pool.query('SHOW REPLICA STATUS');
+      const replRow = (replRows as any[])[0];
+      if (replRow) {
+        replicationLagMs = safeNum(replRow.Seconds_Behind_Source, -1) * 1000;
+        if (replicationLagMs < 0) replicationLagMs = safeNum(replRow.Seconds_Behind_Master, -1) * 1000;
+      }
+    } catch {}
+
+    // DB size
+    let dbSizeBytes = 0;
+    try {
+      const [sizeRows] = await pool.query(`
+        SELECT SUM(DATA_LENGTH + INDEX_LENGTH) AS total
+        FROM information_schema.TABLES
+        WHERE TABLE_SCHEMA NOT IN ('information_schema', 'mysql', 'performance_schema', 'sys')
+      `);
+      dbSizeBytes = safeNum((sizeRows as any[])[0]?.total);
+    } catch {}
+
+    // Active / blocked queries
+    let activeQueries = 0;
+    let blockedQueries = 0;
+    try {
+      const [procRows] = await pool.query(`
+        SELECT
+          SUM(CASE WHEN COMMAND != 'Sleep' THEN 1 ELSE 0 END) AS active,
+          SUM(CASE WHEN STATE LIKE '%lock%' OR STATE LIKE '%waiting%' THEN 1 ELSE 0 END) AS blocked
+        FROM information_schema.PROCESSLIST
+        WHERE USER != 'system user'
+      `);
+      const procRow = (procRows as any[])[0];
+      activeQueries = safeNum(procRow?.active);
+      blockedQueries = safeNum(procRow?.blocked);
+    } catch {}
+
+    // 6. Save metric
+    await DbMetric.create({
+      dbId: dbObj._id,
+      timestamp: checkTime,
+      throughput,
+      latency: { read: { avg: 0, max: 0 }, write: { avg: 0, max: 0 }, ping: pingLatency },
+      uptimeSeconds,
+      connections: {
+        current: currentConns,
+        available: Math.max(0, maxConn - currentConns),
+        totalCreated: safeNum(status['Connections'])
+      },
+      memory: {
+        resident: bpUsedMB,
+        virtual: bpTotalMB,
+        mapped: 0
+      },
+      network,
+      storage: {
+        dataSize: dbSizeBytes / (1024 * 1024),
+        indexSize: 0,
+        storageSize: dbSizeBytes / (1024 * 1024),
+        objects: 0
+      },
+      locks: {
+        activeReaders: safeNum(status['Innodb_row_lock_current_waits']),
+        activeWriters: 0,
+        queuedReaders: 0,
+        queuedWriters: safeNum(status['Table_locks_waited'])
+      },
+      sql: {
+        activeQueries,
+        blockedQueries,
+        deadlocks: sqlRates.deadlocks,
+        cacheHitRate,
+        tempBytesWritten: sqlRates.tmpDiskTablesCreated,
+        replicationLagMs,
+        tableScans: sqlRates.tableScans,
+        indexScans: sqlRates.indexScans,
+        rowsReturned: sqlRates.rowsReturned,
+        rowsModified: sqlRates.rowsModified,
+        transactionsCommitted: sqlRates.txCommitted,
+        transactionsRolledBack: sqlRates.txRolledBack,
+        waitEvents: blockedQueries,
+        slowQueries: sqlRates.slowQueries
+      }
+    });
+
+    await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'online', lastCheck: checkTime, errorMessage: '' });
+
+  } catch (error: any) {
+    logger.warn(`[DB Engine] Failed to poll MySQL ${dbId}: ${error.message}`);
+    if (pool) {
+      await pool.end().catch(() => {});
+      mysqlPool.delete(dbId);
+    }
+    await DatabaseService.updateOne({ _id: dbObj._id }, { status: 'error', lastCheck: checkTime, errorMessage: error.message });
+  }
+};
+
 // Helper to sum up total storage across all logical databases inside the cluster
 const getDatabaseSizes = async (adminDb: any) => {
   let dataSize = 0, indexSize = 0, storageSize = 0, objects = 0;
@@ -422,6 +930,20 @@ const cleanupPool = async () => {
     if (!activeIdStrings.includes(dbId)) {
       client.disconnect();
       redisPool.delete(dbId);
+      previousState.delete(dbId);
+    }
+  }
+  for (const [dbId, pool] of pgPool.entries()) {
+    if (!activeIdStrings.includes(dbId)) {
+      await pool.end().catch(() => {});
+      pgPool.delete(dbId);
+      previousState.delete(dbId);
+    }
+  }
+  for (const [dbId, pool] of mysqlPool.entries()) {
+    if (!activeIdStrings.includes(dbId)) {
+      await pool.end().catch(() => {});
+      mysqlPool.delete(dbId);
       previousState.delete(dbId);
     }
   }
