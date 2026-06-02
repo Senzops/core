@@ -4,14 +4,20 @@ import Redis from 'ioredis';
 import pg from 'pg';
 import mysql2 from 'mysql2';
 
-// Runtime hotfix for @senzops/apm-node callback query .then() bug
+// Runtime hotfix: @senzops/apm-node ≤1.3.5 naively checks `typeof result.then === 'function'`
+// on mysql2 callback query objects. mysql2 defines a dummy .then() that throws on invocation,
+// crashing the APM wrapper. Deleting it from Query.prototype neutralizes the check.
+// Safe: actual promise queries use native Promise.then(), not the prototype method.
+// See: rca_mysql_apm_issue.md
 try {
   const dummyQuery = (mysql2.Connection as any).createQuery('SELECT 1', [], () => {}, {});
   const QueryProto = Object.getPrototypeOf(dummyQuery);
   if (QueryProto && typeof QueryProto.then === 'function') {
     delete QueryProto.then;
   }
-} catch (e) {}
+} catch {
+  // Non-critical: defense-in-depth measure, not required with apm-node ≥1.3.6
+}
 import { DatabaseService, DbCollectionStat, DbMetric } from '../models/Database';
 import { decrypt } from '../utils/crypto';
 import { logger } from '../utils/logger';
@@ -23,32 +29,127 @@ const pgPool = new Map<string, pg.Pool>();
 
 const previousState = new Map<string, any>();
 
+// --- RESILIENCE INFRASTRUCTURE ---
+const PROCESSOR_TIMEOUT_MS = 30_000; // 30s max per individual database processor
+let pollInProgress = false;
+let lastSuccessfulPoll = 0;
+let pollCronTask: ReturnType<typeof cron.schedule> | null = null;
+let cleanupCronTask: ReturnType<typeof cron.schedule> | null = null;
+
+/** Race a promise against a timeout — prevents hung processors from blocking the entire poll cycle */
+const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Timeout: ${label} exceeded ${ms}ms`)), ms);
+    promise.then(
+      (val) => { clearTimeout(timer); resolve(val); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+};
+
 export const startDatabaseWorker = () => {
-  logger.info('[Worker] Database Monitoring Engine Started');
-  cron.schedule('* * * * *', async () => { await pollDatabases(); }, {name:"database-monitoring-schedule"});
-  cron.schedule('0 * * * *', async () => { await cleanupPool(); }, {name:"database-cleanup-connection-pool"});
+  const build = 'db-engine@2026-06-02.resilient';
+  logger.info(`[Worker] Database Monitoring Engine Started (build: ${build})`);
+
+  // Main polling cron — wrapped in try/catch to NEVER let an unhandled rejection kill the scheduler
+  pollCronTask = cron.schedule('* * * * *', async () => {
+    try {
+      await pollDatabases();
+      lastSuccessfulPoll = Date.now();
+    } catch (error: any) {
+      logger.error(`[DB Engine] Poll cycle crashed: ${error.message}`);
+    }
+  }, { name: "database-monitoring-schedule" });
+
+  // Hourly connection pool cleanup
+  cleanupCronTask = cron.schedule('0 * * * *', async () => {
+    try {
+      await cleanupPool();
+    } catch (error: any) {
+      logger.error(`[DB Engine] Pool cleanup crashed: ${error.message}`);
+    }
+  }, { name: "database-cleanup-connection-pool" });
+
+  // Self-healing watchdog: if no successful poll in 5 minutes, restart cron schedules
+  const WATCHDOG_INTERVAL_MS = 5 * 60 * 1000;
+  setInterval(() => {
+    if (lastSuccessfulPoll > 0 && Date.now() - lastSuccessfulPoll > WATCHDOG_INTERVAL_MS) {
+      logger.error('[DB Engine] Watchdog: no successful poll in 5 minutes — restarting cron schedules');
+      try {
+        if (pollCronTask) { pollCronTask.stop(); pollCronTask.start(); }
+        if (cleanupCronTask) { cleanupCronTask.stop(); cleanupCronTask.start(); }
+        pollInProgress = false; // Reset lock in case it was stuck
+        lastSuccessfulPoll = Date.now(); // Prevent repeated restart loops
+      } catch (err: any) {
+        logger.error(`[DB Engine] Watchdog restart failed: ${err.message}`);
+      }
+    }
+  }, WATCHDOG_INTERVAL_MS);
 };
 
 const pollDatabases = async () => {
-  const now = new Date();
-  const dueDbs = await DatabaseService.find({
-    $expr: {
-      $lte: [
-        { $ifNull: ["$lastCheck", new Date(0)] },
-        { $subtract: [now, { $multiply: ["$interval", 60000] }] }
-      ]
-    }
-  });
+  // Overlap protection: if a previous cycle is still running, skip this tick
+  if (pollInProgress) {
+    logger.warn('[DB Engine] Previous poll cycle still running, skipping this tick');
+    return;
+  }
+  pollInProgress = true;
 
-  if (dueDbs.length === 0) return;
-  const promises = dueDbs.map(db => {
-    if (db.type === 'mongodb') return processMongoDB(db, now);
-    if (db.type === 'redis') return processRedis(db, now);
-    if (db.type === 'postgresql') return processPostgreSQL(db, now);
-    if (db.type === 'mysql') return processMySQL(db, now);
-    return Promise.resolve();
-  });
-  await Promise.allSettled(promises);
+  try {
+    const now = new Date();
+
+    // Query due databases — wrapped separately so a MongoDB blip doesn't crash the cron
+    let dueDbs: any[];
+    try {
+      dueDbs = await DatabaseService.find({
+        $expr: {
+          $lte: [
+            { $ifNull: ["$lastCheck", new Date(0)] },
+            { $subtract: [now, { $multiply: ["$interval", 60000] }] }
+          ]
+        }
+      });
+    } catch (error: any) {
+      logger.error(`[DB Engine] Failed to query due databases: ${error.message}`);
+      return;
+    }
+
+    if (dueDbs.length === 0) return;
+
+    // Dispatch processors with per-database timeout so a hung target can't block the cycle
+    const promises = dueDbs.map(db => {
+      const dbId = db._id?.toString() || 'unknown';
+      let processor: Promise<void>;
+
+      if (db.type === 'mongodb') processor = processMongoDB(db, now);
+      else if (db.type === 'redis') processor = processRedis(db, now);
+      else if (db.type === 'postgresql') processor = processPostgreSQL(db, now);
+      else if (db.type === 'mysql') processor = processMySQL(db, now);
+      else return Promise.resolve();
+
+      return withTimeout(processor, PROCESSOR_TIMEOUT_MS, `${db.type}/${dbId}`);
+    });
+
+    const results = await Promise.allSettled(promises);
+
+    // Surface any processor-level failures that escaped internal try/catch (e.g., timeouts)
+    for (let i = 0; i < results.length; i++) {
+      if (results[i].status === 'rejected') {
+        const reason = (results[i] as PromiseRejectedResult).reason;
+        const db = dueDbs[i];
+        logger.warn(`[DB Engine] Processor failed for ${db?.type}/${db?._id}: ${reason?.message || reason}`);
+        // Mark database as error if the processor didn't get a chance to
+        try {
+          await DatabaseService.updateOne(
+            { _id: db?._id },
+            { status: 'error', lastCheck: now, errorMessage: `Poll failed: ${reason?.message || 'timeout'}` }
+          );
+        } catch {}
+      }
+    }
+  } finally {
+    pollInProgress = false;
+  }
 };
 
 // --- REDIS PROCESSOR ---
@@ -929,8 +1030,14 @@ const getDatabaseSizes = async (adminDb: any) => {
 };
 
 const cleanupPool = async () => {
-  const activeIds = await DatabaseService.find().distinct('_id');
-  const activeIdStrings = activeIds.map(id => id.toString());
+  let activeIdStrings: string[];
+  try {
+    const activeIds = await DatabaseService.find().distinct('_id');
+    activeIdStrings = activeIds.map((id: any) => id.toString());
+  } catch (error: any) {
+    logger.error(`[DB Engine] Cleanup: failed to fetch active database list: ${error.message}`);
+    return;
+  }
 
   for (const [dbId, client] of mongoPool.entries()) {
     if (!activeIdStrings.includes(dbId)) {
