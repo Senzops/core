@@ -2,7 +2,8 @@ import cron from 'node-cron';
 import { MongoClient } from 'mongodb';
 import Redis from 'ioredis';
 import pg from 'pg';
-import mysql from 'mysql2/promise';
+import mysql2 from 'mysql2';
+import type { Pool as MySQLPromisePool } from 'mysql2/promise';
 import { DatabaseService, DbCollectionStat, DbMetric } from '../models/Database';
 import { decrypt } from '../utils/crypto';
 import { logger } from '../utils/logger';
@@ -11,7 +12,7 @@ import { logger } from '../utils/logger';
 const mongoPool = new Map<string, MongoClient>();
 const redisPool = new Map<string, Redis>();
 const pgPool = new Map<string, pg.Pool>();
-const mysqlPool = new Map<string, mysql.Pool>();
+const mysqlPool = new Map<string, MySQLPromisePool>();
 
 const previousState = new Map<string, any>();
 
@@ -669,12 +670,13 @@ const processMySQL = async (dbObj: any, checkTime: Date) => {
   try {
     if (!pool) {
       const uri = decrypt(dbObj.encryptedUri);
-      pool = mysql.createPool({
+      const basePool = mysql2.createPool({
         uri,
         waitForConnections: true,
         connectionLimit: 2,
         connectTimeout: 5000
       });
+      pool = basePool.promise();
       mysqlPool.set(dbId, pool);
     }
 
