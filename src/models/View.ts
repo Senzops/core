@@ -36,7 +36,7 @@ export interface IViewWidget extends Document {
   ownerId: string;
   viewId: mongoose.Types.ObjectId;
   name: string;
-  target: 'apm' | 'rum' | 'logs' | 'task' | 'vps' | 'database' | 'uptime' | 'errors' | 'runtime' | 'web';
+  target: 'apm' | 'rum' | 'logs' | 'task' | 'vps' | 'database' | 'uptime' | 'errors' | 'runtime' | 'web' | 'firebase';
   query: any; // The Safe MQL filter
   visualization: 'area' | 'line' | 'bar' | 'pie' | 'billboard' | 'table' | 'gauge' | 'radar' | 'map' | 'json';
   config: {

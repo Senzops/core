@@ -70,6 +70,27 @@ const SYSTEM_SCHEMA_DICTIONARY = {
     { field: "country", type: "string", desc: "Visitor country" },
     { field: "duration", type: "number", desc: "Time on page in seconds" },
     { field: "type", type: "string", desc: "Event type (pageview, ping)" }
+  ],
+  firebase: [
+    { field: "auth.totalUsers", type: "number", desc: "Total registered users" },
+    { field: "auth.activeUsersDaily", type: "number", desc: "Daily active users (last 24h)" },
+    { field: "auth.activeUsersMonthly", type: "number", desc: "Monthly active users (last 30d)" },
+    { field: "auth.newSignups24h", type: "number", desc: "New signups in last 24 hours" },
+    { field: "auth.disabledUsers", type: "number", desc: "Disabled user accounts" },
+    { field: "auth.emailVerifiedCount", type: "number", desc: "Users with verified email" },
+    { field: "auth.mfaEnrolledCount", type: "number", desc: "Users with MFA enabled" },
+    { field: "auth.anonymousUsers", type: "number", desc: "Anonymous user accounts" },
+    { field: "auth.recentSignIns1h", type: "number", desc: "Sign-ins in the last hour" },
+    { field: "providers.password", type: "number", desc: "Email/password auth users" },
+    { field: "providers.google", type: "number", desc: "Google auth users" },
+    { field: "providers.apple", type: "number", desc: "Apple auth users" },
+    { field: "providers.phone", type: "number", desc: "Phone auth users" },
+    { field: "providers.github", type: "number", desc: "GitHub auth users" },
+    { field: "providers.microsoft", type: "number", desc: "Microsoft auth users" },
+    { field: "providers.facebook", type: "number", desc: "Facebook auth users" },
+    { field: "providers.twitter", type: "number", desc: "Twitter/X auth users" },
+    { field: "providers.anonymous", type: "number", desc: "Anonymous provider count" },
+    { field: "providers.other", type: "number", desc: "Other auth providers" }
   ]
 };
 

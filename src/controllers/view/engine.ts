@@ -12,6 +12,7 @@ import { MonitorRun, Monitor } from '../../models/Monitor';
 import { ErrorGroup } from '../../models/Error';
 import { RuntimeMetric } from '../../models/RuntimeMetric';
 import { WebEvent, Website } from '../../models/Web';
+import { FirebaseMetric, FirebaseService } from '../../models/Firebase';
 import { logger } from '../../utils/logger';
 import { resolveTimeRange, getEffectiveRetention, TimeRangeError } from '../../utils/timeRange';
 
@@ -28,6 +29,7 @@ const getTargetModel = (target: string) => {
     case 'errors': return { model: ErrorGroup, parentModel: null, foreignKey: 'ownerId', timeField: 'lastSeen' };
     case 'runtime': return { model: RuntimeMetric, parentModel: ApmService, foreignKey: 'serviceId', timeField: 'timestamp' };
     case 'web': return { model: WebEvent, parentModel: Website, foreignKey: 'webId', timeField: 'createdAt' };
+    case 'firebase': return { model: FirebaseMetric, parentModel: FirebaseService, foreignKey: 'serviceId', timeField: 'timestamp' };
     default: return null;
   }
 };

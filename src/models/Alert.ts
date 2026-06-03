@@ -57,7 +57,7 @@ export interface IAlertCondition extends Document {
   policyId: mongoose.Types.ObjectId;
   name: string;
   description?: string;
-  target: 'apm' | 'rum' | 'logs' | 'task' | 'vps' | 'database' | 'uptime' | 'errors' | 'runtime' | 'web';
+  target: 'apm' | 'rum' | 'logs' | 'task' | 'vps' | 'database' | 'uptime' | 'errors' | 'runtime' | 'web' | 'firebase';
   query: any;
   threshold: {
     operator: 'gt' | 'lt' | 'eq' | 'gte' | 'lte' | 'neq';
