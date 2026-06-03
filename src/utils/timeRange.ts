@@ -13,6 +13,7 @@ const COLLECTION_TTL_DAYS: Record<string, number> = {
   task: 30,
   web: 32,
   database: 7,
+  firebase: 7,
   server: 1,
   errors: 30,
   monitor: 7,

@@ -27,6 +27,8 @@ import { getRuntimeStats } from '../controllers/apm/runtimeStats';
 import { getInvocations, getTraceDetail } from '../controllers/apm/traces';
 import { registerDatabase, listDatabases, deleteDatabase, updateDatabase } from '../controllers/database/main';
 import { getDatabaseStats } from '../controllers/database/stats';
+import { registerFirebase, listFirebaseServices, updateFirebase, deleteFirebase } from '../controllers/firebase/main';
+import { getFirebaseStats } from '../controllers/firebase/stats';
 import { ingestTaskBatch } from '../controllers/task/ingest';
 import { deleteTaskService, listTaskServices, registerTaskService, updateTaskService } from '../controllers/task/main';
 import { getTaskEntityDetail, getTaskRunDetail, getTaskServiceDashboard } from '../controllers/task/stats';
@@ -291,6 +293,13 @@ apiRouter.get('/database/list', listDatabases);
 apiRouter.put('/database/:id', updateDatabase);
 apiRouter.delete('/database/:id', deleteDatabase);
 apiRouter.get('/database/:id/stats', getDatabaseStats);
+
+// --- Firebase Monitoring ---
+apiRouter.post('/firebase/register', requireServiceQuota('FirebaseService', 'Firebase Project'), registerFirebase);
+apiRouter.get('/firebase/list', listFirebaseServices);
+apiRouter.put('/firebase/:id', updateFirebase);
+apiRouter.delete('/firebase/:id', deleteFirebase);
+apiRouter.get('/firebase/:id/stats', getFirebaseStats);
 
 // --- GLOBAL ERROR TRACKING ---
 apiRouter.get('/errors', getGlobalErrors); // Global paginated list

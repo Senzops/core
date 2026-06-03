@@ -7,6 +7,7 @@ import { startWatchdogWorker } from './watchdog';
 import { startDemoWorker } from './demo';
 import { startAlertWatchdog } from './alertWatchdog';
 import { startBillingCron } from './billing';
+import { startFirebaseWorker } from './firebase';
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/senzor';
 
@@ -36,6 +37,9 @@ const initWorker = async () => {
 
     // Boot up the Alert Evaluation Engine
     startAlertWatchdog();
+
+    // Firebase Monitoring
+    startFirebaseWorker();
 
     // 3. Handle graceful shutdown
     process.on('SIGTERM', () => {

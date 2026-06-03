@@ -12,6 +12,7 @@ import { LogEvent } from '../models/Log';
 import { TaskRun, TaskService } from '../models/Task';
 import { VpsRun, Vps } from '../models/Vps';
 import { DbMetric, DatabaseService } from '../models/Database';
+import { FirebaseMetric, FirebaseService } from '../models/Firebase';
 import { MonitorRun, Monitor } from '../models/Monitor';
 import { ErrorGroup } from '../models/Error';
 import { RuntimeMetric } from '../models/RuntimeMetric';
@@ -52,6 +53,7 @@ const getTargetModel = (target: string) => {
     case 'errors': return { model: ErrorGroup, parentModel: null, foreignKey: 'ownerId', timeField: 'lastSeen' };
     case 'runtime': return { model: RuntimeMetric, parentModel: ApmService, foreignKey: 'serviceId', timeField: 'timestamp' };
     case 'web': return { model: WebEvent, parentModel: Website, foreignKey: 'webId', timeField: 'createdAt' };
+    case 'firebase': return { model: FirebaseMetric, parentModel: FirebaseService, foreignKey: 'serviceId', timeField: 'timestamp' };
     default: return null;
   }
 };
