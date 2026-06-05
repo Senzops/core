@@ -103,9 +103,19 @@ export interface OtlpLogPayload {
 // resolves to `string` instead of the deferred conditional `ExtractNameType<T, string>`.
 type IngestionQueue<T> = Queue<T, any, string, T, any, string>;
 
+// Redis Cluster / managed Redis (Upstash, Redis Cloud, etc.) requires all keys
+// touched by a Lua script to hash to the same slot. BullMQ's Lua scripts derive
+// keys internally via string ops — managed proxies reject these unless a {hash tag}
+// in the prefix guarantees same-slot routing for ALL derived keys.
+//
+// Placing the tag in the prefix (not the queue name) is the official BullMQ
+// recommendation: https://docs.bullmq.io/bull/patterns/redis-cluster
+const QUEUE_PREFIX = '{bull}';
+
 function createQueue<T>(name: string, opts?: Partial<JobsOptions>): IngestionQueue<T> {
   return new Queue<T, any, string, T, any, string>(name, {
     connection: redisConnection,
+    prefix: QUEUE_PREFIX,
     defaultJobOptions: { ...DEFAULT_JOB_OPTIONS, ...opts },
   });
 }
@@ -136,6 +146,7 @@ export function createWorker<T>(
 ): Worker<T> {
   const worker = new Worker<T>(queueName, processor, {
     connection: redisConnection,
+    prefix: QUEUE_PREFIX,
     concurrency,
     lockDuration: lockDurationMs,
     stalledInterval: lockDurationMs,
@@ -168,15 +179,18 @@ export async function enqueue<T>(
   data: T,
   fallback: () => void,
 ): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const addPromise = queue.add('process', data);
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('Redis enqueue timeout')), ENQUEUE_TIMEOUT_MS)
-    );
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Redis enqueue timeout')), ENQUEUE_TIMEOUT_MS);
+    });
     await Promise.race([addPromise, timeoutPromise]);
   } catch (err: any) {
     logger.warn(`[Queue] ${queue.name} — Redis unavailable, falling back to in-process: ${err.message}`);
     setImmediate(fallback);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
