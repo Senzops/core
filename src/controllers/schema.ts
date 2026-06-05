@@ -12,6 +12,7 @@ import { MonitorRun, Monitor } from '../models/Monitor';
 import { ErrorGroup } from '../models/Error';
 import { RuntimeMetric } from '../models/RuntimeMetric';
 import { WebEvent, Website } from '../models/Web';
+import { FirebaseMetric, FirebaseService } from '../models/Firebase';
 
 // ============================================================================
 // ENTERPRISE TARGET MAPPING (Dynamic)
@@ -28,14 +29,15 @@ const COLLECTION_MAP: Record<string, { event: string; service: string | null }> 
   task: { event: TaskRun.collection.name, service: TaskService.collection.name },
   errors: { event: ErrorGroup.collection.name, service: null },
   runtime: { event: RuntimeMetric.collection.name, service: ApmService.collection.name },
-  web: { event: WebEvent.collection.name, service: Website.collection.name }
+  web: { event: WebEvent.collection.name, service: Website.collection.name },
+  firebase: { event: FirebaseMetric.collection.name, service: FirebaseService.collection.name }
 };
 
 // ============================================================================
 // SECURITY & INFERENCE BLACKLISTS
 // Prevent sensitive or internal database fields from appearing in the UI schema
 // ============================================================================
-const SERVICE_BLACKLIST = ['_id', 'apiKey', 'ownerId', 'createdAt', 'updatedAt', '__v'];
+const SERVICE_BLACKLIST = ['_id', 'apiKey', 'ownerId', 'createdAt', 'updatedAt', '__v', 'encryptedServiceAccount'];
 const EVENT_BLACKLIST = ['ownerId', '__v'];
 
 // ============================================================================
