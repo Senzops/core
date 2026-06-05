@@ -4,6 +4,7 @@ import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/E
 import { LogEvent } from '../../models/Log';
 import { logger } from '../../utils/logger';
 import { TaskBatchSchema } from '../../utils/validation';
+import { taskIngestQueue, enqueue, type TaskIngestPayload } from '../../lib/queue';
 
 // Helper: Clean Dynamic Data before Fingerprinting
 const cleanMessageForFingerprint = (message: string): string => {
@@ -32,10 +33,11 @@ export const ingestTaskBatch = async (req: Request, res: Response) => {
       queuedLogs: batch.data.logs.length
     });
 
-    setImmediate(() => {
-      processTaskBatchBackground(batch.data, service)
-        .catch(err => logger.error(`[Task] Background processing failed: ${err.message}`));
-    });
+    await enqueue<TaskIngestPayload>(
+      taskIngestQueue,
+      { batchData: batch.data, serviceId: service._id.toString() },
+      () => { processTaskBatchBackground(batch.data, service).catch(err => logger.error(`[Task] Background processing failed: ${err.message}`)); },
+    );
 
   } catch (error) {
     logger.error('[Task] Ingest Error', error);
@@ -43,7 +45,7 @@ export const ingestTaskBatch = async (req: Request, res: Response) => {
   }
 };
 
-const processTaskBatchBackground = async (data: { runs: any[], errors: any[], logs: any[] }, service: any) => {
+export const processTaskBatchBackground = async (data: { runs: any[], errors: any[], logs: any[] }, service: any) => {
   await TaskService.findByIdAndUpdate(service._id, { lastSeen: new Date(), status: 'online' });
 
   const runDocs = [];

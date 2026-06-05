@@ -7,6 +7,7 @@ import { logger } from '../../utils/logger';
 import { RumBatchSchema } from '../../utils/validation';
 import { getClientIp } from "../../utils/getClientIp";
 import { getGeoData } from "../../utils/getGeoData";
+import { rumIngestQueue, enqueue, type RumIngestPayload } from '../../lib/queue';
 
 const cleanMessageForFingerprint = (message: string): string => {
   return message
@@ -58,10 +59,12 @@ export const ingestRumBatch = async (req: Request, res: Response) => {
       queuedLogs: batch.data.logs?.length || 0
     });
 
-    setImmediate(() => {
-      processRumBatchBackground(batch.data, service, req)
-        .catch(err => logger.error(`[RUM] Background processing failed: ${err.message}`));
-    });
+    const clientIp = getClientIp(req) || 'Unknown';
+    await enqueue<RumIngestPayload>(
+      rumIngestQueue,
+      { batchData: batch.data, serviceId: service._id.toString(), clientIp },
+      () => { processRumBatchBackground(batch.data, service, clientIp).catch(err => logger.error(`[RUM] Background processing failed: ${err.message}`)); },
+    );
 
   } catch (error) {
     logger.error('[RUM] Ingest Error', error);
@@ -71,14 +74,14 @@ export const ingestRumBatch = async (req: Request, res: Response) => {
   }
 };
 
-const processRumBatchBackground = async (data: { traces: any[], errors: any[], logs?: any[] }, service: any, req: Request) => {
+export const processRumBatchBackground = async (data: { traces: any[], errors: any[], logs?: any[] }, service: any, clientIp: string) => {
   await RumService.findByIdAndUpdate(service._id, { lastSeen: new Date() });
 
   const traceDocs = [];
   const metricsMap = new Map<string, any>();
   const errorEvents: any[] = [];
   const errorGroupsMap = new Map<string, any>();
-  const ip = getClientIp(req);
+  const ip = clientIp;
   const { country, city } = await getGeoData(ip);
 
   // --- 1. Process Traces (Page Views / Route Changes) ---

@@ -4,6 +4,7 @@ import { LogEvent, LogApiKey } from '../../models/Log';
 import { parseLogQuery } from '../../utils/logParser';
 import { logger } from '../../utils/logger';
 import { resolveTimeRange, getEffectiveRetention, buildTimeRangeMeta, TimeRangeError } from '../../utils/timeRange';
+import { logIngestQueue, enqueue, type LogIngestPayload } from '../../lib/queue';
 
 // ============================================================================
 // ENTERPRISE INGESTION CACHE
@@ -155,48 +156,12 @@ export const ingestGlobalLogs = async (req: Request, res: Response) => {
       dropped: payloads.length - processablePayloads.length
     });
 
-    // 5. Background Processing
-    setImmediate(async () => {
-      try {
-        // Safe Mapping & Data Sanitization
-        const logsToInsert = processablePayloads.map((payload: any) => {
-          // Failsafe for badly formatted strings sent as JSON
-          if (!payload || typeof payload !== 'object') {
-            payload = { message: String(payload) };
-          }
-
-          const { message, level, timestamp, traceId, spanId, service, ...attributes } = payload;
-
-          // Enterprise Security: Truncate massively bloated payloads (e.g. accidental base64 dumps)
-          const safeMessage = typeof message === 'string'
-            ? (message.length > 50000 ? message.substring(0, 50000) + '... [TRUNCATED]' : message)
-            : JSON.stringify(payload).substring(0, 50000);
-
-          return {
-            ownerId,
-            serviceModel: service || 'External',
-            message: safeMessage || 'Empty Log',
-            level: (level || 'info').toLowerCase(),
-            traceId: traceId ? String(traceId) : undefined,
-            spanId: spanId ? String(spanId) : undefined,
-            attributes: attributes || {},
-            timestamp: timestamp ? new Date(timestamp) : new Date()
-          };
-        });
-
-        if (logsToInsert.length > 0) {
-          // Unordered Bulk Insert
-          // { ordered: false } tells MongoDB to ignore failures of individual documents
-          // and continue inserting the rest of the valid logs in the batch.
-          await LogEvent.insertMany(logsToInsert, { ordered: false });
-        }
-      } catch (bgError: any) {
-        // If it's a BulkWriteError (e.g. duplicate key), the {ordered: false} still inserted the good ones. 
-        if (bgError.name !== 'BulkWriteError') {
-          logger.error('[LOGS] Background Global Ingest Error:', bgError);
-        }
-      }
-    });
+    // 5. Background Processing (via Queue)
+    await enqueue<LogIngestPayload>(
+      logIngestQueue,
+      { payloads: processablePayloads, ownerId },
+      () => { processLogIngestion(processablePayloads, ownerId).catch(err => logger.error('[LOGS] Background Global Ingest Error:', err)); },
+    );
 
   } catch (error: any) {
     logger.error('[LOGS] Global Ingest Error', error);
@@ -220,5 +185,41 @@ export const getLogById = async (req: Request, res: Response, next: NextFunction
     res.json({ log });
   } catch (error) {
     next(error);
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Background Log Processor (called by queue worker or in-process fallback)
+// ---------------------------------------------------------------------------
+export const processLogIngestion = async (payloads: any[], ownerId: string): Promise<void> => {
+  const logsToInsert = payloads.map((payload: any) => {
+    if (!payload || typeof payload !== 'object') {
+      payload = { message: String(payload) };
+    }
+
+    const { message, level, timestamp, traceId, spanId, service, ...attributes } = payload;
+
+    const safeMessage = typeof message === 'string'
+      ? (message.length > 50000 ? message.substring(0, 50000) + '... [TRUNCATED]' : message)
+      : JSON.stringify(payload).substring(0, 50000);
+
+    return {
+      ownerId,
+      serviceModel: service || 'External',
+      message: safeMessage || 'Empty Log',
+      level: (level || 'info').toLowerCase(),
+      traceId: traceId ? String(traceId) : undefined,
+      spanId: spanId ? String(spanId) : undefined,
+      attributes: attributes || {},
+      timestamp: timestamp ? new Date(timestamp) : new Date()
+    };
+  });
+
+  if (logsToInsert.length > 0) {
+    try {
+      await LogEvent.insertMany(logsToInsert, { ordered: false });
+    } catch (err: any) {
+      if (err.name !== 'BulkWriteError') throw err;
+    }
   }
 };

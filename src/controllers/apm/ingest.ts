@@ -8,6 +8,7 @@ import { logger } from '../../utils/logger';
 import { ApmBatchSchema } from '../../utils/validation';
 import { normaliseIP, isPrivateOrLoopback } from '../../utils/getClientIp';
 import { getGeoData } from '../../utils/getGeoData';
+import { apmIngestQueue, enqueue, type ApmIngestPayload } from '../../lib/queue';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -69,11 +70,11 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
       queuedRuntimeMetrics: batch.data.runtimeMetrics?.length ?? 0,
     });
 
-    setImmediate(() => {
-      processBatchBackground(batch.data, service).catch((err) =>
-        logger.error(`[APM] Background processing failed: ${err.message}`)
-      );
-    });
+    await enqueue<ApmIngestPayload>(
+      apmIngestQueue,
+      { batchData: batch.data, serviceId: service._id.toString() },
+      () => { processBatchBackground(batch.data, service).catch((err) => logger.error(`[APM] Background processing failed: ${err.message}`)); },
+    );
   } catch (error) {
     logger.error('[APM] Ingest Error', error);
     if (!res.headersSent) {
@@ -86,7 +87,7 @@ export const ingestApmBatch = async (req: Request, res: Response) => {
 // Background processor
 // ---------------------------------------------------------------------------
 
-const processBatchBackground = async (
+export const processBatchBackground = async (
   data: { traces: any[]; errors: any[]; logs: any[]; runtimeMetrics?: any[] },
   service: any
 ) => {

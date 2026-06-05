@@ -4,6 +4,7 @@ import { Vps, VpsRun } from '../models/Vps';
 import { RegisterVpsSchema, UpdateVpsSchema, TelemetrySchema } from '../utils/validation';
 import { resolveTimeRange, getEffectiveRetention, TimeRangeError, type ResolvedTimeRange } from '../utils/timeRange';
 import { logger } from '../utils/logger';
+import { vpsIngestQueue, enqueue, type VpsIngestPayload } from '../lib/queue';
 
 // --- VPS Controller ---
 
@@ -93,48 +94,47 @@ export const ingestMetrics = async (req: Request, res: Response, next: NextFunct
     // Unblock the agent immediately
     res.status(200).json({ status: 'ok' });
 
-    // 3. Background Processing
-    setImmediate(async () => {
-      try {
-        // Update Heartbeat & Status
-        vps.lastSeen = new Date();
-        vps.status = 'online';
-
-        // Update metadata
-        if (metrics.os) {
-          vps.metadata = {
-            os: `${metrics.os.distro} ${metrics.os.release}`,
-            hostname: metrics.os.hostname,
-            arch: metrics.os.arch
-          };
-        }
-
-        // Update Active Integrations Status
-        vps.activeIntegrations = {
-          nginx: !!metrics.nginx,
-          traefik: !!metrics.traefik,
-          terminal: metrics.terminalEnabled || false,
-        };
-
-        // Parallel Writes
-        await Promise.all([
-          vps.save(), // Update Registry
-          VpsRun.create({ // Insert Telemetry
-            vpsId: vps._id,
-            metrics: metrics,
-          })
-        ]);
-
-      } catch (bgError) {
-        // Log background failures since we can't respond to client anymore
-        logger.error(`[VPS Ingest] Background Error for ${vps._id}:`, bgError);
-      }
-    });
+    // 3. Background Processing (via Queue)
+    await enqueue<VpsIngestPayload>(
+      vpsIngestQueue,
+      { vpsId: vps._id.toString(), metrics },
+      () => { processVpsIngestion(vps._id.toString(), metrics).catch(err => logger.error(`[VPS Ingest] Background Error for ${vps._id}:`, err)); },
+    );
 
   } catch (error) {
     // If Zod validation fails, this catches it and sends 400
     next(error);
   }
+};
+
+// ---------------------------------------------------------------------------
+// Background VPS Processor (called by queue worker or in-process fallback)
+// ---------------------------------------------------------------------------
+export const processVpsIngestion = async (vpsId: string, metrics: any): Promise<void> => {
+  const vps = await Vps.findById(vpsId);
+  if (!vps) return;
+
+  vps.lastSeen = new Date();
+  vps.status = 'online';
+
+  if (metrics.os) {
+    (vps as any).metadata = {
+      os: `${metrics.os.distro} ${metrics.os.release}`,
+      hostname: metrics.os.hostname,
+      arch: metrics.os.arch,
+    };
+  }
+
+  vps.activeIntegrations = {
+    nginx: !!metrics.nginx,
+    traefik: !!metrics.traefik,
+    terminal: metrics.terminalEnabled || false,
+  };
+
+  await Promise.all([
+    vps.save(),
+    VpsRun.create({ vpsId: vps._id, metrics }),
+  ]);
 };
 
 // --- Helper: Zero-Fill VPS Time Series (1-minute resolution with online/offline status) ---

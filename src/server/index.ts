@@ -97,6 +97,7 @@ import { deleteAccount, syncUser } from '../controllers/user';
 import { sendOtp, verifyOtp, revokeSessions } from '../controllers/auth/otp';
 import { getDynamicSchema } from '../controllers/schema';
 import { getDashboardCapabilities } from '../controllers/dashboard/capabilities';
+import { shutdownQueues } from '../lib/queue';
 import { resolveWorkspace } from '../middlewares/orgAuth';
 import {
   createOrganization,
@@ -547,3 +548,11 @@ mongoose.connect(MONGO_URI)
     logger.error('MongoDB Connection Error', err);
     process.exit(1);
   });
+
+// --- Graceful Shutdown ---
+process.on('SIGTERM', async () => {
+  logger.info('[Server] SIGTERM received, shutting down...');
+  await shutdownQueues();
+  httpServer.close();
+  mongoose.connection.close();
+});

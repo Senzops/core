@@ -7,6 +7,7 @@ import { getClientIp } from "../../utils/getClientIp";
 import { getGeoData } from "../../utils/getGeoData";
 import { getChannel } from "../../utils/categorizeReferrers";
 import { WebIngestSchema } from "../../utils/validation";
+import { webIngestQueue, enqueue, type WebIngestPayload } from '../../lib/queue';
 
 // ---------------------------------------------------------------------------
 // Bot detection — skip known crawlers to keep analytics clean
@@ -67,118 +68,125 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
     res.status(200).send("ok");
 
     // -------------------------------------------------------------------------
-    // Background processing (fire-and-forget)
+    // Background processing (via Queue)
     // -------------------------------------------------------------------------
-    setImmediate(async () => {
-      try {
-        // --- A. IP extraction ---
-        const clientIp = getClientIp(req);
+    const clientIp = getClientIp(req) || 'Unknown';
+    const jobData: WebIngestPayload = {
+      eventData: { webId, visitorId, sessionId, type, url, path, title, referrer, width, duration },
+      clientIp,
+      userAgent: uaString as string,
+    };
 
-        // --- B. Geo lookup ---
-        const { country, city } = getGeoData(clientIp);
-
-        // --- C. User-agent parsing ---
-        const parser = new UAParser(uaString as string);
-        const browser = parser.getBrowser().name || "Unknown";
-        const os = parser.getOS().name || "Unknown";
-        let device: string = parser.getDevice().type || "Desktop";
-        if (device === "Desktop" && width && width < 768) device = "Mobile";
-
-        const channelInfo = getChannel(referrer, url);
-        const channel = channelInfo.channel;
-        const timestamp = new Date();
-
-        // --- D. Handle ping (duration heartbeat) ---
-        if (type === "ping") {
-          await WebEvent.findOneAndUpdate(
-            { sessionId, path, type: "pageview" },
-            { $inc: { duration: duration || 0 } },
-            { sort: { createdAt: -1 } }
-          );
-
-          const bucketTime = new Date(timestamp);
-          bucketTime.setSeconds(0, 0);
-
-          await WebMetric.updateOne(
-            { webId, timestamp: bucketTime },
-            { $inc: { durationSum: duration || 0 } },
-            { upsert: true }
-          );
-          return;
-        }
-
-        // --- E. Store raw pageview event ---
-        await WebEvent.create({
-          webId,
-          visitorId,
-          sessionId,
-          type,
-          url,
-          path,
-          title: title || "Unknown",
-          referrer: referrer || "Direct",
-          channel,
-          duration: 0,
-          browser,
-          os,
-          device,
-          country,
-          city,
-          createdAt: timestamp,
-        });
-
-        // --- F. Update aggregated metric bucket (1-minute resolution) ---
-        const bucketTime = new Date(timestamp);
-        bucketTime.setSeconds(0, 0);
-
-        const pipeline: any[] = [
-          {
-            $set: {
-              views: { $add: [{ $ifNull: ["$views", 0] }, 1] }
-            }
-          }
-        ];
-
-        const addMapToPipeline = (prefix: string, key: string) => {
-          const safeKey = key.replace(/\$/g, "");
-
-          pipeline.push({
-            $set: {
-              [prefix]: {
-                $setField: {
-                  field: safeKey,
-                  input: { $ifNull: [`$${prefix}`, {}] },
-                  value: {
-                    $add: [
-                      { $ifNull: [{ $getField: { field: safeKey, input: `$${prefix}` } }, 0] },
-                      1
-                    ]
-                  }
-                }
-              }
-            }
-          });
-        };
-
-        addMapToPipeline("paths", path);
-        addMapToPipeline("referrers", referrer || "Direct");
-        addMapToPipeline("channels", channel);
-        addMapToPipeline("countries", country);
-        addMapToPipeline("cities", city);
-        addMapToPipeline("browsers", browser);
-        addMapToPipeline("os", os);
-        addMapToPipeline("devices", device);
-
-        await WebMetric.updateOne(
-          { webId, timestamp: bucketTime },
-          pipeline,
-          { upsert: true }
-        );
-      } catch (bgError) {
-        logger.error("Background Web Ingest Error", bgError);
-      }
-    });
+    await enqueue<WebIngestPayload>(
+      webIngestQueue,
+      jobData,
+      () => { processWebIngestion(jobData).catch(err => logger.error("Background Web Ingest Error", err)); },
+    );
   } catch (error) {
     logger.error("Senzor Web Ingest Error", error);
   }
+};
+
+// ---------------------------------------------------------------------------
+// Background Web Processor (called by queue worker or in-process fallback)
+// ---------------------------------------------------------------------------
+export const processWebIngestion = async (job: WebIngestPayload): Promise<void> => {
+  const { eventData, clientIp, userAgent } = job;
+  const { webId, visitorId, sessionId, type, url, path, title, referrer, width, duration } = eventData;
+
+  const { country, city } = getGeoData(clientIp);
+
+  const parser = new UAParser(userAgent);
+  const browser = parser.getBrowser().name || "Unknown";
+  const os = parser.getOS().name || "Unknown";
+  let device: string = parser.getDevice().type || "Desktop";
+  if (device === "Desktop" && width && width < 768) device = "Mobile";
+
+  const channelInfo = getChannel(referrer, url);
+  const channel = channelInfo.channel;
+  const timestamp = new Date();
+
+  if (type === "ping") {
+    await WebEvent.findOneAndUpdate(
+      { sessionId, path, type: "pageview" },
+      { $inc: { duration: duration || 0 } },
+      { sort: { createdAt: -1 } }
+    );
+
+    const bucketTime = new Date(timestamp);
+    bucketTime.setSeconds(0, 0);
+
+    await WebMetric.updateOne(
+      { webId, timestamp: bucketTime },
+      { $inc: { durationSum: duration || 0 } },
+      { upsert: true }
+    );
+    return;
+  }
+
+  await WebEvent.create({
+    webId,
+    visitorId,
+    sessionId,
+    type,
+    url,
+    path,
+    title: title || "Unknown",
+    referrer: referrer || "Direct",
+    channel,
+    duration: 0,
+    browser,
+    os,
+    device,
+    country,
+    city,
+    createdAt: timestamp,
+  });
+
+  const bucketTime = new Date(timestamp);
+  bucketTime.setSeconds(0, 0);
+
+  const pipeline: any[] = [
+    {
+      $set: {
+        views: { $add: [{ $ifNull: ["$views", 0] }, 1] }
+      }
+    }
+  ];
+
+  const addMapToPipeline = (prefix: string, key: string) => {
+    const safeKey = key.replace(/\$/g, "");
+
+    pipeline.push({
+      $set: {
+        [prefix]: {
+          $setField: {
+            field: safeKey,
+            input: { $ifNull: [`$${prefix}`, {}] },
+            value: {
+              $add: [
+                { $ifNull: [{ $getField: { field: safeKey, input: `$${prefix}` } }, 0] },
+                1
+              ]
+            }
+          }
+        }
+      }
+    });
+  };
+
+  addMapToPipeline("paths", path);
+  addMapToPipeline("referrers", referrer || "Direct");
+  addMapToPipeline("channels", channel);
+  addMapToPipeline("countries", country);
+  addMapToPipeline("cities", city);
+  addMapToPipeline("browsers", browser);
+  addMapToPipeline("os", os);
+  addMapToPipeline("devices", device);
+
+  await WebMetric.updateOne(
+    { webId, timestamp: bucketTime },
+    pipeline,
+    { upsert: true }
+  );
 };

@@ -7,6 +7,7 @@ import { RumService } from '../../models/Rum';
 import { TaskService } from '../../models/Task';
 import { OtlpContext } from '../../middlewares/otlpAuth';
 import { getClientIp } from '../../utils/getClientIp';
+import { otlpTraceQueue, otlpLogQueue, enqueue, type OtlpTracePayload, type OtlpLogPayload } from '../../lib/queue';
 
 // --- Enterprise Fix: Centralized Async Heartbeat ---
 // Updates the service's lastSeen timestamp without blocking the high-throughput OTLP pipeline.
@@ -38,19 +39,23 @@ export const ingestOtlpTraces = async (req: Request, res: Response, next: NextFu
       return res.status(400).json({ error: "Invalid OTLP payload: Missing resourceSpans array" });
     }
 
-    const requestIp = getClientIp(req);
+    const requestIp = getClientIp(req) || 'Unknown';
     const requestUserAgent = req.headers['user-agent'] || undefined;
 
     // Acknowledge receipt immediately to free up the client SDK (Standard OTel behavior)
     res.status(202).json({ message: "Traces accepted for processing" });
 
-    // Offload the heavy translation and MongoDB upserts to the background engine
-    translateOtlpTraces(context, resourceSpans, requestIp, requestUserAgent).catch(err => {
-      logger.error(`[OTLP Traces] Translation failed for ${context.serviceName}: ${err.message}`);
-    });
-
-    // Fire the heartbeat updater
-    updateLastSeen(context);
+    // Offload the heavy translation and MongoDB upserts to the queue
+    await enqueue<OtlpTracePayload>(
+      otlpTraceQueue,
+      { resourceSpans, context, requestIp, requestUserAgent },
+      () => {
+        translateOtlpTraces(context, resourceSpans, requestIp, requestUserAgent).catch(err =>
+          logger.error(`[OTLP Traces] Translation failed for ${context.serviceName}: ${err.message}`)
+        );
+        updateLastSeen(context);
+      },
+    );
 
     logger.info(`[OTLP Gateway] Accepted Trace payload from ${context.target} service: ${context.serviceName}`);
 
@@ -77,13 +82,17 @@ export const ingestOtlpLogs = async (req: Request, res: Response, next: NextFunc
     // Acknowledge receipt immediately
     res.status(202).json({ message: "Logs accepted for processing" });
 
-    // Offload translation and ingestion to the background engine
-    translateOtlpLogs(context, resourceLogs).catch(err => {
-      logger.error(`[OTLP Logs] Translation failed for ${context.serviceName}: ${err.message}`);
-    });
-
-    // Fire the heartbeat updater
-    updateLastSeen(context);
+    // Offload translation and ingestion to the queue
+    await enqueue<OtlpLogPayload>(
+      otlpLogQueue,
+      { resourceLogs, context },
+      () => {
+        translateOtlpLogs(context, resourceLogs).catch(err =>
+          logger.error(`[OTLP Logs] Translation failed for ${context.serviceName}: ${err.message}`)
+        );
+        updateLastSeen(context);
+      },
+    );
 
     logger.info(`[OTLP Gateway] Accepted Logs payload from ${context.target} service: ${context.serviceName}`);
 

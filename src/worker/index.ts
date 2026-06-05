@@ -9,6 +9,8 @@ import { startAlertWatchdog } from './alertWatchdog';
 import { startBillingCron } from './billing';
 import { startFirebaseWorker } from './firebase';
 import { startHeartbeatWorker } from './heartbeat';
+import { startQueueWorkers } from './processors';
+import { shutdownQueues } from '../lib/queue';
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/senzor';
 
@@ -45,9 +47,13 @@ const initWorker = async () => {
     // VPS Heartbeat Staleness Detection
     startHeartbeatWorker();
 
+    // Ingestion Queue Workers (BullMQ)
+    startQueueWorkers();
+
     // 3. Handle graceful shutdown
-    process.on('SIGTERM', () => {
+    process.on('SIGTERM', async () => {
       logger.info('[Worker] Shutting down...');
+      await shutdownQueues();
       mongoose.connection.close();
       process.exit(0);
     });
