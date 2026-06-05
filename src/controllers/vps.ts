@@ -177,7 +177,8 @@ function fillVpsTimeGaps(data: any[], resolved: ResolvedTimeRange) {
     const item = dataMap.get(key);
 
     if (item) {
-      filled.push({ ...item, isOnline: true });
+      const isHeartbeatMiss = item.metrics?._heartbeat === 'miss';
+      filled.push({ ...item, isOnline: !isHeartbeatMiss });
     } else {
       filled.push({
         _id: 'gap-' + key,

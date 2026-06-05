@@ -8,6 +8,7 @@ import { startDemoWorker } from './demo';
 import { startAlertWatchdog } from './alertWatchdog';
 import { startBillingCron } from './billing';
 import { startFirebaseWorker } from './firebase';
+import { startHeartbeatWorker } from './heartbeat';
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/senzor';
 
@@ -40,6 +41,9 @@ const initWorker = async () => {
 
     // Firebase Monitoring
     startFirebaseWorker();
+
+    // VPS Heartbeat Staleness Detection
+    startHeartbeatWorker();
 
     // 3. Handle graceful shutdown
     process.on('SIGTERM', () => {
