@@ -142,14 +142,16 @@ export function createWorker<T>(
   queueName: string,
   processor: Processor<T>,
   concurrency: number,
-  lockDurationMs: number = 60000,
+  lockDurationMs: number = 120000,
 ): Worker<T> {
   const worker = new Worker<T>(queueName, processor, {
     connection: redisConnection,
     prefix: QUEUE_PREFIX,
     concurrency,
     lockDuration: lockDurationMs,
-    stalledInterval: lockDurationMs,
+    // stalledInterval intentionally omitted — BullMQ's default (30s) is correct.
+    // Setting it equal to lockDuration caused a race between the stalled check
+    // and the auto-renew timer, leading to false stall detection and lock mismatch.
   });
 
   worker.on('failed', (job, err) => {

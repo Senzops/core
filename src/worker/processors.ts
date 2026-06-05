@@ -44,9 +44,11 @@ const updateLastSeen = async (context: { serviceId: string; target: 'apm' | 'rum
 // Boot all ingestion queue workers
 // ---------------------------------------------------------------------------
 
-// Lock durations: heavy processors (geo + bulk writes) get 120s,
-// light processors (single inserts) use the 60s default.
-const HEAVY_LOCK_MS = 120_000;
+// Lock durations: heavy processors (geo + bulk writes) get 300s,
+// light processors (single inserts) use the 120s default.
+// BullMQ auto-renews locks every lockDuration/2, so these are safety ceilings,
+// not expected processing times. Generous values prevent false stall detection.
+const HEAVY_LOCK_MS = 300_000;
 
 export function startQueueWorkers(): void {
   // --- APM Ingestion (heavy: geo lookups, trace/error/metric bulk writes) ---

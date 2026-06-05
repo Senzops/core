@@ -35,7 +35,15 @@ const sdk = new NodeSDK({
       })
     ),
   ],
-  instrumentations: [getNodeAutoInstrumentations()],
+  instrumentations: [
+    getNodeAutoInstrumentations({
+      // BullMQ uses ioredis internally for lock management, job state transitions,
+      // and Lua script execution. OTel's ioredis instrumentation wraps every Redis
+      // command in async span context, which interferes with BullMQ's lock renewal
+      // timers — causing lock mismatch errors (code -6) on moveToFinished.
+      '@opentelemetry/instrumentation-ioredis': { enabled: false },
+    }),
+  ],
 });
 
 sdk.start();
