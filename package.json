@@ -14,6 +14,7 @@
     "start": "concurrently \"npm run start:server\" \"npm run start:worker\" --names \"API,WORKER\""
   },
   "dependencies": {
+    "@google/genai": "^2.8.0",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "@opentelemetry/auto-instrumentations-node": "^0.72.0",
     "@opentelemetry/exporter-logs-otlp-http": "^0.214.0",

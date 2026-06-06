@@ -18,6 +18,7 @@ import { ErrorGroup } from '../models/Error';
 import { RuntimeMetric } from '../models/RuntimeMetric';
 import { WebEvent, Website } from '../models/Web';
 import { dispatchAlert } from '../services/alertTransport';
+import { enqueueIncidentAnalysis } from '../lib/aiQueue';
 import { logger } from '../utils/logger';
 
 const WORKER_ID = `alert-watchdog-${os.hostname()}-${process.pid}`;
@@ -305,6 +306,21 @@ export const runAlertWatchdogSweep = async () => {
               });
             }
             await newIncident.save();
+
+            // Enqueue AI analysis (async, non-blocking, best-effort)
+            enqueueIncidentAnalysis({
+              incidentId: newIncident._id.toString(),
+              ownerId: condition.ownerId,
+              conditionName: condition.name,
+              conditionDescription: condition.description || '',
+              target: condition.target,
+              triggerValue: count,
+              threshold: condition.threshold,
+              severity: condition.severity || 'high',
+              labels: condition.labels || [],
+              title,
+              policyId: condition.policyId.toString(),
+            }).catch(() => { /* non-fatal, already logged inside */ });
 
           } else {
             // STATE: STILL BREACHED

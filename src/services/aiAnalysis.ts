@@ -1,0 +1,479 @@
+import { GoogleGenAI, Type, createPartFromFunctionResponse } from '@google/genai';
+import { IAiAnalysis } from '../models/Alert';
+import { logger } from '../utils/logger';
+
+// ---------------------------------------------------------------------------
+// Configuration
+// ---------------------------------------------------------------------------
+
+const GEMINI_MODEL = 'gemini-2.5-flash';
+const MAX_TOOL_CALLS = 15;
+const ANALYSIS_TIMEOUT_MS = 30_000;
+
+// ---------------------------------------------------------------------------
+// Tool Definitions for Gemini (subset of MCP tools relevant to incident triage)
+// ---------------------------------------------------------------------------
+
+// We use the same controller layer as the MCP agent, but call them directly
+// rather than going through the MCP protocol. This avoids SSE overhead and
+// keeps the analysis path simple.
+
+import { listServices as listApmServices } from '../controllers/apm/main';
+import { getApmStats } from '../controllers/apm/stats';
+import { getInvocations } from '../controllers/apm/traces';
+import { getRuntimeStats } from '../controllers/apm/runtimeStats';
+import { listServices as listRumServices } from '../controllers/rum/main';
+import { getRumDashboard } from '../controllers/rum/stats';
+import { listTaskServices } from '../controllers/task/main';
+import { getTaskServiceDashboard } from '../controllers/task/stats';
+import { getDashboardLogs } from '../controllers/logs';
+import { getGlobalErrors, getErrorGroupDetails } from '../controllers/error';
+import { listMonitors, getMonitorStats } from '../controllers/monitor';
+import { listVps, getVpsStats } from '../controllers/vps';
+import { listDatabases } from '../controllers/database/main';
+import { getDatabaseStats } from '../controllers/database/stats';
+import { Request, Response } from 'express';
+
+// Simulated Express call — same pattern as mcp/tools.ts
+const simulateExpressCall = async (
+  controller: Function,
+  ownerId: string,
+  params: Record<string, any> = {},
+  query: Record<string, any> = {}
+): Promise<{ status: number; data: any }> => {
+  return new Promise((resolve, reject) => {
+    const req = {
+      ownerId,
+      user: { uid: ownerId },
+      params,
+      query,
+      body: {},
+      headers: {},
+      ip: '127.0.0.1',
+    } as unknown as Request;
+
+    let currentStatus = 200;
+
+    const res = {
+      status: (code: number) => { currentStatus = code; return res; },
+      json: (data: any) => { resolve({ status: currentStatus, data }); return res; },
+      send: (data: any) => { resolve({ status: currentStatus, data }); return res; },
+    } as unknown as Response;
+
+    const next = (err?: any) => {
+      if (err) reject(err);
+      else resolve({ status: 500, data: { error: 'Next() called' } });
+    };
+
+    try {
+      Promise.resolve(controller(req, res, next)).catch(reject);
+    } catch (error) {
+      reject(error);
+    }
+  });
+};
+
+// ---------------------------------------------------------------------------
+// Tool Registry (tool name → executor mapping)
+// ---------------------------------------------------------------------------
+
+interface ToolDef {
+  name: string;
+  description: string;
+  parameters: Record<string, any>;
+  execute: (args: any, ownerId: string) => Promise<any>;
+}
+
+const INVESTIGATION_TOOLS: ToolDef[] = [
+  {
+    name: 'apm_list_services',
+    description: 'List all active APM (Backend) services and their IDs.',
+    parameters: { type: 'object', properties: {} },
+    execute: (args, uid) => simulateExpressCall(listApmServices, uid),
+  },
+  {
+    name: 'apm_get_stats',
+    description: 'Get performance aggregations (latency percentiles, RPS, error rate) for an APM service.',
+    parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' } }, required: ['id'] },
+    execute: (args, uid) => simulateExpressCall(getApmStats, uid, { id: args.id }, { range: args.range || '1h' }),
+  },
+  {
+    name: 'apm_get_invocations',
+    description: 'Get recent HTTP trace invocations for a service, including status codes and latency.',
+    parameters: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+    execute: (args, uid) => simulateExpressCall(getInvocations, uid, { id: args.id }, { limit: 15 }),
+  },
+  {
+    name: 'apm_get_runtime_stats',
+    description: 'Get Node.js runtime health: event loop lag, GC, heap, CPU for an APM service.',
+    parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' } }, required: ['id'] },
+    execute: (args, uid) => simulateExpressCall(getRuntimeStats, uid, { id: args.id }, { range: args.range || '1h' }),
+  },
+  {
+    name: 'rum_list_services',
+    description: 'List all active RUM (Frontend) applications.',
+    parameters: { type: 'object', properties: {} },
+    execute: (args, uid) => simulateExpressCall(listRumServices, uid),
+  },
+  {
+    name: 'rum_get_dashboard',
+    description: 'Get Web Vitals (LCP, INP, CLS) and page views for a RUM app.',
+    parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' } }, required: ['id'] },
+    execute: (args, uid) => simulateExpressCall(getRumDashboard, uid, { id: args.id }, { range: args.range || '1h' }),
+  },
+  {
+    name: 'task_list_services',
+    description: 'List all Background Task services.',
+    parameters: { type: 'object', properties: {} },
+    execute: (args, uid) => simulateExpressCall(listTaskServices, uid),
+  },
+  {
+    name: 'task_get_dashboard',
+    description: 'Get job execution metrics (failure rate, delays, durations) for a task service.',
+    parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' } }, required: ['id'] },
+    execute: (args, uid) => simulateExpressCall(getTaskServiceDashboard, uid, { id: args.id }, { range: args.range || '1h' }),
+  },
+  {
+    name: 'logs_query',
+    description: 'Search system logs. Supports text search and level filtering (e.g. "level:error database timeout").',
+    parameters: { type: 'object', properties: { search: { type: 'string' }, range: { type: 'string' }, limit: { type: 'number' } } },
+    execute: (args, uid) => simulateExpressCall(getDashboardLogs, uid, {}, { search: args.search, range: args.range || '1h', limit: Math.min(args.limit || 20, 30) }),
+  },
+  {
+    name: 'error_get_global',
+    description: 'Get unresolved exception groups across the platform with occurrence counts.',
+    parameters: { type: 'object', properties: {} },
+    execute: (args, uid) => simulateExpressCall(getGlobalErrors, uid, {}, { status: 'unresolved', limit: 15 }),
+  },
+  {
+    name: 'error_get_group_detail',
+    description: 'Get details and recent occurrences of a specific error fingerprint.',
+    parameters: { type: 'object', properties: { groupId: { type: 'string' }, range: { type: 'string' } }, required: ['groupId'] },
+    execute: (args, uid) => simulateExpressCall(getErrorGroupDetails, uid, { groupId: args.groupId }, { range: args.range || '1h' }),
+  },
+  {
+    name: 'uptime_list_monitors',
+    description: 'List all uptime monitors with their current status (up/down/timeout).',
+    parameters: { type: 'object', properties: {} },
+    execute: (args, uid) => simulateExpressCall(listMonitors, uid),
+  },
+  {
+    name: 'uptime_get_stats',
+    description: 'Get uptime percentage, latency percentiles, and status history for a monitor.',
+    parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' } }, required: ['id'] },
+    execute: (args, uid) => simulateExpressCall(getMonitorStats, uid, { id: args.id }, { range: args.range || '1h' }),
+  },
+  {
+    name: 'vps_list',
+    description: 'List monitored Linux VPS servers with their last-seen status.',
+    parameters: { type: 'object', properties: {} },
+    execute: (args, uid) => simulateExpressCall(listVps, uid),
+  },
+  {
+    name: 'vps_get_stats',
+    description: 'Get CPU, RAM, Disk, Network, and Docker metrics for a VPS.',
+    parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' } }, required: ['id'] },
+    execute: (args, uid) => simulateExpressCall(getVpsStats, uid, { id: args.id }, { range: args.range || '1h' }),
+  },
+  {
+    name: 'database_list',
+    description: 'List monitored database instances (MongoDB, Redis, PostgreSQL, MySQL).',
+    parameters: { type: 'object', properties: {} },
+    execute: (args, uid) => simulateExpressCall(listDatabases, uid),
+  },
+  {
+    name: 'database_get_stats',
+    description: 'Get database throughput, latency metrics, and connection stats.',
+    parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' } }, required: ['id'] },
+    execute: (args, uid) => simulateExpressCall(getDatabaseStats, uid, { id: args.id }, { range: args.range || '1h' }),
+  },
+];
+
+// Build Gemini-format tool declarations
+const geminiToolDeclarations = INVESTIGATION_TOOLS.map((t) => ({
+  name: t.name,
+  description: t.description,
+  parameters: t.parameters,
+}));
+
+const toolMap = new Map(INVESTIGATION_TOOLS.map((t) => [t.name, t]));
+
+// ---------------------------------------------------------------------------
+// System Prompt
+// ---------------------------------------------------------------------------
+
+const SYSTEM_PROMPT = `You are Senzor's Incident Analysis Engine — an expert SRE AI that investigates fired alert incidents.
+
+Your job: When an alert fires, investigate the user's observability data to determine the root cause, which services are affected, and what the operator should do.
+
+INVESTIGATION PROTOCOL:
+1. Start by understanding the alert condition (target type, threshold, trigger value).
+2. List the relevant services for that target type to identify IDs.
+3. Get stats for those services to find anomalies.
+4. Check error groups for recent spikes.
+5. Search logs for error-level entries in the incident time window.
+6. Check related systems (if APM is affected, check VPS/database; if uptime is affected, check APM).
+7. Cross-correlate findings to form a root cause hypothesis.
+
+RULES:
+- Be concise and precise. Operators are under pressure during incidents.
+- Always cite evidence from tool results (specific metric values, error messages, service names).
+- If you cannot determine a root cause, say so honestly and state what you checked.
+- Never fabricate data. Only report what the tools return.
+- Focus investigation on the time window relevant to the incident (use range:"1h" or shorter).
+- Maximum ${MAX_TOOL_CALLS} tool calls per analysis — prioritize high-signal investigations.`;
+
+// ---------------------------------------------------------------------------
+// Structured Output Schema
+// ---------------------------------------------------------------------------
+
+const ANALYSIS_OUTPUT_SCHEMA = {
+  type: Type.OBJECT,
+  properties: {
+    summary: {
+      type: Type.STRING,
+      description: 'A concise 1-3 sentence summary of the incident and its likely cause. Written for a busy SRE reading an alert notification.',
+    },
+    rootCause: {
+      type: Type.STRING,
+      description: 'Detailed root cause hypothesis with evidence from the investigation. Cite specific metrics, error messages, and service names.',
+    },
+    affectedServices: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: 'Names of affected services, monitors, or infrastructure components.',
+    },
+    correlatedEvents: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: 'Other notable events discovered during investigation (error spikes, latency changes, resource exhaustion).',
+    },
+    recommendedActions: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: 'Specific, actionable steps the operator should take. Be concrete (e.g., "Restart auth-service pod" not "Check services").',
+    },
+    confidence: {
+      type: Type.STRING,
+      enum: ['high', 'medium', 'low'],
+      description: 'Confidence in the root cause: high = clear evidence, medium = likely but some uncertainty, low = best guess based on limited data.',
+    },
+  },
+  required: ['summary', 'rootCause', 'affectedServices', 'correlatedEvents', 'recommendedActions', 'confidence'],
+};
+
+// ---------------------------------------------------------------------------
+// Core Analysis Function
+// ---------------------------------------------------------------------------
+
+export interface IncidentContext {
+  incidentId: string;
+  ownerId: string;
+  conditionName: string;
+  conditionDescription: string;
+  target: string;
+  triggerValue: number;
+  threshold: { operator: string; value: number; windowMins: number };
+  severity: string;
+  labels: string[];
+  title: string;
+}
+
+export const runIncidentAnalysis = async (ctx: IncidentContext): Promise<IAiAnalysis> => {
+  const startTime = Date.now();
+  let toolCallsUsed = 0;
+  let tokensUsed = { input: 0, output: 0 };
+
+  // Guard: no API key configured
+  if (!process.env.GEMINI_API_KEY) {
+    logger.warn('[AI Analysis] GEMINI_API_KEY not configured, skipping analysis');
+    return createSkippedResult('GEMINI_API_KEY not configured');
+  }
+
+  const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
+  const operatorSymbol = ({ gt: '>', lt: '<', eq: '==', gte: '>=', lte: '<=', neq: '!=' } as Record<string, string>)[ctx.threshold.operator] || ctx.threshold.operator;
+
+  const userPrompt = `INCIDENT FIRED — Investigate immediately.
+
+Incident: ${ctx.title}
+Condition: ${ctx.conditionName}${ctx.conditionDescription ? ` — ${ctx.conditionDescription}` : ''}
+Target: ${ctx.target.toUpperCase()}
+Severity: ${ctx.severity.toUpperCase()}
+Trigger Value: ${ctx.triggerValue} (threshold: count ${operatorSymbol} ${ctx.threshold.value} in ${ctx.threshold.windowMins}m window)
+${ctx.labels.length > 0 ? `Labels: ${ctx.labels.join(', ')}` : ''}
+Time: ${new Date().toISOString()}
+
+Investigate the root cause using the available tools. Start with the ${ctx.target} target and expand to correlated systems.`;
+
+  try {
+    // Create a chat session with tools
+    const chat = ai.chats.create({
+      model: GEMINI_MODEL,
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        tools: [{ functionDeclarations: geminiToolDeclarations }],
+        temperature: 0.1,  // Deterministic for reliability
+      },
+    });
+
+    // Set up abort timer
+    const abortController = new AbortController();
+    const timeout = setTimeout(() => abortController.abort(), ANALYSIS_TIMEOUT_MS);
+
+    let response = await chat.sendMessage({ message: userPrompt });
+
+    // Agentic tool-calling loop
+    while (response.functionCalls && response.functionCalls.length > 0 && toolCallsUsed < MAX_TOOL_CALLS) {
+      if (abortController.signal.aborted) break;
+
+      const responseParts: any[] = [];
+
+      for (const call of response.functionCalls) {
+        if (toolCallsUsed >= MAX_TOOL_CALLS) break;
+        toolCallsUsed++;
+
+        const callId = call.id ?? '';
+        const callName = call.name ?? '';
+        const tool = toolMap.get(callName);
+        if (!tool) {
+          responseParts.push(createPartFromFunctionResponse(callId, callName, { error: `Unknown tool: ${callName}` }));
+          continue;
+        }
+
+        try {
+          const result = await tool.execute(call.args || {}, ctx.ownerId);
+          // Truncate large results to prevent context window bloat
+          const resultStr = JSON.stringify(result.data);
+          let responseData: Record<string, unknown>;
+          if (resultStr.length > 8000) {
+            responseData = { data: resultStr.substring(0, 8000), truncated: true };
+          } else {
+            responseData = result.data && typeof result.data === 'object' ? result.data : { data: result.data };
+          }
+          responseParts.push(createPartFromFunctionResponse(callId, callName, responseData));
+        } catch (err: any) {
+          responseParts.push(createPartFromFunctionResponse(callId, callName, { error: err.message }));
+          logger.warn(`[AI Analysis] Tool ${callName} failed: ${err.message}`);
+        }
+      }
+
+      // Send tool results back to Gemini
+      response = await chat.sendMessage({ message: responseParts });
+    }
+
+    clearTimeout(timeout);
+
+    // Extract usage metadata
+    if (response.usageMetadata) {
+      tokensUsed.input = response.usageMetadata.promptTokenCount || 0;
+      tokensUsed.output = response.usageMetadata.candidatesTokenCount || 0;
+    }
+
+    // Now ask for structured output
+    const structuredResponse = await ai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: `Based on the following investigation, produce a structured incident analysis.
+
+Investigation transcript:
+${response.text || 'No text response from investigation.'}
+
+Produce the structured analysis now.`,
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema: ANALYSIS_OUTPUT_SCHEMA,
+        temperature: 0.1,
+      },
+    });
+
+    // Accumulate tokens from structured call
+    if (structuredResponse.usageMetadata) {
+      tokensUsed.input += structuredResponse.usageMetadata.promptTokenCount || 0;
+      tokensUsed.output += structuredResponse.usageMetadata.candidatesTokenCount || 0;
+    }
+
+    // Parse structured output
+    const rawText = structuredResponse.text || '';
+    let parsed: any;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      // Fallback: use the raw investigation text as summary
+      logger.warn('[AI Analysis] Failed to parse structured output, using raw text');
+      return {
+        status: 'completed',
+        summary: response.text?.substring(0, 500) || 'Analysis completed but structured output parsing failed.',
+        findings: {
+          rootCause: response.text || 'See summary.',
+          affectedServices: [],
+          correlatedEvents: [],
+          recommendedActions: [],
+        },
+        confidence: 'low',
+        toolCallsUsed,
+        tokensUsed,
+        model: GEMINI_MODEL,
+        analyzedAt: new Date(),
+        durationMs: Date.now() - startTime,
+      };
+    }
+
+    return {
+      status: 'completed',
+      summary: parsed.summary || '',
+      findings: {
+        rootCause: parsed.rootCause || '',
+        affectedServices: parsed.affectedServices || [],
+        correlatedEvents: parsed.correlatedEvents || [],
+        recommendedActions: parsed.recommendedActions || [],
+      },
+      confidence: parsed.confidence || 'low',
+      toolCallsUsed,
+      tokensUsed,
+      model: GEMINI_MODEL,
+      analyzedAt: new Date(),
+      durationMs: Date.now() - startTime,
+    };
+  } catch (err: any) {
+    logger.error(`[AI Analysis] Analysis failed for incident ${ctx.incidentId}: ${err.message}`);
+    return {
+      status: 'failed',
+      summary: '',
+      findings: {
+        rootCause: '',
+        affectedServices: [],
+        correlatedEvents: [],
+        recommendedActions: [],
+      },
+      confidence: 'low',
+      toolCallsUsed,
+      tokensUsed,
+      model: GEMINI_MODEL,
+      analyzedAt: new Date(),
+      durationMs: Date.now() - startTime,
+      error: err.message,
+    };
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+const createSkippedResult = (reason: string): IAiAnalysis => ({
+  status: 'skipped',
+  summary: '',
+  findings: {
+    rootCause: '',
+    affectedServices: [],
+    correlatedEvents: [],
+    recommendedActions: [],
+  },
+  confidence: 'low',
+  toolCallsUsed: 0,
+  tokensUsed: { input: 0, output: 0 },
+  model: GEMINI_MODEL,
+  analyzedAt: null,
+  durationMs: 0,
+  error: reason,
+});

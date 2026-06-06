@@ -75,7 +75,10 @@ import {
   createSilence,
   listSilences,
   deleteSilence,
+  getIncidentAnalysis,
+  triggerIncidentAnalysis,
 } from '../controllers/alerts';
+import { requirePlan } from '../middlewares/planGate';
 import {
   getSchemaDictionary,
   createView,
@@ -370,6 +373,8 @@ apiRouter.patch('/alerts/incidents/:id/severity', updateIncidentSeverity);
 apiRouter.patch('/alerts/incidents/:id/assign', assignIncident);
 apiRouter.post('/alerts/incidents/:id/notes', addIncidentNote);
 apiRouter.post('/alerts/incidents/bulk', bulkUpdateIncidents);
+apiRouter.get('/alerts/incidents/:id/analysis', getIncidentAnalysis);
+apiRouter.post('/alerts/incidents/:id/analysis', requirePlan('business'), triggerIncidentAnalysis);
 apiRouter.post('/alerts/silences', createSilence);
 apiRouter.get('/alerts/silences', listSilences);
 apiRouter.delete('/alerts/silences/:id', deleteSilence);

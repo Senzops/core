@@ -11,6 +11,7 @@ import { startFirebaseWorker } from './firebase';
 import { startHeartbeatWorker } from './heartbeat';
 import { startQueueWorkers } from './processors';
 import { shutdownQueues } from '../lib/queue';
+import { createAiAnalysisWorker } from '../lib/aiQueue';
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/senzor';
 
@@ -49,6 +50,10 @@ const initWorker = async () => {
 
     // Ingestion Queue Workers (BullMQ)
     startQueueWorkers();
+
+    // AI Incident Analysis Worker (BullMQ)
+    createAiAnalysisWorker();
+    logger.info('[Worker] AI Incident Analysis Worker started');
 
     // 3. Handle graceful shutdown
     process.on('SIGTERM', async () => {

@@ -12,6 +12,8 @@ export interface PlanConfig {
   maxIngestionBytes: number;
   maxOrganizations: number;
   retentionDays: number;
+  aiAnalysis: boolean;
+  aiAnalysisMonthlyQuota: number;  // 0 = disabled, -1 = unlimited
   paddlePriceIdMonthly: string | null;
   paddlePriceIdAnnual: string | null;
   dodoProductIdMonthly: string | null;
@@ -28,6 +30,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     maxIngestionBytes: 2 * GB,
     maxOrganizations: 1,
     retentionDays: 3,
+    aiAnalysis: false,
+    aiAnalysisMonthlyQuota: 0,
     paddlePriceIdMonthly: null,
     paddlePriceIdAnnual: null,
     dodoProductIdMonthly: null,
@@ -42,8 +46,10 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     maxIngestionBytes: 15 * GB,
     maxOrganizations: 3,
     retentionDays: 15,
+    aiAnalysis: false,
+    aiAnalysisMonthlyQuota: 0,
     paddlePriceIdMonthly: 'pri_01knfdyzk9gsjwfh4vq3hfg2q0',
-    paddlePriceIdAnnual: 'pri_01knfe0d96abaf790xead78y0m',  
+    paddlePriceIdAnnual: 'pri_01knfe0d96abaf790xead78y0m',
     dodoProductIdMonthly: 'pdt_0NfOCqR7Jh4KxjWipmxdi',
     dodoProductIdAnnual: 'pdt_0NfOCqHOShtUikkTy0h87',
   },
@@ -56,6 +62,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     maxIngestionBytes: 100 * GB,
     maxOrganizations: 10,
     retentionDays: 30,
+    aiAnalysis: true,
+    aiAnalysisMonthlyQuota: 500,
     paddlePriceIdMonthly: 'pri_01knfe2b0s6yycykn1y4x2mrrk',
     paddlePriceIdAnnual: 'pri_01knfe3g8941dyr18vvy9tc2qy',
     dodoProductIdMonthly: 'pdt_0NfOCpyjpqRvf5QvCdVqn',
@@ -70,6 +78,8 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     maxIngestionBytes: 1000 * GB,
     maxOrganizations: 99999,
     retentionDays: 90,
+    aiAnalysis: true,
+    aiAnalysisMonthlyQuota: -1,  // Unlimited
     paddlePriceIdMonthly: null,
     paddlePriceIdAnnual: null,
     dodoProductIdMonthly: null,

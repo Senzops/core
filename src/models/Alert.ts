@@ -104,6 +104,24 @@ export interface ITimelineEvent {
   timestamp: Date;
 }
 
+export interface IAiAnalysis {
+  status: 'pending' | 'completed' | 'failed' | 'skipped';
+  summary: string;
+  findings: {
+    rootCause: string;
+    affectedServices: string[];
+    correlatedEvents: string[];
+    recommendedActions: string[];
+  };
+  confidence: 'high' | 'medium' | 'low';
+  toolCallsUsed: number;
+  tokensUsed: { input: number; output: number };
+  model: string;
+  analyzedAt: Date | null;
+  durationMs: number;
+  error?: string;
+}
+
 export interface IAlertIncident extends Document {
   ownerId: string;
   policyId: mongoose.Types.ObjectId;
@@ -115,6 +133,7 @@ export interface IAlertIncident extends Document {
   triggerValue: number;
   labels: string[];
   assigneeId?: string;
+  aiAnalysis?: IAiAnalysis;
   timeline: ITimelineEvent[];
   lastNotifiedAt?: Date;
   openedAt: Date;
@@ -130,6 +149,27 @@ const TimelineEventSchema = new Schema<ITimelineEvent>({
   timestamp: { type: Date, default: Date.now }
 }, { _id: true });
 
+const AiAnalysisSchema = new Schema({
+  status: { type: String, enum: ['pending', 'completed', 'failed', 'skipped'], default: 'pending' },
+  summary: { type: String, default: '' },
+  findings: {
+    rootCause: { type: String, default: '' },
+    affectedServices: { type: [String], default: [] },
+    correlatedEvents: { type: [String], default: [] },
+    recommendedActions: { type: [String], default: [] },
+  },
+  confidence: { type: String, enum: ['high', 'medium', 'low'], default: 'low' },
+  toolCallsUsed: { type: Number, default: 0 },
+  tokensUsed: {
+    input: { type: Number, default: 0 },
+    output: { type: Number, default: 0 },
+  },
+  model: { type: String, default: '' },
+  analyzedAt: { type: Date, default: null },
+  durationMs: { type: Number, default: 0 },
+  error: { type: String },
+}, { _id: false });
+
 const AlertIncidentSchema = new Schema<IAlertIncident>({
   ownerId: { type: String, required: true, index: true },
   policyId: { type: Schema.Types.ObjectId, ref: 'AlertPolicy', required: true, index: true },
@@ -141,6 +181,7 @@ const AlertIncidentSchema = new Schema<IAlertIncident>({
   triggerValue: { type: Number, required: true },
   labels: { type: [String], default: [] },
   assigneeId: { type: String },
+  aiAnalysis: { type: AiAnalysisSchema, default: undefined },
   timeline: { type: [TimelineEventSchema], default: [] },
   lastNotifiedAt: { type: Date },
   openedAt: { type: Date, default: Date.now },

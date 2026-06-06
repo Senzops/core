@@ -9,6 +9,8 @@ import {
   getNextIncidentNumber,
   ITimelineEvent
 } from '../models/Alert';
+import { enqueueIncidentAnalysis } from '../lib/aiQueue';
+import { checkAiAnalysisAccess } from '../middlewares/planGate';
 
 // ============================================================================
 // 1. DESTINATIONS (Notification Channels)
@@ -538,7 +540,94 @@ export const bulkUpdateIncidents = async (req: Request, res: Response, next: Nex
 
 
 // ============================================================================
-// 5. SILENCE WINDOWS (Maintenance / Muting)
+// 5. AI INCIDENT ANALYSIS
+// ============================================================================
+
+export const getIncidentAnalysis = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ownerId = (req as any).ownerId;
+    const { id } = req.params;
+
+    const incident = await AlertIncident.findOne({ _id: id, ownerId })
+      .select('aiAnalysis incidentNumber title severity status')
+      .lean();
+
+    if (!incident) return res.status(404).json({ error: 'Incident not found' });
+
+    res.json({
+      incidentId: incident._id,
+      analysis: incident.aiAnalysis || null,
+    });
+  } catch (error) { next(error); }
+};
+
+export const triggerIncidentAnalysis = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const ownerId = (req as any).ownerId;
+    const { id } = req.params;
+
+    // Plan gate check
+    const access = await checkAiAnalysisAccess(ownerId);
+    if (!access.allowed) {
+      return res.status(403).json({
+        error: 'Plan upgrade required',
+        requiredPlan: 'business',
+        currentPlan: access.plan,
+        message: 'AI Incident Analysis requires the Business plan or higher.',
+      });
+    }
+
+    const incident = await AlertIncident.findOne({ _id: id, ownerId })
+      .populate('conditionId', 'name description target threshold severity labels policyId')
+      .lean();
+
+    if (!incident) return res.status(404).json({ error: 'Incident not found' });
+
+    // Prevent re-analysis if one is already pending
+    if (incident.aiAnalysis?.status === 'pending') {
+      return res.status(409).json({ error: 'Analysis already in progress' });
+    }
+
+    const condition = incident.conditionId as any;
+    if (!condition) return res.status(400).json({ error: 'Incident condition not found' });
+
+    // Mark as pending immediately
+    await AlertIncident.findByIdAndUpdate(id, {
+      aiAnalysis: {
+        status: 'pending',
+        summary: '',
+        findings: { rootCause: '', affectedServices: [], correlatedEvents: [], recommendedActions: [] },
+        confidence: 'low',
+        toolCallsUsed: 0,
+        tokensUsed: { input: 0, output: 0 },
+        model: '',
+        analyzedAt: null,
+        durationMs: 0,
+      },
+    });
+
+    // Enqueue analysis
+    await enqueueIncidentAnalysis({
+      incidentId: id,
+      ownerId,
+      conditionName: condition.name,
+      conditionDescription: condition.description || '',
+      target: condition.target,
+      triggerValue: incident.triggerValue,
+      threshold: condition.threshold,
+      severity: condition.severity || incident.severity,
+      labels: condition.labels || [],
+      title: incident.title,
+      policyId: condition.policyId?.toString() || incident.policyId?.toString(),
+    });
+
+    res.json({ success: true, message: 'AI analysis enqueued', status: 'pending' });
+  } catch (error) { next(error); }
+};
+
+
+// ============================================================================
+// 6. SILENCE WINDOWS (Maintenance / Muting)
 // ============================================================================
 export const createSilence = async (req: Request, res: Response, next: NextFunction) => {
   try {

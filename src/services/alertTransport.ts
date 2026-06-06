@@ -395,6 +395,315 @@ const sendWebhookAlert = async (destination: any, incident: any, condition: any,
   logger.info(`[Alerts] Webhook dispatched for incident ${incident._id}`);
 };
 
+// ============================================================================
+// AI ANALYSIS FOLLOW-UP NOTIFICATIONS
+// ============================================================================
+
+/**
+ * Dispatches a follow-up notification with AI analysis results.
+ * Sent after the initial alert, only when analysis completes successfully.
+ */
+export const dispatchAnalysisUpdate = async (
+  destinations: any[],
+  incident: any,
+  analysis: any,
+  policy: any
+) => {
+  const results = await Promise.allSettled(
+    destinations.map((dest: any) => {
+      switch (dest.type) {
+        case 'email':
+          if (dest.config?.emails?.length > 0) {
+            return withRetry(
+              () => sendAnalysisEmail(dest.config.emails, incident, analysis, policy),
+              `Analysis email to ${dest.name}`
+            );
+          }
+          return Promise.resolve();
+        case 'slack':
+          if (dest.config?.webhookUrl) {
+            return withRetry(
+              () => sendAnalysisSlack(dest.config.webhookUrl, incident, analysis, policy),
+              `Analysis Slack to ${dest.name}`
+            );
+          }
+          return Promise.resolve();
+        case 'discord':
+          if (dest.config?.webhookUrl) {
+            return withRetry(
+              () => sendAnalysisDiscord(dest.config.webhookUrl, incident, analysis, policy),
+              `Analysis Discord to ${dest.name}`
+            );
+          }
+          return Promise.resolve();
+        case 'webhook':
+          if (dest.config?.webhookUrl) {
+            return withRetry(
+              () => sendAnalysisWebhook(dest, incident, analysis, policy),
+              `Analysis webhook to ${dest.name}`
+            );
+          }
+          return Promise.resolve();
+        default:
+          return Promise.resolve();
+      }
+    })
+  );
+
+  const failures = results.filter(r => r.status === 'rejected');
+  if (failures.length > 0) {
+    logger.warn(`[AI Analysis] ${failures.length}/${results.length} follow-up notification(s) failed for incident ${incident._id}`);
+  }
+};
+
+// --- Analysis Email ---
+const sendAnalysisEmail = async (emails: string[], incident: any, analysis: any, policy: any) => {
+  const incidentNum = incident.incidentNumber ? `INC-${String(incident.incidentNumber).padStart(4, '0')}` : '';
+  const dashboardUrl = `https://senzor.dev/dashboard/incidents/${incident._id}`;
+
+  const confidenceColor: Record<string, string> = { high: '#10b981', medium: '#f59e0b', low: '#6b7280' };
+  const confColor = confidenceColor[analysis.confidence] || '#6b7280';
+
+  const actionsHtml = analysis.findings.recommendedActions.length > 0
+    ? analysis.findings.recommendedActions.map((a: string) => `<li style="margin-bottom: 4px; color: #334155;">${a}</li>`).join('')
+    : '<li style="color: #94a3b8;">No specific actions recommended.</li>';
+
+  const servicesHtml = analysis.findings.affectedServices.length > 0
+    ? analysis.findings.affectedServices.map((s: string) => `<span style="display: inline-block; background: #fef2f2; color: #dc2626; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-family: monospace; margin-right: 4px; margin-bottom: 2px;">${s}</span>`).join('')
+    : '<span style="color: #94a3b8; font-size: 12px;">None identified</span>';
+
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <!-- Header -->
+      <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); padding: 16px 24px; border-radius: 8px 8px 0 0;">
+        <table style="width: 100%;">
+          <tr>
+            <td>
+              <span style="color: white; font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;">AI ANALYSIS COMPLETE</span>
+              ${incidentNum ? `<span style="color: rgba(255,255,255,0.8); font-size: 12px; font-family: monospace; margin-left: 12px;">${incidentNum}</span>` : ''}
+            </td>
+            <td style="text-align: right;">
+              <span style="background: rgba(255,255,255,0.2); color: white; padding: 3px 10px; border-radius: 4px; font-size: 11px; font-weight: 700;">Confidence: ${analysis.confidence.toUpperCase()}</span>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Body -->
+      <div style="border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 8px 8px; padding: 24px;">
+        <!-- Summary -->
+        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid ${confColor}; padding: 16px; border-radius: 0 8px 8px 0; margin-bottom: 20px;">
+          <p style="color: #0f172a; font-size: 14px; margin: 0; line-height: 1.6; font-weight: 500;">${analysis.summary}</p>
+        </div>
+
+        <!-- Root Cause -->
+        <h3 style="color: #0f172a; font-size: 13px; font-weight: 700; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Root Cause</h3>
+        <p style="color: #334155; font-size: 13px; line-height: 1.6; margin: 0 0 20px 0;">${analysis.findings.rootCause}</p>
+
+        <!-- Affected Services -->
+        <h3 style="color: #0f172a; font-size: 13px; font-weight: 700; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Affected Services</h3>
+        <div style="margin-bottom: 20px;">${servicesHtml}</div>
+
+        <!-- Recommended Actions -->
+        <h3 style="color: #0f172a; font-size: 13px; font-weight: 700; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Recommended Actions</h3>
+        <ol style="padding-left: 20px; margin: 0 0 24px 0; font-size: 13px; line-height: 1.7;">${actionsHtml}</ol>
+
+        <!-- CTA -->
+        <a href="${dashboardUrl}" style="display: inline-block; background-color: #6366f1; color: white; text-decoration: none; padding: 10px 28px; border-radius: 6px; font-weight: 600; font-size: 13px;">
+          View Full Analysis
+        </a>
+
+        <!-- Footer -->
+        <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8f0;">
+          <p style="color: #94a3b8; font-size: 11px; margin: 0; line-height: 1.5;">
+            AI-generated analysis by <strong>Senzor Intelligence Engine</strong> &middot; ${analysis.model}
+            <br/>This is an automated hypothesis — always verify before taking action.
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
+
+  await resend.emails.send({
+    from: `Senzor AI <${process.env.RESEND_FROM_EMAIL || 'alerts@senzor.dev'}>`,
+    to: emails,
+    subject: `AI Analysis — ${incidentNum ? `${incidentNum} ` : ''}${incident.title} [${analysis.confidence.toUpperCase()} confidence]`,
+    html,
+  });
+
+  logger.info(`[AI Analysis] Email dispatched for incident ${incident._id}`);
+};
+
+// --- Analysis Slack ---
+const sendAnalysisSlack = async (webhookUrl: string, incident: any, analysis: any, policy: any) => {
+  const incidentNum = incident.incidentNumber ? `INC-${String(incident.incidentNumber).padStart(4, '0')}` : '';
+  const dashboardUrl = `https://senzor.dev/dashboard/incidents/${incident._id}`;
+  const confEmoji: Record<string, string> = { high: '🟢', medium: '🟡', low: '🔴' };
+
+  const blocks: any[] = [
+    {
+      type: 'header',
+      text: { type: 'plain_text', text: `🔍 AI Analysis Complete: ${incident.title?.substring(0, 100)}`, emoji: true },
+    },
+    { type: 'divider' },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `> ${analysis.summary}` },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Incident*\n${incidentNum || 'N/A'}` },
+        { type: 'mrkdwn', text: `*Confidence*\n${confEmoji[analysis.confidence] || '⚪'} ${analysis.confidence.toUpperCase()}` },
+      ],
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Root Cause*\n${analysis.findings.rootCause}` },
+    },
+  ];
+
+  if (analysis.findings.affectedServices.length > 0) {
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Affected Services*\n${analysis.findings.affectedServices.map((s: string) => `\`${s}\``).join(', ')}` },
+    });
+  }
+
+  if (analysis.findings.recommendedActions.length > 0) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*Recommended Actions*\n${analysis.findings.recommendedActions.map((a: string, i: number) => `${i + 1}. ${a}`).join('\n')}`,
+      },
+    });
+  }
+
+  blocks.push(
+    { type: 'divider' },
+    {
+      type: 'context',
+      elements: [
+        { type: 'mrkdwn', text: `_AI-generated by Senzor Intelligence Engine · ${analysis.model} · Always verify before acting_` },
+      ],
+    },
+    {
+      type: 'actions',
+      elements: [{
+        type: 'button',
+        text: { type: 'plain_text', text: 'View Full Analysis', emoji: true },
+        url: dashboardUrl,
+      }],
+    }
+  );
+
+  const response = await fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      text: `[Senzor AI] Analysis complete for ${incidentNum}: ${analysis.summary.substring(0, 200)}`,
+      blocks,
+    }),
+  });
+
+  if (!response.ok) throw new Error(`Slack API responded with ${response.status}`);
+  logger.info(`[AI Analysis] Slack dispatched for incident ${incident._id}`);
+};
+
+// --- Analysis Discord ---
+const sendAnalysisDiscord = async (webhookUrl: string, incident: any, analysis: any, policy: any) => {
+  const incidentNum = incident.incidentNumber ? `INC-${String(incident.incidentNumber).padStart(4, '0')}` : '';
+  const dashboardUrl = `https://senzor.dev/dashboard/incidents/${incident._id}`;
+
+  const fields: any[] = [
+    { name: 'Incident', value: incidentNum || 'N/A', inline: true },
+    { name: 'Confidence', value: analysis.confidence.toUpperCase(), inline: true },
+    { name: 'Root Cause', value: analysis.findings.rootCause.substring(0, 1024), inline: false },
+  ];
+
+  if (analysis.findings.affectedServices.length > 0) {
+    fields.push({ name: 'Affected Services', value: analysis.findings.affectedServices.map((s: string) => `\`${s}\``).join(', '), inline: false });
+  }
+
+  if (analysis.findings.recommendedActions.length > 0) {
+    fields.push({
+      name: 'Recommended Actions',
+      value: analysis.findings.recommendedActions.map((a: string, i: number) => `${i + 1}. ${a}`).join('\n').substring(0, 1024),
+      inline: false,
+    });
+  }
+
+  const payload = {
+    embeds: [{
+      title: `🔍 AI Analysis: ${incident.title?.substring(0, 200)}`,
+      url: dashboardUrl,
+      color: 6366961,  // Indigo (#6366f1)
+      description: analysis.summary,
+      fields,
+      footer: { text: `Senzor Intelligence Engine · ${analysis.model} · Always verify before acting` },
+      timestamp: new Date().toISOString(),
+    }],
+  };
+
+  const response = await fetch(webhookUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) throw new Error(`Discord API responded with ${response.status}`);
+  logger.info(`[AI Analysis] Discord dispatched for incident ${incident._id}`);
+};
+
+// --- Analysis Webhook ---
+const sendAnalysisWebhook = async (destination: any, incident: any, analysis: any, policy: any) => {
+  const { webhookUrl, method = 'POST', headers: customHeaders = {}, secret } = destination.config;
+
+  const payload = {
+    event: 'incident.analysis_completed',
+    incident: {
+      id: incident._id,
+      number: incident.incidentNumber,
+      title: incident.title,
+      severity: incident.severity,
+      status: incident.status,
+    },
+    analysis: {
+      summary: analysis.summary,
+      rootCause: analysis.findings.rootCause,
+      affectedServices: analysis.findings.affectedServices,
+      correlatedEvents: analysis.findings.correlatedEvents,
+      recommendedActions: analysis.findings.recommendedActions,
+      confidence: analysis.confidence,
+      model: analysis.model,
+      analyzedAt: analysis.analyzedAt,
+    },
+    policy: { id: policy._id, name: policy.name },
+    timestamp: new Date().toISOString(),
+  };
+
+  const body = JSON.stringify(payload);
+  const reqHeaders: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'User-Agent': 'Senzor-AI-Analysis/1.0',
+    ...customHeaders,
+  };
+
+  if (secret) {
+    const crypto = await import('crypto');
+    const signature = crypto
+      .createHmac('sha256', secret)
+      .update(body)
+      .digest('hex');
+    reqHeaders['X-Senzor-Signature'] = `sha256=${signature}`;
+  }
+
+  const response = await fetch(webhookUrl, { method: method || 'POST', headers: reqHeaders, body });
+  if (!response.ok) throw new Error(`Webhook responded with ${response.status}`);
+  logger.info(`[AI Analysis] Webhook dispatched for incident ${incident._id}`);
+};
+
 // --- Utility ---
 const formatDuration = (start: Date, end: Date): string => {
   const ms = end.getTime() - start.getTime();
