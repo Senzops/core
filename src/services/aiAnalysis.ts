@@ -1,4 +1,4 @@
-import { GoogleGenAI, Type, createPartFromFunctionResponse } from '@google/genai';
+import { GoogleGenAI, Type } from '@google/genai';
 import { IAiAnalysis } from '../models/Alert';
 import { logger } from '../utils/logger';
 
@@ -333,11 +333,12 @@ Investigate the root cause using the available tools. Start with the ${ctx.targe
         if (toolCallsUsed >= MAX_TOOL_CALLS) break;
         toolCallsUsed++;
 
-        const callId = call.id ?? '';
         const callName = call.name ?? '';
         const tool = toolMap.get(callName);
         if (!tool) {
-          responseParts.push(createPartFromFunctionResponse(callId, callName, { error: `Unknown tool: ${callName}` }));
+          responseParts.push({
+            functionResponse: { name: callName, response: { error: `Unknown tool: ${callName}` } },
+          });
           continue;
         }
 
@@ -351,9 +352,13 @@ Investigate the root cause using the available tools. Start with the ${ctx.targe
           } else {
             responseData = result.data && typeof result.data === 'object' ? result.data : { data: result.data };
           }
-          responseParts.push(createPartFromFunctionResponse(callId, callName, responseData));
+          responseParts.push({
+            functionResponse: { name: callName, response: responseData },
+          });
         } catch (err: any) {
-          responseParts.push(createPartFromFunctionResponse(callId, callName, { error: err.message }));
+          responseParts.push({
+            functionResponse: { name: callName, response: { error: err.message } },
+          });
           logger.warn(`[AI Analysis] Tool ${callName} failed: ${err.message}`);
         }
       }
