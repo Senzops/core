@@ -344,13 +344,21 @@ Investigate the root cause using the available tools. Start with the ${ctx.targe
 
         try {
           const result = await tool.execute(call.args || {}, ctx.ownerId);
-          // Truncate large results to prevent context window bloat
+          // Gemini's FunctionResponse.response is a google.protobuf.Struct,
+          // which MUST be a JSON object — never an array or primitive.
+          // Many controllers return raw arrays (e.g. res.json(services)),
+          // so we always wrap in { output: ... } per Gemini's convention.
           const resultStr = JSON.stringify(result.data);
           let responseData: Record<string, unknown>;
           if (resultStr.length > 8000) {
-            responseData = { data: resultStr.substring(0, 8000), truncated: true };
+            responseData = { output: resultStr.substring(0, 8000), truncated: true };
+          } else if (Array.isArray(result.data)) {
+            // Arrays cannot be Struct — wrap in object
+            responseData = { output: result.data };
+          } else if (result.data && typeof result.data === 'object') {
+            responseData = result.data;
           } else {
-            responseData = result.data && typeof result.data === 'object' ? result.data : { data: result.data };
+            responseData = { output: result.data };
           }
           responseParts.push({
             functionResponse: { name: callName, response: responseData },
