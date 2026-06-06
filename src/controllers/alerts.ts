@@ -578,7 +578,7 @@ export const triggerIncidentAnalysis = async (req: Request, res: Response, next:
     }
 
     const incident = await AlertIncident.findOne({ _id: id, ownerId })
-      .populate('conditionId', 'name description target threshold severity labels policyId')
+      .populate('conditionId', 'name description target query threshold severity labels policyId')
       .lean();
 
     if (!incident) return res.status(404).json({ error: 'Incident not found' });
@@ -606,7 +606,8 @@ export const triggerIncidentAnalysis = async (req: Request, res: Response, next:
       },
     });
 
-    // Enqueue analysis
+    // Enqueue analysis — force: true clears any stale completed/failed job
+    // so BullMQ's jobId deduplication doesn't silently discard the retry.
     await enqueueIncidentAnalysis({
       incidentId: id,
       ownerId,
@@ -619,7 +620,8 @@ export const triggerIncidentAnalysis = async (req: Request, res: Response, next:
       labels: condition.labels || [],
       title: incident.title,
       policyId: condition.policyId?.toString() || incident.policyId?.toString(),
-    });
+      query: condition.query || undefined,
+    }, { force: true });
 
     res.json({ success: true, message: 'AI analysis enqueued', status: 'pending' });
   } catch (error) { next(error); }

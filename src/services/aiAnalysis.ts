@@ -308,7 +308,8 @@ RULES:
 - If you cannot determine a root cause, say so honestly and state what you checked.
 - Never fabricate data. Only report what the tools return.
 - Focus investigation on the time window relevant to the incident (use range:"1h" or shorter).
-- Maximum ${MAX_TOOL_CALLS} tool calls per analysis — prioritize high-signal investigations.`;
+- Maximum ${MAX_TOOL_CALLS} tool calls per analysis — prioritize high-signal investigations.
+- CRITICAL: The "trigger value" is the count of matching EVENT RECORDS in the alert time window — NOT the number of distinct affected resources. Example: trigger value 10 for a "VPS down" condition means 10 "down" health-check records were found — this could be 2 servers each reporting down 5 times, not 10 servers. Always verify the actual resource state with tools before drawing conclusions about the scale of impact.`;
 
 // ---------------------------------------------------------------------------
 // Structured Output Schema
@@ -364,6 +365,7 @@ export interface IncidentContext {
   severity: string;
   labels: string[];
   title: string;
+  query?: Record<string, unknown>;
 }
 
 export const runIncidentAnalysis = async (ctx: IncidentContext): Promise<IAiAnalysis> => {
@@ -381,17 +383,31 @@ export const runIncidentAnalysis = async (ctx: IncidentContext): Promise<IAiAnal
 
   const operatorSymbol = ({ gt: '>', lt: '<', eq: '==', gte: '>=', lte: '<=', neq: '!=' } as Record<string, string>)[ctx.threshold.operator] || ctx.threshold.operator;
 
+  // Build query display — show the filter the alert system used to count events
+  const queryDisplay = ctx.query
+    ? (() => {
+        const raw = JSON.stringify(ctx.query);
+        return raw.length > 300 ? raw.substring(0, 300) + '…' : raw;
+      })()
+    : null;
+
   const userPrompt = `INCIDENT FIRED — Investigate immediately.
 
-Incident: ${ctx.title}
-Condition: ${ctx.conditionName}${ctx.conditionDescription ? ` — ${ctx.conditionDescription}` : ''}
-Target: ${ctx.target.toUpperCase()}
-Severity: ${ctx.severity.toUpperCase()}
-Trigger Value: ${ctx.triggerValue} (threshold: count ${operatorSymbol} ${ctx.threshold.value} in ${ctx.threshold.windowMins}m window)
-${ctx.labels.length > 0 ? `Labels: ${ctx.labels.join(', ')}` : ''}
+ALERT DETAILS:
+- Incident: ${ctx.title}
+- Condition: ${ctx.conditionName}${ctx.conditionDescription ? ` — ${ctx.conditionDescription}` : ''}
+- Monitoring Target: ${ctx.target.toUpperCase()}
+- Severity: ${ctx.severity.toUpperCase()}
+${ctx.labels.length > 0 ? `- Labels: ${ctx.labels.join(', ')}\n` : ''}
+BREACH DETAILS:
+- Alert rule: fire when matching event count ${operatorSymbol} ${ctx.threshold.value} within ${ctx.threshold.windowMins} minute(s)
+- Actual count: ${ctx.triggerValue} matching events detected (threshold breached)
+${queryDisplay ? `- Event filter applied: ${queryDisplay}\n` : ''}
+IMPORTANT: The trigger value (${ctx.triggerValue}) is the number of matching EVENT RECORDS found in the monitoring database during the ${ctx.threshold.windowMins}-minute window. It is NOT a count of distinct affected resources. For example, 2 VPS servers each reporting "down" 5 times produces a count of 10 events, not 10 servers. Always verify the actual current state of resources using the investigation tools.
+
 Time: ${new Date().toISOString()}
 
-Investigate the root cause using the available tools. Start with the ${ctx.target} target and expand to correlated systems.`;
+Begin investigation: check the current state of ${ctx.target.toUpperCase()} resources, then expand to correlated systems.`;
 
   try {
     // Create a chat session with tools

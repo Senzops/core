@@ -48,6 +48,7 @@ export interface AiAnalysisPayload {
   labels: string[];
   title: string;
   policyId: string;
+  query?: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,6 +166,7 @@ async function executeAnalysis(payload: AiAnalysisPayload): Promise<void> {
     severity: payload.severity,
     labels: payload.labels,
     title: payload.title,
+    query: payload.query,
   };
 
   const result = await runIncidentAnalysis(ctx);
@@ -297,13 +299,33 @@ export const createAiAnalysisWorker = (): Worker<AiAnalysisPayload> => {
 
 const ENQUEUE_TIMEOUT_MS = 3000;
 
-export const enqueueIncidentAnalysis = async (payload: AiAnalysisPayload): Promise<void> => {
+export const enqueueIncidentAnalysis = async (
+  payload: AiAnalysisPayload,
+  options: { force?: boolean } = {},
+): Promise<void> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  const jobId = `analysis-${payload.incidentId}`;
+
   try {
-    const addPromise = aiAnalysisQueue.add('analyze', payload, {
-      // Deduplicate by incident ID — prevent duplicate analyses
-      jobId: `analysis-${payload.incidentId}`,
-    });
+    // For manual retries, clear any completed/failed job so BullMQ's jobId
+    // deduplication doesn't silently discard the new enqueue.
+    if (options.force) {
+      try {
+        const existing = await aiAnalysisQueue.getJob(jobId);
+        if (existing) {
+          const state = await existing.getState();
+          if (state === 'completed' || state === 'failed') {
+            await existing.remove();
+            logger.info(`[AI Analysis] Cleared stale job ${jobId} (was ${state}) for re-analysis`);
+          }
+          // If active/delayed/waiting — a retry is already in progress; let it continue
+        }
+      } catch {
+        // Best-effort removal — add() may still work, or fallback fires
+      }
+    }
+
+    const addPromise = aiAnalysisQueue.add('analyze', payload, { jobId });
 
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error('AI queue enqueue timeout')), ENQUEUE_TIMEOUT_MS);

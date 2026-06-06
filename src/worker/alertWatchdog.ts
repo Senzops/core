@@ -320,6 +320,7 @@ export const runAlertWatchdogSweep = async () => {
               labels: condition.labels || [],
               title,
               policyId: condition.policyId.toString(),
+              query: condition.query || undefined,
             }).catch(() => { /* non-fatal, already logged inside */ });
 
           } else {
