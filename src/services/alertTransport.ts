@@ -8,8 +8,8 @@ const MAX_RETRIES = 3;
 const RETRY_BASE_DELAY_MS = 1000;
 
 const SEVERITY_CONFIG: Record<string, { color: string; emoji: string; label: string }> = {
-  critical: { color: '#ef4444', emoji: '🔴', label: 'CRITICAL' },
-  high: { color: '#f97316', emoji: '🟠', label: 'HIGH' },
+  critical: { color: '#dc2626', emoji: '🔴', label: 'CRITICAL' },
+  high: { color: '#ef4444', emoji: '🟠', label: 'HIGH' },
   medium: { color: '#f59e0b', emoji: '🟡', label: 'MEDIUM' },
   low: { color: '#3b82f6', emoji: '🔵', label: 'LOW' },
   info: { color: '#6b7280', emoji: '⚪', label: 'INFO' },
@@ -106,91 +106,77 @@ const sendEmailAlert = async (emails: string[], incident: any, condition: any, p
     : null;
 
   const labelsHtml = incident.labels?.length > 0
-    ? `<tr><td style="padding:5px 0;color:#71717a;vertical-align:top;">Labels</td><td style="padding:5px 0;">${incident.labels.map((l: string) => `<span style="display:inline-block;background:#27272a;color:#a1a1aa;padding:2px 8px;border-radius:6px;font-size:11px;font-family:monospace;margin-right:4px;">${l}</span>`).join('')}</td></tr>`
+    ? `<tr><td style="padding: 6px 0; color: #6b7280; vertical-align: top;">Labels</td><td style="padding: 6px 0;">${incident.labels.map((l: string) => `<span style="display: inline-block; background: #f1f5f9; color: #475569; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-family: monospace; margin-right: 4px;">${l}</span>`).join('')}</td></tr>`
     : '';
 
   const descriptionHtml = condition.description
-    ? `<p style="color:#71717a;font-size:13px;margin:4px 0 0 0;line-height:1.5;">${condition.description}</p>`
+    ? `<p style="color: #64748b; font-size: 13px; margin: 4px 0 0 0; line-height: 1.5;">${condition.description}</p>`
     : '';
 
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#0a0a0b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0a0a0b;padding:40px 0;">
-<tr><td align="center">
-<table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background-color:#111113;border:1px solid #1e1e21;border-radius:12px;overflow:hidden;">
-  <tr>
-    <td style="padding:16px 24px;border-bottom:1px solid #1e1e21;">
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-        <tr>
-          <td><span style="color:#fafafa;font-size:16px;font-weight:700;letter-spacing:-0.5px;">Senzor</span></td>
-          ${incidentNum ? `<td align="right"><span style="color:#52525b;font-size:11px;font-family:monospace;">${incidentNum}</span></td>` : ''}
-        </tr>
-      </table>
-    </td>
-  </tr>
-  <tr>
-    <td style="padding:12px 24px;border-bottom:1px solid #1e1e21;">
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-        <tr>
-          <td><span style="display:inline-block;background:${statusColor};color:#fff;padding:3px 10px;border-radius:6px;font-size:10px;font-weight:700;letter-spacing:0.5px;">${statusText}</span></td>
-          <td align="right"><span style="display:inline-block;background:#27272a;color:#a1a1aa;padding:3px 10px;border-radius:6px;font-size:10px;font-weight:700;letter-spacing:0.5px;">${sevConfig.label}</span></td>
-        </tr>
-      </table>
-    </td>
-  </tr>
-  <tr>
-    <td style="padding:24px;">
-      <h2 style="color:#fafafa;margin:0 0 4px;font-size:17px;font-weight:700;line-height:1.4;">${condition.name}</h2>
-      ${descriptionHtml}
-      <p style="color:#52525b;font-size:12px;margin:6px 0 20px;">Policy: <strong style="color:#a1a1aa;">${policy.name}</strong></p>
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#18181b;border:1px solid #27272a;border-radius:8px;">
-        <tr><td style="padding:14px 16px;">
-          <table width="100%" style="font-size:13px;border-collapse:collapse;">
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <!-- Header Bar -->
+      <div style="background: ${statusColor}; padding: 16px 24px; border-radius: 8px 8px 0 0;">
+        <table style="width: 100%;">
+          <tr>
+            <td>
+              <span style="color: white; font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;">${statusText}</span>
+              ${incidentNum ? `<span style="color: rgba(255,255,255,0.8); font-size: 12px; font-family: monospace; margin-left: 12px;">${incidentNum}</span>` : ''}
+            </td>
+            <td style="text-align: right;">
+              <span style="background: rgba(255,255,255,0.2); color: white; padding: 3px 10px; border-radius: 4px; font-size: 11px; font-weight: 700; letter-spacing: 0.5px;">${sevConfig.label}</span>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Body -->
+      <div style="border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 8px 8px; padding: 24px;">
+        <h2 style="color: #0f172a; margin: 0 0 4px 0; font-size: 18px; font-weight: 700; line-height: 1.4;">${condition.name}</h2>
+        ${descriptionHtml}
+        <p style="color: #94a3b8; font-size: 12px; margin: 8px 0 20px 0;">Policy: <strong style="color: #64748b;">${policy.name}</strong></p>
+
+        <!-- Details Table -->
+        <div style="background: #f8fafc; padding: 16px; border-radius: 8px; border: 1px solid #e2e8f0;">
+          <table style="width: 100%; font-size: 13px; border-collapse: collapse;">
             <tr>
-              <td style="padding:5px 0;color:#71717a;width:120px;">Target</td>
-              <td style="padding:5px 0;color:#fafafa;font-weight:600;">${condition.target.toUpperCase()}</td>
+              <td style="padding: 6px 0; color: #6b7280; width: 130px;">Target</td>
+              <td style="padding: 6px 0; font-weight: 600; color: #1e293b;">${condition.target.toUpperCase()}</td>
             </tr>
             <tr>
-              <td style="padding:5px 0;color:#71717a;">Trigger Value</td>
-              <td style="padding:5px 0;color:#fafafa;font-weight:700;font-family:monospace;font-size:14px;">${incident.triggerValue}</td>
+              <td style="padding: 6px 0; color: #6b7280;">Trigger Value</td>
+              <td style="padding: 6px 0; font-weight: 700; color: #1e293b; font-family: monospace; font-size: 14px;">${incident.triggerValue}</td>
             </tr>
             <tr>
-              <td style="padding:5px 0;color:#71717a;">Threshold</td>
-              <td style="padding:5px 0;color:#a1a1aa;font-family:monospace;">count ${opSymbol} ${condition.threshold.value} in ${condition.threshold.windowMins}m</td>
+              <td style="padding: 6px 0; color: #6b7280;">Threshold</td>
+              <td style="padding: 6px 0; font-family: monospace; color: #475569;">count ${opSymbol} ${condition.threshold.value} in ${condition.threshold.windowMins}m window</td>
             </tr>
             <tr>
-              <td style="padding:5px 0;color:#71717a;">Time</td>
-              <td style="padding:5px 0;color:#a1a1aa;">${time}</td>
+              <td style="padding: 6px 0; color: #6b7280;">Time</td>
+              <td style="padding: 6px 0; color: #475569;">${time}</td>
             </tr>
-            ${duration ? `<tr><td style="padding:5px 0;color:#71717a;">Duration</td><td style="padding:5px 0;color:#10b981;font-weight:600;">${duration}</td></tr>` : ''}
+            ${duration ? `<tr><td style="padding: 6px 0; color: #6b7280;">Duration</td><td style="padding: 6px 0; font-weight: 600; color: #10b981;">${duration}</td></tr>` : ''}
             ${labelsHtml}
           </table>
-        </td></tr>
-      </table>
-      <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:24px;">
-        <tr>
-          <td style="background:#fafafa;border-radius:8px;">
-            <a href="${dashboardUrl}" style="display:inline-block;color:#18181b;text-decoration:none;padding:10px 24px;font-weight:600;font-size:13px;">View Incident</a>
-          </td>
-        </tr>
-      </table>
-    </td>
-  </tr>
-  <tr>
-    <td style="border-top:1px solid #1e1e21;padding:16px 24px;">
-      <p style="color:#52525b;font-size:11px;margin:0;line-height:1.6;">
-        Sent by <strong style="color:#a1a1aa;">Senzor</strong> for policy "${policy.name}"
-        <br/>Manage notifications at <a href="https://senzor.dev/dashboard/alerts" style="color:#71717a;text-decoration:underline;">senzor.dev/dashboard/alerts</a>
-      </p>
-    </td>
-  </tr>
-</table>
-</td></tr>
-</table>
-</body>
-</html>`;
+        </div>
+
+        <!-- CTA -->
+        <div style="margin-top: 24px;">
+          <a href="${dashboardUrl}" style="display: inline-block; background-color: #3b82f6; color: white; text-decoration: none; padding: 10px 28px; border-radius: 6px; font-weight: 600; font-size: 13px;">
+            View Incident
+          </a>
+        </div>
+
+        <!-- Footer -->
+        <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8f0;">
+          <p style="color: #94a3b8; font-size: 11px; margin: 0; line-height: 1.5;">
+            Sent by <strong>Senzor Alerting Engine</strong> for policy "${policy.name}".
+            <br/>Manage alert preferences at <a href="https://senzor.dev/dashboard/alerts" style="color: #3b82f6; text-decoration: none;">senzor.dev/dashboard/alerts</a>
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
 
   await resend.emails.send({
     from: `Senzor Alerts <${process.env.RESEND_FROM_EMAIL || 'alerts@senzor.dev'}>`,
@@ -263,25 +249,17 @@ const sendSlackAlert = async (webhookUrl: string, incident: any, condition: any,
     blocks.push({ type: 'context', elements: contextElements });
   }
 
-  blocks.push(
-    {
-      type: 'actions',
-      elements: [
-        {
-          type: 'button',
-          text: { type: 'plain_text', text: 'View Incident', emoji: true },
-          style: isResolved ? undefined : 'danger',
-          url: dashboardUrl
-        }
-      ]
-    },
-    {
-      type: 'context',
-      elements: [
-        { type: 'mrkdwn', text: `_Senzor · ${policy.name}_` }
-      ]
-    }
-  );
+  blocks.push({
+    type: 'actions',
+    elements: [
+      {
+        type: 'button',
+        text: { type: 'plain_text', text: 'View Incident', emoji: true },
+        style: isResolved ? undefined : 'danger',
+        url: dashboardUrl
+      }
+    ]
+  });
 
   const payload = {
     text: `[Senzor] ${isResolved ? 'Resolved' : 'Firing'}: ${incidentNum ? `${incidentNum} — ` : ''}${condition.name}`,
@@ -343,7 +321,7 @@ const sendDiscordAlert = async (webhookUrl: string, incident: any, condition: an
         description: condition.description || undefined,
         fields,
         timestamp: time,
-        footer: { text: `Senzor · ${policy.name}` }
+        footer: { text: `Senzor Alerting Engine · ${policy.name}` }
       }
     ]
   };
@@ -486,105 +464,70 @@ const sendAnalysisEmail = async (emails: string[], incident: any, analysis: any,
   const confidenceColor: Record<string, string> = { high: '#10b981', medium: '#f59e0b', low: '#6b7280' };
   const confColor = confidenceColor[analysis.confidence] || '#6b7280';
 
-  const servicesHtml = analysis.findings.affectedServices.length > 0
-    ? analysis.findings.affectedServices.map((s: string) =>
-        `<span style="display:inline-block;background:#27272a;color:#a1a1aa;padding:2px 8px;border-radius:6px;font-size:11px;font-family:monospace;margin-right:4px;margin-bottom:4px;">${s}</span>`
-      ).join('')
-    : '';
-
   const actionsHtml = analysis.findings.recommendedActions.length > 0
-    ? analysis.findings.recommendedActions.map((a: string) =>
-        `<li style="margin-bottom:6px;color:#a1a1aa;">${a}</li>`
-      ).join('')
-    : '';
+    ? analysis.findings.recommendedActions.map((a: string) => `<li style="margin-bottom: 4px; color: #334155;">${a}</li>`).join('')
+    : '<li style="color: #94a3b8;">No specific actions recommended.</li>';
 
-  const correlatedHtml = analysis.findings.correlatedEvents?.length > 0
-    ? analysis.findings.correlatedEvents.map((e: string) =>
-        `<li style="margin-bottom:4px;color:#a1a1aa;">${e}</li>`
-      ).join('')
-    : '';
+  const servicesHtml = analysis.findings.affectedServices.length > 0
+    ? analysis.findings.affectedServices.map((s: string) => `<span style="display: inline-block; background: #fef2f2; color: #dc2626; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-family: monospace; margin-right: 4px; margin-bottom: 2px;">${s}</span>`).join('')
+    : '<span style="color: #94a3b8; font-size: 12px;">None identified</span>';
 
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
-<body style="margin:0;padding:0;background-color:#0a0a0b;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0a0a0b;padding:40px 0;">
-<tr><td align="center">
-<table role="presentation" width="560" cellpadding="0" cellspacing="0" style="background-color:#111113;border:1px solid #1e1e21;border-radius:12px;overflow:hidden;">
-  <tr>
-    <td style="padding:16px 24px;border-bottom:1px solid #1e1e21;">
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-        <tr>
-          <td><span style="color:#fafafa;font-size:16px;font-weight:700;letter-spacing:-0.5px;">Senzor</span></td>
-          ${incidentNum ? `<td align="right"><span style="color:#52525b;font-size:11px;font-family:monospace;">${incidentNum}</span></td>` : ''}
-        </tr>
-      </table>
-    </td>
-  </tr>
-  <tr>
-    <td style="padding:12px 24px;border-bottom:1px solid #1e1e21;">
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-        <tr>
-          <td><span style="display:inline-block;background:#27272a;color:#a1a1aa;padding:3px 10px;border-radius:6px;font-size:10px;font-weight:700;letter-spacing:0.5px;">AI ANALYSIS</span></td>
-          <td align="right"><span style="display:inline-block;background:${confColor};color:#fff;padding:3px 10px;border-radius:6px;font-size:10px;font-weight:700;letter-spacing:0.5px;">${analysis.confidence.toUpperCase()}</span></td>
-        </tr>
-      </table>
-    </td>
-  </tr>
-  <tr>
-    <td style="padding:24px;">
-      <p style="color:#52525b;font-size:12px;margin:0 0 16px;">
-        ${incident.title} &middot; Policy: <strong style="color:#a1a1aa;">${policy.name}</strong>
-      </p>
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#18181b;border:1px solid #27272a;border-left:3px solid ${confColor};border-radius:0 8px 8px 0;margin-bottom:24px;">
-        <tr><td style="padding:16px;">
-          <p style="color:#fafafa;font-size:14px;margin:0;line-height:1.6;">${analysis.summary}</p>
-        </td></tr>
-      </table>
-      ${analysis.findings.rootCause ? `
-        <p style="color:#a1a1aa;font-size:11px;font-weight:700;margin:0 0 8px;text-transform:uppercase;letter-spacing:0.5px;">Root Cause</p>
-        <p style="color:#a1a1aa;font-size:13px;line-height:1.6;margin:0 0 24px;">${analysis.findings.rootCause}</p>
-      ` : ''}
-      ${servicesHtml ? `
-        <p style="color:#a1a1aa;font-size:11px;font-weight:700;margin:0 0 8px;text-transform:uppercase;letter-spacing:0.5px;">Affected Services</p>
-        <div style="margin-bottom:24px;">${servicesHtml}</div>
-      ` : ''}
-      ${correlatedHtml ? `
-        <p style="color:#a1a1aa;font-size:11px;font-weight:700;margin:0 0 8px;text-transform:uppercase;letter-spacing:0.5px;">Correlated Events</p>
-        <ul style="padding-left:18px;margin:0 0 24px;font-size:13px;line-height:1.7;">${correlatedHtml}</ul>
-      ` : ''}
-      ${actionsHtml ? `
-        <p style="color:#a1a1aa;font-size:11px;font-weight:700;margin:0 0 8px;text-transform:uppercase;letter-spacing:0.5px;">Recommended Actions</p>
-        <ol style="padding-left:20px;margin:0 0 24px;font-size:13px;line-height:1.7;">${actionsHtml}</ol>
-      ` : ''}
-      <table role="presentation" cellpadding="0" cellspacing="0" style="margin-top:4px;">
-        <tr>
-          <td style="background:#fafafa;border-radius:8px;">
-            <a href="${dashboardUrl}" style="display:inline-block;color:#18181b;text-decoration:none;padding:10px 24px;font-weight:600;font-size:13px;">View Incident</a>
-          </td>
-        </tr>
-      </table>
-    </td>
-  </tr>
-  <tr>
-    <td style="border-top:1px solid #1e1e21;padding:16px 24px;">
-      <p style="color:#52525b;font-size:11px;margin:0;line-height:1.6;">
-        AI-generated analysis by <strong style="color:#a1a1aa;">Senzor</strong> for policy "${policy.name}"
-        <br/>Automated analysis. Always verify before taking action.
-        <br/>Manage notifications at <a href="https://senzor.dev/dashboard/alerts" style="color:#71717a;text-decoration:underline;">senzor.dev/dashboard/alerts</a>
-      </p>
-    </td>
-  </tr>
-</table>
-</td></tr>
-</table>
-</body>
-</html>`;
+  const html = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+      <!-- Header -->
+      <div style="background: linear-gradient(135deg, #6366f1, #8b5cf6); padding: 16px 24px; border-radius: 8px 8px 0 0;">
+        <table style="width: 100%;">
+          <tr>
+            <td>
+              <span style="color: white; font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase;">AI ANALYSIS COMPLETE</span>
+              ${incidentNum ? `<span style="color: rgba(255,255,255,0.8); font-size: 12px; font-family: monospace; margin-left: 12px;">${incidentNum}</span>` : ''}
+            </td>
+            <td style="text-align: right;">
+              <span style="background: rgba(255,255,255,0.2); color: white; padding: 3px 10px; border-radius: 4px; font-size: 11px; font-weight: 700;">Confidence: ${analysis.confidence.toUpperCase()}</span>
+            </td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Body -->
+      <div style="border: 1px solid #e2e8f0; border-top: none; border-radius: 0 0 8px 8px; padding: 24px;">
+        <!-- Summary -->
+        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid ${confColor}; padding: 16px; border-radius: 0 8px 8px 0; margin-bottom: 20px;">
+          <p style="color: #0f172a; font-size: 14px; margin: 0; line-height: 1.6; font-weight: 500;">${analysis.summary}</p>
+        </div>
+
+        <!-- Root Cause -->
+        <h3 style="color: #0f172a; font-size: 13px; font-weight: 700; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Root Cause</h3>
+        <p style="color: #334155; font-size: 13px; line-height: 1.6; margin: 0 0 20px 0;">${analysis.findings.rootCause}</p>
+
+        <!-- Affected Services -->
+        <h3 style="color: #0f172a; font-size: 13px; font-weight: 700; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Affected Services</h3>
+        <div style="margin-bottom: 20px;">${servicesHtml}</div>
+
+        <!-- Recommended Actions -->
+        <h3 style="color: #0f172a; font-size: 13px; font-weight: 700; margin: 0 0 8px 0; text-transform: uppercase; letter-spacing: 0.5px;">Recommended Actions</h3>
+        <ol style="padding-left: 20px; margin: 0 0 24px 0; font-size: 13px; line-height: 1.7;">${actionsHtml}</ol>
+
+        <!-- CTA -->
+        <a href="${dashboardUrl}" style="display: inline-block; background-color: #6366f1; color: white; text-decoration: none; padding: 10px 28px; border-radius: 6px; font-weight: 600; font-size: 13px;">
+          View Full Analysis
+        </a>
+
+        <!-- Footer -->
+        <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e2e8f0;">
+          <p style="color: #94a3b8; font-size: 11px; margin: 0; line-height: 1.5;">
+            AI-generated analysis by <strong>Senzor Intelligence Engine</strong> &middot; ${analysis.model}
+            <br/>This is an automated hypothesis — always verify before taking action.
+          </p>
+        </div>
+      </div>
+    </div>
+  `;
 
   await resend.emails.send({
-    from: `Senzor Alerts <${process.env.RESEND_FROM_EMAIL || 'alerts@senzor.dev'}>`,
+    from: `Senzor AI <${process.env.RESEND_FROM_EMAIL || 'alerts@senzor.dev'}>`,
     to: emails,
-    subject: `AI Analysis — ${incidentNum ? `${incidentNum} ` : ''}${incident.title}`,
+    subject: `AI Analysis — ${incidentNum ? `${incidentNum} ` : ''}${incident.title} [${analysis.confidence.toUpperCase()} confidence]`,
     html,
   });
 
@@ -595,60 +538,38 @@ const sendAnalysisEmail = async (emails: string[], incident: any, analysis: any,
 const sendAnalysisSlack = async (webhookUrl: string, incident: any, analysis: any, policy: any) => {
   const incidentNum = incident.incidentNumber ? `INC-${String(incident.incidentNumber).padStart(4, '0')}` : '';
   const dashboardUrl = `https://senzor.dev/dashboard/incidents/${incident._id}`;
-  const confEmoji: Record<string, string> = { high: '🟢', medium: '🟡', low: '⚪' };
+  const confEmoji: Record<string, string> = { high: '🟢', medium: '🟡', low: '🔴' };
 
   const blocks: any[] = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: `🔍 AI Analysis: ${incident.title?.substring(0, 110)}`, emoji: true },
+      text: { type: 'plain_text', text: `🔍 AI Analysis Complete: ${incident.title?.substring(0, 100)}`, emoji: true },
+    },
+    { type: 'divider' },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `> ${analysis.summary}` },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*Incident*\n${incidentNum || 'N/A'}` },
+        { type: 'mrkdwn', text: `*Confidence*\n${confEmoji[analysis.confidence] || '⚪'} ${analysis.confidence.toUpperCase()}` },
+      ],
+    },
+    {
+      type: 'section',
+      text: { type: 'mrkdwn', text: `*Root Cause*\n${analysis.findings.rootCause}` },
     },
   ];
 
-  // Description context
-  if (incidentNum) {
-    blocks.push({
-      type: 'context',
-      elements: [{ type: 'mrkdwn', text: `${incidentNum} · Policy: ${policy.name}` }],
-    });
-  }
-
-  blocks.push({ type: 'divider' });
-
-  // Summary
-  blocks.push({
-    type: 'section',
-    text: { type: 'mrkdwn', text: `> ${analysis.summary}` },
-  });
-
-  // Confidence + Incident fields
-  blocks.push({
-    type: 'section',
-    fields: [
-      { type: 'mrkdwn', text: `*Confidence*\n${confEmoji[analysis.confidence] || '⚪'} ${analysis.confidence.toUpperCase()}` },
-      { type: 'mrkdwn', text: `*Affected Services*\n${analysis.findings.affectedServices.length > 0 ? analysis.findings.affectedServices.map((s: string) => `\`${s}\``).join(' ') : 'None identified'}` },
-    ],
-  });
-
-  // Root Cause
-  if (analysis.findings.rootCause) {
+  if (analysis.findings.affectedServices.length > 0) {
     blocks.push({
       type: 'section',
-      text: { type: 'mrkdwn', text: `*Root Cause*\n${analysis.findings.rootCause}` },
+      text: { type: 'mrkdwn', text: `*Affected Services*\n${analysis.findings.affectedServices.map((s: string) => `\`${s}\``).join(', ')}` },
     });
   }
 
-  // Correlated Events
-  if (analysis.findings.correlatedEvents?.length > 0) {
-    blocks.push({
-      type: 'section',
-      text: {
-        type: 'mrkdwn',
-        text: `*Correlated Events*\n${analysis.findings.correlatedEvents.map((e: string) => `• ${e}`).join('\n')}`,
-      },
-    });
-  }
-
-  // Recommended Actions
   if (analysis.findings.recommendedActions.length > 0) {
     blocks.push({
       type: 'section',
@@ -664,14 +585,14 @@ const sendAnalysisSlack = async (webhookUrl: string, incident: any, analysis: an
     {
       type: 'context',
       elements: [
-        { type: 'mrkdwn', text: '_AI-generated by Senzor · Always verify before acting_' },
+        { type: 'mrkdwn', text: `_AI-generated by Senzor Intelligence Engine · ${analysis.model} · Always verify before acting_` },
       ],
     },
     {
       type: 'actions',
       elements: [{
         type: 'button',
-        text: { type: 'plain_text', text: 'View Incident', emoji: true },
+        text: { type: 'plain_text', text: 'View Full Analysis', emoji: true },
         url: dashboardUrl,
       }],
     }
@@ -681,7 +602,7 @@ const sendAnalysisSlack = async (webhookUrl: string, incident: any, analysis: an
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      text: `[Senzor] AI Analysis for ${incidentNum || 'incident'}: ${analysis.summary.substring(0, 200)}`,
+      text: `[Senzor AI] Analysis complete for ${incidentNum}: ${analysis.summary.substring(0, 200)}`,
       blocks,
     }),
   });
@@ -695,28 +616,14 @@ const sendAnalysisDiscord = async (webhookUrl: string, incident: any, analysis: 
   const incidentNum = incident.incidentNumber ? `INC-${String(incident.incidentNumber).padStart(4, '0')}` : '';
   const dashboardUrl = `https://senzor.dev/dashboard/incidents/${incident._id}`;
 
-  const confidenceEmoji: Record<string, string> = { high: '🟢', medium: '🟡', low: '⚪' };
-
   const fields: any[] = [
     { name: 'Incident', value: incidentNum || 'N/A', inline: true },
-    { name: 'Confidence', value: `${confidenceEmoji[analysis.confidence] || '⚪'} ${analysis.confidence.toUpperCase()}`, inline: true },
-    { name: 'Policy', value: policy.name, inline: true },
+    { name: 'Confidence', value: analysis.confidence.toUpperCase(), inline: true },
+    { name: 'Root Cause', value: analysis.findings.rootCause.substring(0, 1024), inline: false },
   ];
-
-  if (analysis.findings.rootCause) {
-    fields.push({ name: 'Root Cause', value: analysis.findings.rootCause.substring(0, 1024), inline: false });
-  }
 
   if (analysis.findings.affectedServices.length > 0) {
     fields.push({ name: 'Affected Services', value: analysis.findings.affectedServices.map((s: string) => `\`${s}\``).join(', '), inline: false });
-  }
-
-  if (analysis.findings.correlatedEvents?.length > 0) {
-    fields.push({
-      name: 'Correlated Events',
-      value: analysis.findings.correlatedEvents.map((e: string) => `• ${e}`).join('\n').substring(0, 1024),
-      inline: false,
-    });
   }
 
   if (analysis.findings.recommendedActions.length > 0) {
@@ -731,10 +638,10 @@ const sendAnalysisDiscord = async (webhookUrl: string, incident: any, analysis: 
     embeds: [{
       title: `🔍 AI Analysis: ${incident.title?.substring(0, 200)}`,
       url: dashboardUrl,
-      color: 4144966,
+      color: 6366961,  // Indigo (#6366f1)
       description: analysis.summary,
       fields,
-      footer: { text: `Senzor · AI-generated · Always verify before acting` },
+      footer: { text: `Senzor Intelligence Engine · ${analysis.model} · Always verify before acting` },
       timestamp: new Date().toISOString(),
     }],
   };
@@ -784,6 +691,7 @@ const sendAnalysisWebhook = async (destination: any, incident: any, analysis: an
   };
 
   if (secret) {
+    const crypto = await import('crypto');
     const signature = crypto
       .createHmac('sha256', secret)
       .update(body)
