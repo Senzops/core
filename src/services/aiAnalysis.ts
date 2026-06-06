@@ -6,9 +6,96 @@ import { logger } from '../utils/logger';
 // Configuration
 // ---------------------------------------------------------------------------
 
-const GEMINI_MODEL = 'gemini-2.5-flash';
+export const GEMINI_MODEL = 'gemini-2.5-flash';
 const MAX_TOOL_CALLS = 15;
 const ANALYSIS_TIMEOUT_MS = 30_000;
+
+// ---------------------------------------------------------------------------
+// Retryable Error Classification
+// ---------------------------------------------------------------------------
+
+/**
+ * Thrown when a Gemini API call fails with a transient error (503, 429, etc.)
+ * that should be retried with exponential backoff at the queue level.
+ */
+export class RetryableAnalysisError extends Error {
+  public readonly statusCode: number;
+  public readonly shortMessage: string;
+
+  constructor(originalMessage: string, statusCode: number, shortMessage: string) {
+    super(originalMessage);
+    this.name = 'RetryableAnalysisError';
+    this.statusCode = statusCode;
+    this.shortMessage = shortMessage;
+  }
+}
+
+/** HTTP status codes that indicate transient Gemini API issues. */
+const RETRYABLE_STATUS_CODES = new Set([429, 500, 502, 503]);
+
+/** gRPC status strings that map to transient failures. */
+const RETRYABLE_GRPC_STATUSES = new Set([
+  'UNAVAILABLE',
+  'INTERNAL',
+  'RESOURCE_EXHAUSTED',
+  'DEADLINE_EXCEEDED',
+]);
+
+/**
+ * Classifies a Gemini API error as retryable (transient) or permanent.
+ * Parses multiple error formats: structured JSON, SDK properties, pattern matching.
+ */
+function classifyGeminiError(err: any): {
+  retryable: boolean;
+  statusCode: number;
+  shortMessage: string;
+} {
+  const rawMessage = (err.message || '').toString();
+
+  // 1. Check SDK error object properties (varies by SDK version)
+  for (const prop of ['status', 'code', 'httpStatusCode'] as const) {
+    const val = (err as any)[prop];
+    if (typeof val === 'number' && RETRYABLE_STATUS_CODES.has(val)) {
+      return { retryable: true, statusCode: val, shortMessage: rawMessage.substring(0, 250) };
+    }
+  }
+
+  // 2. Parse structured Gemini error: {"error":{"code":503,"status":"UNAVAILABLE","message":"..."}}
+  try {
+    const parsed = JSON.parse(rawMessage);
+    const errObj = parsed?.error || parsed;
+    const code = errObj?.code;
+    const status = errObj?.status;
+    const msg: string = errObj?.message || rawMessage;
+
+    if (typeof code === 'number' && RETRYABLE_STATUS_CODES.has(code)) {
+      return { retryable: true, statusCode: code, shortMessage: msg.substring(0, 250) };
+    }
+    if (typeof status === 'string' && RETRYABLE_GRPC_STATUSES.has(status)) {
+      return { retryable: true, statusCode: code || 503, shortMessage: msg.substring(0, 250) };
+    }
+  } catch {
+    // Not structured JSON — fall through to pattern matching
+  }
+
+  // 3. Pattern match for status codes embedded in message
+  const codeMatch = rawMessage.match(/"code"\s*:\s*(429|500|502|503)\b/);
+  if (codeMatch) {
+    return {
+      retryable: true,
+      statusCode: parseInt(codeMatch[1], 10),
+      shortMessage: rawMessage.substring(0, 250),
+    };
+  }
+
+  // 4. Network-level transient errors
+  if (/ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENETUNREACH|EPIPE|socket hang up|fetch failed/i.test(rawMessage)) {
+    return { retryable: true, statusCode: 0, shortMessage: rawMessage.substring(0, 250) };
+  }
+
+  // 5. Non-retryable (400 bad request, 403 permission denied, 404 not found, etc.)
+  return { retryable: false, statusCode: 0, shortMessage: rawMessage.substring(0, 250) };
+}
 
 // ---------------------------------------------------------------------------
 // Tool Definitions for Gemini (subset of MCP tools relevant to incident triage)
@@ -448,7 +535,15 @@ Produce the structured analysis now.`,
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
-    logger.error(`[AI Analysis] Analysis failed for incident ${ctx.incidentId}: ${err.message}`);
+    const { retryable, statusCode, shortMessage } = classifyGeminiError(err);
+
+    if (retryable) {
+      // Throw for BullMQ worker to handle retry scheduling
+      throw new RetryableAnalysisError(err.message, statusCode, shortMessage);
+    }
+
+    // Non-retryable error — return failed result immediately
+    logger.error(`[AI Analysis] Non-retryable failure for incident ${ctx.incidentId}: ${shortMessage}`);
     return {
       status: 'failed',
       summary: '',
@@ -464,7 +559,7 @@ Produce the structured analysis now.`,
       model: GEMINI_MODEL,
       analyzedAt: new Date(),
       durationMs: Date.now() - startTime,
-      error: err.message,
+      error: shortMessage,
     };
   }
 };

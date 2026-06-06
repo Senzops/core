@@ -3,7 +3,12 @@ import { redisConnection, registerWorker } from './queue';
 import { AlertIncident, AlertPolicy } from '../models/Alert';
 import { Subscription } from '../models/Subscription';
 import { getPlanConfig, PlanId } from '../config/pricing';
-import { runIncidentAnalysis, IncidentContext } from '../services/aiAnalysis';
+import {
+  runIncidentAnalysis,
+  IncidentContext,
+  RetryableAnalysisError,
+  GEMINI_MODEL,
+} from '../services/aiAnalysis';
 import { dispatchAnalysisUpdate } from '../services/alertTransport';
 import { logger } from '../utils/logger';
 
@@ -13,6 +18,19 @@ import { logger } from '../utils/logger';
 
 const QUEUE_NAME = 'ai.incident-analysis';
 const QUEUE_PREFIX = '{bull}';
+
+// ---------------------------------------------------------------------------
+// Retry Configuration
+// ---------------------------------------------------------------------------
+
+/** Total number of attempts (initial + retries). 6 attempts ≈ 15 min window. */
+const MAX_ATTEMPTS = 6;
+
+/**
+ * Base delay for exponential backoff in milliseconds.
+ * Schedule: 30s → 60s → 120s → 240s → 480s (total ≈ 15.5 min).
+ */
+const INITIAL_BACKOFF_MS = 30_000;
 
 // ---------------------------------------------------------------------------
 // Payload Type
@@ -40,7 +58,11 @@ export const aiAnalysisQueue = new Queue<AiAnalysisPayload>(QUEUE_NAME, {
   connection: redisConnection,
   prefix: QUEUE_PREFIX,
   defaultJobOptions: {
-    attempts: 1,  // No retries — analysis is best-effort, one shot
+    attempts: MAX_ATTEMPTS,
+    backoff: {
+      type: 'exponential',
+      delay: INITIAL_BACKOFF_MS, // 30s → 60s → 120s → 240s → 480s
+    },
     removeOnComplete: { age: 3600, count: 1000 },
     removeOnFail: { age: 86400, count: 5000 },
   },
@@ -99,10 +121,13 @@ export const createAiAnalysisWorker = (): Worker<AiAnalysisPayload> => {
     async (job) => {
       const payload = job.data;
       const { incidentId, ownerId } = payload;
+      const attemptNum = job.attemptsMade + 1;
 
-      logger.info(`[AI Analysis] Starting analysis for incident ${incidentId}`);
+      logger.info(
+        `[AI Analysis] Starting analysis for incident ${incidentId} (attempt ${attemptNum}/${MAX_ATTEMPTS})`
+      );
 
-      // 1. Plan gate check
+      // 1. Plan & quota gate (checked every attempt — plan may change between retries)
       const quotaCheck = await checkMonthlyQuota(ownerId);
       if (!quotaCheck.allowed) {
         logger.info(`[AI Analysis] Skipped for ${incidentId}: ${quotaCheck.reason}`);
@@ -123,12 +148,12 @@ export const createAiAnalysisWorker = (): Worker<AiAnalysisPayload> => {
         return;
       }
 
-      // 2. Mark as pending
+      // 2. Ensure status is 'pending' (idempotent — safe on retries)
       await AlertIncident.findByIdAndUpdate(incidentId, {
         'aiAnalysis.status': 'pending',
       });
 
-      // 3. Run the analysis
+      // 3. Build context
       const ctx: IncidentContext = {
         incidentId: payload.incidentId,
         ownerId: payload.ownerId,
@@ -142,9 +167,61 @@ export const createAiAnalysisWorker = (): Worker<AiAnalysisPayload> => {
         title: payload.title,
       };
 
-      const result = await runIncidentAnalysis(ctx);
+      // 4. Run analysis — may throw RetryableAnalysisError for transient failures
+      let result;
+      try {
+        result = await runIncidentAnalysis(ctx);
+      } catch (err: any) {
+        // ---------------------------------------------------------------
+        // Retry Logic — exponential backoff for transient Gemini errors
+        // ---------------------------------------------------------------
+        const isRetryable = err instanceof RetryableAnalysisError;
+        const hasRetriesLeft = attemptNum < MAX_ATTEMPTS;
 
-      // 4. Save result to incident
+        if (isRetryable && hasRetriesLeft) {
+          // Transient error with retries remaining — re-throw for BullMQ backoff.
+          // Status stays 'pending' so the frontend shows the spinner, not an error.
+          const nextDelay = INITIAL_BACKOFF_MS * Math.pow(2, job.attemptsMade);
+          logger.warn(
+            `[AI Analysis] Transient error for ${incidentId} (HTTP ${err.statusCode || 'N/A'}), ` +
+            `retrying in ${Math.round(nextDelay / 1000)}s ` +
+            `(attempt ${attemptNum}/${MAX_ATTEMPTS}): ${err.shortMessage}`
+          );
+          throw err; // BullMQ schedules retry with exponential backoff
+        }
+
+        // All retries exhausted OR non-retryable error — persist failure
+        const errorMessage = isRetryable
+          ? `Failed after ${attemptNum} attempt(s): ${err.shortMessage}`
+          : (err.message || 'Unknown error');
+
+        logger.error(
+          `[AI Analysis] ${isRetryable ? `All ${MAX_ATTEMPTS} attempts exhausted` : 'Non-retryable failure'} ` +
+          `for ${incidentId}: ${errorMessage}`
+        );
+
+        try {
+          await AlertIncident.findByIdAndUpdate(incidentId, {
+            aiAnalysis: {
+              status: 'failed',
+              summary: '',
+              findings: { rootCause: '', affectedServices: [], correlatedEvents: [], recommendedActions: [] },
+              confidence: 'low',
+              toolCallsUsed: 0,
+              tokensUsed: { input: 0, output: 0 },
+              model: GEMINI_MODEL,
+              analyzedAt: new Date(),
+              durationMs: 0,
+              error: errorMessage,
+            },
+          });
+        } catch (dbErr: any) {
+          logger.error(`[AI Analysis] Failed to persist error state for ${incidentId}: ${dbErr.message}`);
+        }
+        return; // Complete the job — prevent further retries
+      }
+
+      // 5. Save successful result
       await AlertIncident.findByIdAndUpdate(incidentId, { aiAnalysis: result });
 
       logger.info(
@@ -154,7 +231,7 @@ export const createAiAnalysisWorker = (): Worker<AiAnalysisPayload> => {
         `duration=${result.durationMs}ms`
       );
 
-      // 5. Send follow-up notifications with analysis (if completed successfully)
+      // 6. Send follow-up notifications (completed analyses only)
       if (result.status === 'completed' && result.summary) {
         try {
           const incident = await AlertIncident.findById(incidentId).lean();
@@ -176,13 +253,14 @@ export const createAiAnalysisWorker = (): Worker<AiAnalysisPayload> => {
     {
       connection: redisConnection,
       prefix: QUEUE_PREFIX,
-      concurrency: 3,  // Process up to 3 analyses in parallel
-      lockDuration: 60_000,  // 60s lock — analysis can take up to 30s + overhead
+      concurrency: 3,    // Process up to 3 analyses in parallel
+      lockDuration: 90_000, // 90s — analysis up to 30s + tool calls + DB overhead
     }
   );
 
   worker.on('failed', (job, err) => {
-    logger.error(`[AI Analysis] Job ${job?.id} failed: ${err.message}`);
+    // Fires when BullMQ exhausts all retries (safety net — normally handled above)
+    logger.error(`[AI Analysis] Job ${job?.id} permanently failed: ${err.message}`);
   });
 
   registerWorker(worker);
