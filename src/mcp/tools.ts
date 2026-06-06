@@ -5,6 +5,7 @@ import { Request, Response } from 'express';
 // --- ALL READ-ONLY CONTROLLERS ---
 import { listServices as listApmServices } from '../controllers/apm/main';
 import { getApmStats } from '../controllers/apm/stats';
+import { getRuntimeStats } from '../controllers/apm/runtimeStats';
 import { getInvocations, getTraceDetail } from '../controllers/apm/traces';
 import { listVps, getVpsStats } from '../controllers/vps';
 import { listWebsites } from '../controllers/web/main';
@@ -12,6 +13,8 @@ import { getWebStats } from '../controllers/web/webStats';
 import { listMonitors, getMonitorStats } from '../controllers/monitor';
 import { listDatabases } from '../controllers/database/main';
 import { getDatabaseStats } from '../controllers/database/stats';
+import { listFirebaseServices } from '../controllers/firebase/main';
+import { getFirebaseStats } from '../controllers/firebase/stats';
 import { listTaskServices } from '../controllers/task/main';
 import { getTaskServiceDashboard, getTaskEntityDetail, getTaskRunDetail } from '../controllers/task/stats';
 import { getGlobalErrors, getErrorGroupDetails, getTraceErrors } from '../controllers/error';
@@ -19,11 +22,12 @@ import { listServices as listRumServices } from '../controllers/rum/main';
 import { getRumDashboard, getRumTraceDetail } from '../controllers/rum/stats';
 import { getDashboardLogs, getTraceLogs, getLogById } from '../controllers/logs';
 
-import { listDestinations, listPolicies, getPolicyDetails } from '../controllers/alerts';
+import { listDestinations, listPolicies, getPolicyDetails, listIncidents, getIncidentDetail, listSilences } from '../controllers/alerts';
 import { listViews, getViewById } from '../controllers/view/main';
 import { getWidgetData } from '../controllers/view/engine';
 import { getStorageStats, getTransactions, getTransactionReceipt, getCurrentSubscription, getActivePlans } from '../controllers/billing';
 import { getDynamicSchema } from '../controllers/schema';
+import { getDashboardCapabilities } from '../controllers/dashboard/capabilities';
 
 import { McpUsage } from "../models/Mcp";
 
@@ -113,6 +117,12 @@ const MCP_TOOLS = [
     description: "Get the full execution waterfall (spans) for a specific traceId.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, traceId: { type: "string" } }, required: ["id", "traceId"] },
     execute: (args: any, uid: string) => simulateExpressCall(getTraceDetail, uid, { id: args.id, traceId: args.traceId })
+  },
+  {
+    name: "apm_get_runtime_stats",
+    description: "Get Node.js runtime health metrics for an APM service: event loop lag/utilization, GC frequency/duration, heap memory usage, CPU usage, and active handles.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "1h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getRuntimeStats, uid, { id: args.id }, { range: args.range })
   },
 
   // --- RUM (Web APM) Tools ---
@@ -243,10 +253,24 @@ const MCP_TOOLS = [
     execute: (args: any, uid: string) => simulateExpressCall(getVpsStats, uid, { id: args.id }, { range: args.range })
   },
 
+  // --- Firebase Monitoring Tools ---
+  {
+    name: "firebase_list",
+    description: "List all monitored Firebase projects and their connection status.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listFirebaseServices, uid)
+  },
+  {
+    name: "firebase_get_stats",
+    description: "Get Firebase Auth metrics: total users, active users, new signups, provider breakdown (Google, Apple, Email, etc.), MFA enrollment, and historical trends.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getFirebaseStats, uid, { id: args.id }, { range: args.range })
+  },
+
   // --- Database Tools ---
   {
     name: "database_list",
-    description: "List monitored database instances (MongoDB, Redis).",
+    description: "List monitored database instances (MongoDB, Redis, PostgreSQL, MySQL).",
     inputSchema: { type: "object", properties: {} },
     execute: (args: any, uid: string) => simulateExpressCall(listDatabases, uid)
   },
@@ -275,6 +299,39 @@ const MCP_TOOLS = [
     description: "Get detailed information about a specific alert policy, its evaluation conditions, and incident history.",
     inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
     execute: (args: any, uid: string) => simulateExpressCall(getPolicyDetails, uid, { id: args.id })
+  },
+  {
+    name: "alerts_list_incidents",
+    description: "List alert incidents with filtering by status (open/acknowledged/resolved), severity (critical/high/medium/low), and policyId. Returns incidents with status counts.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: ["all", "open", "acknowledged", "resolved"], default: "all" },
+        severity: { type: "string", enum: ["all", "critical", "high", "medium", "low"], default: "all" },
+        policyId: { type: "string" },
+        limit: { type: "number", default: 50 },
+        sort: { type: "string", default: "-openedAt" }
+      }
+    },
+    execute: (args: any, uid: string) => simulateExpressCall(listIncidents, uid, {}, {
+      status: args.status,
+      severity: args.severity,
+      policyId: args.policyId,
+      limit: Math.min(args.limit || 50, 100),
+      sort: args.sort || '-openedAt'
+    })
+  },
+  {
+    name: "alerts_get_incident_detail",
+    description: "Get full details of a specific incident: triggering condition, policy, severity, timeline of events, and associated metadata.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getIncidentDetail, uid, { id: args.id })
+  },
+  {
+    name: "alerts_list_silences",
+    description: "List all active and scheduled alert silences (maintenance windows) with their scope and duration.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listSilences, uid)
   },
 
   // --- Saved Views (Canvas Dashboards) Tools ---
@@ -335,6 +392,14 @@ const MCP_TOOLS = [
     description: "List all currently available public pricing tiers and platform plans.",
     inputSchema: { type: "object", properties: {} },
     execute: (args: any, uid: string) => simulateExpressCall(getActivePlans, uid)
+  },
+
+  // --- Platform Capabilities ---
+  {
+    name: "platform_get_capabilities",
+    description: "Get the user's data retention limits per service type and all available time range options. Essential for constructing valid time range queries.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(getDashboardCapabilities, uid)
   }
 ];
 

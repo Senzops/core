@@ -22,9 +22,9 @@ mcpAgentRouter.get('/sse', authenticateMcp, async (req: Request, res: Response) 
     const mcpServer = new Server(
       {
         name: "Senzor MCP",
-        version: "1.0.0",
+        version: "1.1.0",
         title: "Senzor",
-        description: "Observability platform — APM, RUM, Logs, Uptime, Infrastructure, Errors, and more.",
+        description: "Observability platform — APM, RUM, Logs, Uptime, Infrastructure, Firebase, Database (MongoDB/Redis/PostgreSQL/MySQL), Errors, Alerts & Incidents, Custom Dashboards, and Billing.",
         websiteUrl: "https://senzor.dev",
         icons: [{
           src: "https://senzor.dev/icons/icon512_maskable.png",
