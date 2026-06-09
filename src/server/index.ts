@@ -80,7 +80,6 @@ import {
 } from '../controllers/alerts';
 import { requirePlan } from '../middlewares/planGate';
 import {
-  getSchemaDictionary,
   createView,
   listViews,
   getViewById,
