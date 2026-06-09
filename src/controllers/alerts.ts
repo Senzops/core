@@ -184,6 +184,10 @@ export const createCondition = async (req: Request, res: Response, next: NextFun
       return res.status(400).json({ error: 'policyId, name, target, and threshold are required' });
     }
 
+    if (!threshold.windowMins || threshold.windowMins < 1 || threshold.windowMins > 1440) {
+      return res.status(400).json({ error: 'windowMins must be between 1 and 1440' });
+    }
+
     const policy = await AlertPolicy.findOne({ _id: policyId, ownerId });
     if (!policy) return res.status(403).json({ error: 'Invalid Policy ID' });
 
@@ -205,6 +209,10 @@ export const updateCondition = async (req: Request, res: Response, next: NextFun
     const conditionRaw = await AlertCondition.findOne({ _id: id, ownerId }).lean();
     if (!conditionRaw) {
       return res.status(404).json({ error: 'Condition not found or access denied' });
+    }
+
+    if (threshold?.windowMins !== undefined && (threshold.windowMins < 1 || threshold.windowMins > 1440)) {
+      return res.status(400).json({ error: 'windowMins must be between 1 and 1440' });
     }
 
     // Safe Swap Pattern: prevents MongoDB $-operator injection via update commands
