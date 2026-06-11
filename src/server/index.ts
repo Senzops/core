@@ -118,6 +118,14 @@ import {
   transferOwnership,
 } from '../controllers/organization/main';
 import { exportConfig } from '../controllers/data/exportConfig';
+import {
+  createConversation,
+  listConversations,
+  getConversation,
+  updateConversation,
+  deleteConversation,
+  appendMessages,
+} from '../controllers/ai/conversations';
 import { previewConfigImport, importConfig } from '../controllers/data/importConfig';
 import { exportTelemetry } from '../controllers/data/exportTelemetry';
 import { importTelemetry } from '../controllers/data/importTelemetry';
@@ -483,6 +491,20 @@ apiRouter.post('/data/export/telemetry', dataExportLimiter, exportTelemetry);
 // User Profile
 apiRouter.post('/user/sync', syncUser);
 apiRouter.delete('/user/account', deleteAccount);
+
+// --- AI ASSISTANT CONVERSATIONS ---
+const aiConversationLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+apiRouter.post('/ai/conversations', aiConversationLimiter, createConversation);
+apiRouter.get('/ai/conversations', aiConversationLimiter, listConversations);
+apiRouter.get('/ai/conversations/:id', aiConversationLimiter, getConversation);
+apiRouter.patch('/ai/conversations/:id', aiConversationLimiter, updateConversation);
+apiRouter.delete('/ai/conversations/:id', aiConversationLimiter, deleteConversation);
+apiRouter.post('/ai/conversations/:id/messages', aiConversationLimiter, appendMessages);
 
 // Dynamic Schema Inference
 apiRouter.get('/schema', getDynamicSchema);
