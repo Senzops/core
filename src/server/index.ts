@@ -41,7 +41,8 @@ import {
   updateRumService
 } from '../controllers/rum/main';
 import { getRumDashboard, getRumTraceDetail } from '../controllers/rum/stats';
-import { ingestGlobalLogs, getDashboardLogs, getTraceLogs, getLogApiKey, getLogById } from '../controllers/logs';
+import { ingestGlobalLogs, getDashboardLogs, getTraceLogs, getLogApiKey, getLogById, listLogKeys, createLogKey, revokeLogKey, getLogFacets, getLogContext, exportLogs, getIngestStats } from '../controllers/logs';
+import { ndjsonBody } from '../middlewares/ndjsonBody';
 import {
   getMcpKeys,
   createMcpKey,
@@ -262,7 +263,7 @@ ingestRouter.post('/web', webIngestLimiter, requireIngestionQuota, ingestWebMetr
 ingestRouter.post('/apm', apmLimiter, requireIngestionQuota, ingestApmBatch);
 ingestRouter.post('/task', apmLimiter, requireIngestionQuota, ingestTaskBatch);
 ingestRouter.post('/rum', apmLimiter, requireIngestionQuota, ingestRumBatch);
-ingestRouter.post('/logs', apmLimiter, requireIngestionQuota, ingestGlobalLogs);
+ingestRouter.post('/logs', apmLimiter, ...ndjsonBody, requireIngestionQuota, ingestGlobalLogs);
 
 // 2. VPS API (Frontend User)
 const apiRouter = express.Router();
@@ -343,7 +344,15 @@ apiRouter.get('/rum/:id/trace/:traceId', getRumTraceDetail);
 
 // --- NEW LOG MANAGEMENT ROUTES ---
 apiRouter.get('/logs', getDashboardLogs);
-apiRouter.get('/logs/key', getLogApiKey);
+apiRouter.get('/logs/facets', getLogFacets);     // field facets for the sidebar
+apiRouter.get('/logs/export', exportLogs);        // stream NDJSON/CSV of a query
+apiRouter.get('/logs/ingest-stats', getIngestStats); // ingestion health
+apiRouter.get('/logs/key', getLogApiKey);         // legacy single-key (pre-Phase-4 modal)
+// Multi-key management (defined before /logs/:id so they aren't captured by it)
+apiRouter.get('/logs/keys', listLogKeys);
+apiRouter.post('/logs/keys', createLogKey);
+apiRouter.delete('/logs/keys/:id', revokeLogKey);
+apiRouter.get('/logs/:id/context', getLogContext); // surrounding logs
 apiRouter.get('/logs/:id', getLogById);
 
 // Bi-directional Trace to Log links

@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { Subscription } from '../models/Subscription';
 import { getPlanConfig } from '../config/pricing';
 import { UsageTracker } from '../services/UsageTracker';
+import { hashApiKey } from '../utils/hashApiKey';
 import { logger } from '../utils/logger';
 
 /**
@@ -41,12 +42,19 @@ export const requireIngestionQuota = async (req: Request, res: Response, next: N
 
       // If an API key was provided, look it up across all relevant registries
       if (possibleApiKey) {
+         // Log keys are hashed; match the hash, with a legacy plaintext fallback
+         // for records predating the hashed-key migration. revokedAt:null also
+         // matches docs where the field is absent.
+         const logKeyHash = hashApiKey(possibleApiKey);
          lookups.push(
             mongoose.models.ApmService?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
             mongoose.models.RumService?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
             mongoose.models.TaskService?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
             mongoose.models.Vps?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
-            mongoose.models.LogApiKey?.findOne({ key: possibleApiKey }).select('ownerId').lean()
+            mongoose.models.LogApiKey?.findOne({
+              $or: [{ keyHash: logKeyHash }, { key: possibleApiKey }],
+              revokedAt: null,
+            }).select('ownerId').lean()
          );
       }
 

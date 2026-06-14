@@ -1,14 +1,7 @@
 import { OtlpContext } from '../../middlewares/otlpAuth';
 import { LogEvent } from '../../models/Log';
-
-const mapSeverity = (severityNumber: number): string => {
-  if (!severityNumber) return 'info';
-  if (severityNumber <= 8) return 'debug';
-  if (severityNumber <= 12) return 'info';
-  if (severityNumber <= 16) return 'warn';
-  if (severityNumber <= 20) return 'error';
-  return 'fatal';
-};
+import { normalizeSeverity } from '../../utils/severity';
+import { recordIngestStat } from '../../services/logIngestStats';
 
 const extractValue = (valueObj: any): any => {
   if (!valueObj) return undefined;
@@ -33,6 +26,18 @@ export const translateOtlpLogs = async (context: OtlpContext, resourceLogs: any[
   const serviceModel = context.target === 'task' ? 'TaskService' : context.target === 'rum' ? 'RumService' : 'ApmService';
 
   for (const rl of resourceLogs) {
+    // Resource-level attributes describe the emitting host/service/environment
+    // and apply to every log record under this resource.
+    const resourceAttrs: any = {};
+    if (rl.resource?.attributes) {
+      rl.resource.attributes.forEach((attr: any) => {
+        resourceAttrs[attr.key] = extractValue(attr.value);
+      });
+    }
+    const host = resourceAttrs['host.name'] ?? resourceAttrs['host.id'] ?? undefined;
+    const environment = resourceAttrs['deployment.environment.name']
+      ?? resourceAttrs['deployment.environment'] ?? undefined;
+
     for (const sl of rl.scopeLogs || []) {
       for (const log of sl.logRecords || []) {
         const timestampMs = Number(log.timeUnixNano || log.observedTimeUnixNano) / 1000000;
@@ -44,13 +49,23 @@ export const translateOtlpLogs = async (context: OtlpContext, resourceLogs: any[
           });
         }
 
+        const sev = normalizeSeverity({
+          severityNumber: log.severityNumber,
+          severityText: log.severityText,
+        });
+
         logsToInsert.push({
           ownerId: context.ownerId,
           serviceId: context.serviceId,
           serviceModel: serviceModel,
           traceId: log.traceId,
           spanId: log.spanId,
-          level: mapSeverity(log.severityNumber),
+          level: sev.level,
+          severityText: sev.severityText,
+          severityNumber: sev.severityNumber,
+          source: 'otlp',
+          host: typeof host === 'string' ? host : undefined,
+          environment: typeof environment === 'string' ? environment : undefined,
           message: extractValue(log.body) || 'Empty OTLP Log',
           attributes,
           timestamp: timestampMs > 0 ? new Date(timestampMs) : new Date()
@@ -60,6 +75,16 @@ export const translateOtlpLogs = async (context: OtlpContext, resourceLogs: any[
   }
 
   if (logsToInsert.length > 0) {
-    await LogEvent.insertMany(logsToInsert, { ordered: false });
+    try {
+      const result = await LogEvent.insertMany(logsToInsert, { ordered: false });
+      recordIngestStat(context.ownerId, result.length, logsToInsert.length - result.length);
+    } catch (err: any) {
+      if (err.name === 'BulkWriteError' || err.code === 11000 || err.writeErrors) {
+        const inserted = err.result?.insertedCount ?? err.insertedDocs?.length ?? 0;
+        recordIngestStat(context.ownerId, inserted, logsToInsert.length - inserted);
+      } else {
+        throw err;
+      }
+    }
   }
 };

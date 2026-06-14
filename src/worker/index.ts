@@ -12,6 +12,11 @@ import { startHeartbeatWorker } from './heartbeat';
 import { startQueueWorkers } from './processors';
 import { shutdownQueues } from '../lib/queue';
 import { createAiAnalysisWorker } from '../lib/aiQueue';
+import dotenv from 'dotenv';
+
+if (!process.env.MONGO_URI) {
+  dotenv.config({ path: "src/config/.env" });
+}
 
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/senzor';
 
