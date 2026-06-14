@@ -545,6 +545,12 @@ export const getIngestStats = async (req: Request, res: Response, next: NextFunc
   }
 };
 
+// Allowed serviceModel values, derived from the schema enum (single source of
+// truth — won't drift if the enum changes).
+const VALID_SERVICE_MODELS: ReadonlySet<string> = new Set(
+  (LogEvent.schema.path('serviceModel') as any)?.enumValues ?? ['ApmService', 'RumService', 'TaskService', 'External'],
+);
+
 // ---------------------------------------------------------------------------
 // Background Log Processor (called by queue worker or in-process fallback)
 // ---------------------------------------------------------------------------
@@ -567,14 +573,26 @@ export const processLogIngestion = async (payloads: any[], ownerId: string): Pro
 
     const sev = normalizeSeverity({ level, severity, severityNumber });
 
+    // serviceModel is the refPath discriminator for serviceId. Accept it from the
+    // payload's `service` field only when it's a valid enum value; any other value
+    // (e.g. "nginx") falls back to 'External' so a stray value can never fail enum
+    // validation and silently drop the log — the "error boundary".
+    const serviceModel = (typeof service === 'string' && VALID_SERVICE_MODELS.has(service)) ? service : 'External';
+
+    // `source` is the human-meaningful origin of the log (e.g. "nginx", "payment-api").
+    // The caller's `source`/`service` field becomes the displayed source.
+    const rawSource = (typeof source === 'string' && source.trim()) ? source.trim()
+      : (typeof service === 'string' && service.trim()) ? service.trim()
+      : 'external';
+
     return {
       ownerId,
-      serviceModel: service || 'External',
+      serviceModel,
       message: safeMessage || 'Empty Log',
       level: sev.level,
       severityText: sev.severityText,
       severityNumber: sev.severityNumber,
-      source: typeof source === 'string' && source.trim() ? source.trim().toLowerCase() : 'external',
+      source: rawSource,
       host: typeof host === 'string' ? host : (typeof hostname === 'string' ? hostname : undefined),
       environment: typeof environment === 'string' ? environment : (typeof env === 'string' ? env : undefined),
       traceId: traceId ? String(traceId) : undefined,

@@ -40,7 +40,7 @@ const run = async () => {
   }
 
   const cursor = LogEvent.find(filter)
-    .select('_id level source')
+    .select('_id level source serviceId')
     .lean()
     .cursor({ batchSize: BATCH_SIZE });
 
@@ -61,7 +61,10 @@ const run = async () => {
       severityText: sev.severityText,
       severityNumber: sev.severityNumber,
     };
-    if (!doc.source) set.source = 'external';
+    // Only stamp 'external' on logs with no linked service. Service-linked logs
+    // (serviceId set) derive their displayed origin from the service name, so we
+    // must not overwrite that with 'external'.
+    if (!doc.source && !doc.serviceId) set.source = 'external';
 
     ops.push({ updateOne: { filter: { _id: doc._id }, update: { $set: set } } });
     if (ops.length >= BATCH_SIZE) await flush();

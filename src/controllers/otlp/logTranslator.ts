@@ -63,7 +63,8 @@ export const translateOtlpLogs = async (context: OtlpContext, resourceLogs: any[
           level: sev.level,
           severityText: sev.severityText,
           severityNumber: sev.severityNumber,
-          source: 'otlp',
+          // Source = the originating service name so logs show which service they belong to.
+          source: context.serviceName || 'otlp',
           host: typeof host === 'string' ? host : undefined,
           environment: typeof environment === 'string' ? environment : undefined,
           message: extractValue(log.body) || 'Empty OTLP Log',
