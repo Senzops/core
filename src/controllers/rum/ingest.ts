@@ -3,6 +3,7 @@ import { UAParser } from 'ua-parser-js';
 import { RumService, RumTrace, RumMetric } from '../../models/Rum';
 import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/Error';
 import { LogEvent } from '../../models/Log';
+import { buildServiceLogDoc } from '../../utils/buildLogDoc';
 import { logger } from '../../utils/logger';
 import { RumBatchSchema } from '../../utils/validation';
 import { getClientIp } from "../../utils/getClientIp";
@@ -282,16 +283,11 @@ export const processRumBatchBackground = async (data: { traces: any[], errors: a
 
   // --- 4. Process Auto-Instrumented RUM Logs (NEW) ---
   if (data.logs && data.logs.length > 0) {
-    const logsToInsert = data.logs.map((log: any) => ({
+    const logsToInsert = data.logs.map((log: any) => buildServiceLogDoc(log, {
       ownerId: service.ownerId,
       serviceId: service._id,
       serviceModel: 'RumService',
-      traceId: log.traceId,
-      spanId: log.spanId,
-      level: log.level || 'info',
-      message: log.message || 'Empty Log',
-      attributes: log.attributes || {},
-      timestamp: log.timestamp ? new Date(log.timestamp) : new Date()
+      source: service.name,
     }));
 
     if (logsToInsert.length > 0) {

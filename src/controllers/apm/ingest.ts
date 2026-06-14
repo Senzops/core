@@ -3,6 +3,7 @@ import { UAParser } from 'ua-parser-js';
 import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
 import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/Error';
 import { LogEvent } from '../../models/Log';
+import { buildServiceLogDoc } from '../../utils/buildLogDoc';
 import { RuntimeMetric } from '../../models/RuntimeMetric';
 import { logger } from '../../utils/logger';
 import { ApmBatchSchema } from '../../utils/validation';
@@ -334,16 +335,11 @@ export const processBatchBackground = async (
   // 4. Process APM Logs
   // -------------------------------------------------------------------------
   if (data.logs?.length > 0) {
-    const logsToInsert = data.logs.map((log: any) => ({
+    const logsToInsert = data.logs.map((log: any) => buildServiceLogDoc(log, {
       ownerId: service.ownerId,
       serviceId: service._id,
       serviceModel: 'ApmService',
-      traceId: log.traceId,
-      spanId: log.spanId,
-      level: log.level || 'info',
-      message: log.message || 'Empty Log',
-      attributes: log.attributes || {},
-      timestamp: log.timestamp ? new Date(log.timestamp) : new Date(),
+      source: service.name,
     }));
 
     // ordered: false — one malformed log doc must not abort the whole batch

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
 import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/Error';
 import { LogEvent } from '../../models/Log';
+import { buildServiceLogDoc } from '../../utils/buildLogDoc';
 import { logger } from '../../utils/logger';
 import { TaskBatchSchema } from '../../utils/validation';
 import { taskIngestQueue, enqueue, type TaskIngestPayload } from '../../lib/queue';
@@ -148,16 +149,15 @@ export const processTaskBatchBackground = async (data: { runs: any[], errors: an
 
   // --- 3. Process Auto-Instrumented Task Logs ---
   if (data.logs && data.logs.length > 0) {
-    const logsToInsert = data.logs.map((log: any) => ({
-      ownerId: service.ownerId,
-      serviceId: service._id,
-      serviceModel: 'TaskService',
-      traceId: log.runId || log.traceId, // Run ID maps to traceId in Log schema
-      level: log.level || 'info',
-      message: log.message || 'Empty Log',
-      attributes: log.attributes || {},
-      timestamp: log.timestamp ? new Date(log.timestamp) : new Date()
-    }));
+    const logsToInsert = data.logs.map((log: any) => buildServiceLogDoc(
+      { ...log, traceId: log.runId || log.traceId }, // Run ID maps to traceId in Log schema
+      {
+        ownerId: service.ownerId,
+        serviceId: service._id,
+        serviceModel: 'TaskService',
+        source: service.name,
+      },
+    ));
 
     if (logsToInsert.length > 0) {
       await LogEvent.insertMany(logsToInsert, { ordered: false });
