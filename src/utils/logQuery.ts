@@ -279,7 +279,7 @@ class Parser {
 const TOP_STRING_FIELDS: Record<string, { path: string; lower?: boolean }> = {
   trace: { path: 'traceId' }, traceid: { path: 'traceId' },
   span: { path: 'spanId' }, spanid: { path: 'spanId' },
-  source: { path: 'source', lower: true },
+  source: { path: 'source' },
   host: { path: 'host' }, hostname: { path: 'host' },
   env: { path: 'environment' }, environment: { path: 'environment' },
   service: { path: 'serviceModel' }, servicemodel: { path: 'serviceModel' },
