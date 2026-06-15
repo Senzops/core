@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyPlanBasedTtl } from '../utils/ttl';
 
 // --- Monitor Registry ---
 
@@ -115,6 +116,7 @@ export interface IMonitorRun extends Document {
   latency: number;
   statusCode: number;
   createdAt: Date;
+  expiresAt?: Date; // Plan-based TTL (anchor: createdAt)
 }
 
 const MonitorRunSchema = new Schema<IMonitorRun>({
@@ -124,8 +126,8 @@ const MonitorRunSchema = new Schema<IMonitorRun>({
   statusCode: { type: Number, default: 0 },
 }, { timestamps: true });
 
-// TTL: 7 Days (60s * 60m * 24h * 7d = 604800 seconds)
-MonitorRunSchema.index({ createdAt: 1 }, { expireAfterSeconds: 604800 });
+// Plan-based retention (per-document expiresAt + hard-cap backstop on createdAt)
+applyPlanBasedTtl(MonitorRunSchema, 'createdAt');
 
 export const MonitorRun = mongoose.model<IMonitorRun>('MonitorRun', MonitorRunSchema);
 
@@ -138,6 +140,7 @@ export interface IMonitorIncident extends Document {
   duration: number | null;
   cause: string;
   statusCode: number;
+  expiresAt?: Date; // Plan-based TTL (anchor: createdAt)
 }
 
 const MonitorIncidentSchema = new Schema<IMonitorIncident>({
@@ -151,7 +154,7 @@ const MonitorIncidentSchema = new Schema<IMonitorIncident>({
 }, { timestamps: true });
 
 MonitorIncidentSchema.index({ monitorId: 1, resolvedAt: 1 });
-// TTL: 90 days — incidents are historical records, keep longer than run data
-MonitorIncidentSchema.index({ createdAt: 1 }, { expireAfterSeconds: 90 * 24 * 60 * 60 });
+// Plan-based retention (per-document expiresAt + hard-cap backstop on createdAt)
+applyPlanBasedTtl(MonitorIncidentSchema, 'createdAt');
 
 export const MonitorIncident = mongoose.model<IMonitorIncident>('MonitorIncident', MonitorIncidentSchema);

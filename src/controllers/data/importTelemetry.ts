@@ -27,25 +27,9 @@ import { logger } from '../../utils/logger';
 // - Tracks and updates ingestion quota on the subscription
 // ============================================================================
 
-// --- TTL limits per telemetry type (seconds) ---
-const TTL_MAP: Record<string, number> = {
-  'apm-traces': 604800,        // 7 days
-  'apm-metrics': 691200,       // 8 days
-  'rum-traces': 604800,        // 7 days
-  'rum-metrics': 691200,       // 8 days
-  'task-runs': 604800,         // 7 days
-  'task-metrics': 2592000,     // 30 days
-  'task-signatures': 0,        // No TTL (persistent)
-  'db-metrics': 604800,        // 7 days
-  'web-events': 2592000,       // 30 days
-  'web-metrics': 2764800,      // 32 days
-  'vps-runs': 86400,           // 1 day
-  'monitor-runs': 604800,      // 7 days
-  'logs': 604800,              // 7 days
-  'error-groups': 2592000,     // 30 days
-  'error-events': 604800,      // 7 days
-  'runtime-metrics': 691200,   // 8 days
-};
+// Retention is now plan-based and uniform across telemetry types; imported
+// records are gated by the owner's plan window (see retentionMs below) rather
+// than fixed per-type TTLs. The `task-signatures` type is persistent.
 
 // --- Timestamp field per type ---
 const TIMESTAMP_FIELD_MAP: Record<string, string> = {
@@ -193,6 +177,8 @@ export const importTelemetry = async (req: Request, res: Response, next: NextFun
     // --- Check ingestion quota ---
     const sub = await Subscription.findOne({ ownerId }).lean();
     const plan = getPlanConfig(sub?.planId);
+    // Unified plan-based retention window applied to all imported telemetry.
+    const retentionMs = plan.retentionDays * 24 * 60 * 60 * 1000;
     const estimatedBytes = Buffer.byteLength(JSON.stringify(records), 'utf8');
     const currentBytes = sub?.currentMonthBytes || 0;
 
@@ -236,14 +222,17 @@ export const importTelemetry = async (req: Request, res: Response, next: NextFun
         continue;
       }
 
-      // --- Check TTL expiry ---
-      const ttlSeconds = TTL_MAP[type];
-      if (ttlSeconds > 0) {
-        const tsField = TIMESTAMP_FIELD_MAP[type];
+      // --- Check retention expiry ---
+      // task-signatures are persistent (not plan-based); everything else is
+      // gated by the owner's plan retention window.
+      const isPlanBased = type !== 'task-signatures';
+      const tsField = TIMESTAMP_FIELD_MAP[type];
+      let anchorMs = now;
+      if (isPlanBased) {
         const recordTs = (record as any)[tsField];
         if (recordTs) {
-          const recordTime = new Date(recordTs as string).getTime();
-          if (now - recordTime > ttlSeconds * 1000) {
+          anchorMs = new Date(recordTs as string).getTime();
+          if (now - anchorMs > retentionMs) {
             results.skipped++;
             results.skipReasons['expired'] = (results.skipReasons['expired'] || 0) + 1;
             continue;
@@ -286,6 +275,11 @@ export const importTelemetry = async (req: Request, res: Response, next: NextFun
       delete cleanRecord.__v;
       delete cleanRecord.createdAt;
       delete cleanRecord.updatedAt;
+
+      // Stamp plan-based expiry anchored on the record's original time field.
+      if (isPlanBased) {
+        cleanRecord.expiresAt = new Date(anchorMs + retentionMs);
+      }
 
       // Accumulate for batch insert
       if (!batches[type]) batches[type] = [];

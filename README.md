@@ -11,7 +11,7 @@ The robust, secure, and high-performance API core for the **Senzor** VPS Monitor
 - **Global Uptime:** Integrated background workers for distributed heartbeat checks (HTTP/TCP).
 - **Web Terminal:** Secure SSH-over-WebSocket relay for browser-based server management.
 - **Secure Auth:** Firebase Admin SDK integration (JWT) with Role-Based Access Control (RBAC).
-- **Auto-Pruning:** Automatic deletion of telemetry data older than 24 hours via MongoDB TTL indexes to manage storage costs.
+- **Plan-Based Retention:** Per-document MongoDB TTL (`expiresAt`) automatically expires telemetry at the end of each tenant's plan retention window — Starter 3 days, Pro 15 days, Business 30 days, Enterprise 90 days — applied uniformly across all telemetry collections, with a hard-cap backstop index to bound storage.
 - **Validation:** Strict runtime payload validation using **Zod**.
 - **Security Hardening:** Implements helmet, cors, and aggressive rate-limiting to prevent abuse.
 

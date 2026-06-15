@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyPlanBasedTtl } from '../utils/ttl';
 
 // --- 1. Task Service (The Registered Environment) ---
 export interface ITaskService extends Document {
@@ -76,6 +77,7 @@ export interface ITaskRun extends Document {
   isDeadLetter?: boolean;
   spans: any[]; // The waterfall spans
   timestamp: Date;
+  expiresAt?: Date; // Plan-based TTL (anchor: timestamp)
 }
 
 const TaskRunSchema = new Schema<ITaskRun>({
@@ -99,7 +101,8 @@ const TaskRunSchema = new Schema<ITaskRun>({
   timestamp: { type: Date, required: true }
 });
 
-TaskRunSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 }); // 7 Day TTL
+// Plan-based retention (per-document expiresAt + hard-cap backstop on timestamp)
+applyPlanBasedTtl(TaskRunSchema, 'timestamp');
 
 // --- 3. Task Metric (Time-Series Aggregation) ---
 export interface ITaskMetric extends Document {
@@ -113,6 +116,7 @@ export interface ITaskMetric extends Document {
   durationMin: number;
   queueDelaySum: number;
   attemptsSum: number;
+  expiresAt?: Date; // Plan-based TTL (anchor: timestamp)
 }
 
 const TaskMetricSchema = new Schema<ITaskMetric>({
@@ -130,7 +134,8 @@ const TaskMetricSchema = new Schema<ITaskMetric>({
 
 // High-performance compound index for dashboard rendering
 TaskMetricSchema.index({ serviceId: 1, taskName: 1, timestamp: -1 }, { unique: true });
-TaskMetricSchema.index({ timestamp: 1 }, { expireAfterSeconds: 2592000 }); // 30 Day TTL for metrics
+// Plan-based retention (per-document expiresAt + hard-cap backstop on timestamp)
+applyPlanBasedTtl(TaskMetricSchema, 'timestamp');
 
 export const TaskService = mongoose.model<ITaskService>('TaskService', TaskServiceSchema);
 export const TaskSignature = mongoose.model<ITaskSignature>('TaskSignature', TaskSignatureSchema);

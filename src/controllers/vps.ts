@@ -1,10 +1,12 @@
 import crypto from 'crypto';
+import mongoose from 'mongoose';
 import { Request, Response, NextFunction } from 'express';
 import { Vps, VpsRun } from '../models/Vps';
 import { RegisterVpsSchema, UpdateVpsSchema, TelemetrySchema } from '../utils/validation';
-import { resolveTimeRange, getEffectiveRetention, TimeRangeError, type ResolvedTimeRange } from '../utils/timeRange';
+import { resolveTimeRange, getEffectiveRetention, fillTimeGapsWithStatus, TimeRangeError, type ResolvedTimeRange } from '../utils/timeRange';
 import { logger } from '../utils/logger';
 import { vpsIngestQueue, enqueue, type VpsIngestPayload } from '../lib/queue';
+import { getRetentionMs } from '../services/retentionCache';
 
 // --- VPS Controller ---
 
@@ -131,9 +133,12 @@ export const processVpsIngestion = async (vpsId: string, metrics: any): Promise<
     terminal: metrics.terminalEnabled || false,
   };
 
+  // anchor: createdAt ≈ now at insert
+  const retentionMs = await getRetentionMs(vps.ownerId);
+
   await Promise.all([
     vps.save(),
-    VpsRun.create({ vpsId: vps._id, metrics }),
+    VpsRun.create({ vpsId: vps._id, metrics, expiresAt: new Date(Date.now() + retentionMs) }),
   ]);
 };
 
@@ -154,44 +159,96 @@ const EMPTY_VPS_METRICS = {
   traefik: null
 } as const;
 
-function fillVpsTimeGaps(data: any[], resolved: ResolvedTimeRange) {
-  const filled: any[] = [];
+const round2 = (n: number | null | undefined): number =>
+  n == null ? 0 : Math.round(n * 100) / 100;
 
-  const current = new Date(resolved.startDate);
-  current.setSeconds(0, 0);
-  current.setMinutes(current.getMinutes() + 1);
+/**
+ * Buckets a VPS's raw per-minute runs into the resolved granularity entirely
+ * server-side — the same `$group` + `$dateToString(bucketFormat)` approach every
+ * other dashboard uses. Numeric gauges are averaged across the bucket (smooth
+ * trends); structural fields (disk/gpus/docker/nginx/traefik) come from the
+ * bucket's last sample (shape preserved for the frontend). A bucket is online
+ * if it had at least one real (non-heartbeat-miss) sample.
+ */
+async function aggregateVpsBuckets(vpsId: mongoose.Types.ObjectId, resolved: ResolvedTimeRange) {
+  // Average only over real samples: synthetic heartbeat-miss records carry
+  // zeroed metrics, so mapping them to null (which $avg ignores) keeps the
+  // averages from being dragged down during partial-downtime buckets.
+  const missCond = { $eq: ['$metrics._heartbeat', 'miss'] };
+  const avgReal = (path: string) => ({ $avg: { $cond: [missCond, null, path] } });
 
-  const end = new Date(resolved.endDate);
-  end.setSeconds(0, 0);
+  const rows = await VpsRun.aggregate([
+    { $match: { vpsId, createdAt: { $gte: resolved.startDate, $lte: resolved.endDate } } },
+    { $sort: { createdAt: 1 } },
+    {
+      $group: {
+        _id: { $dateToString: { format: resolved.bucketFormat, date: '$createdAt' } },
+        total: { $sum: 1 },
+        realSamples: { $sum: { $cond: [missCond, 0, 1] } },
+        cpuUsage: avgReal('$metrics.cpu.usagePercent'),
+        memUsagePercent: avgReal('$metrics.memory.usagePercent'),
+        memUsed: avgReal('$metrics.memory.used'),
+        memActive: avgReal('$metrics.memory.active'),
+        memFree: avgReal('$metrics.memory.free'),
+        memTotal: avgReal('$metrics.memory.total'),
+        netRecv: avgReal('$metrics.network.bytesRecvSec'),
+        netSent: avgReal('$metrics.network.bytesSentSec'),
+        latencyMs: avgReal('$metrics.network.latencyMs'),
+        temperature: avgReal('$metrics.hardware.temperature'),
+        powerDraw: avgReal('$metrics.hardware.powerDraw'),
+        procRunning: avgReal('$metrics.processes.running'),
+        procSleeping: avgReal('$metrics.processes.sleeping'),
+        procBlocked: avgReal('$metrics.processes.blocked'),
+        procTotal: avgReal('$metrics.processes.total'),
+        last: { $last: '$$ROOT' },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]);
 
-  // Index existing runs by minute-aligned timestamp
-  const dataMap = new Map<number, any>();
-  for (const item of data) {
-    const d = new Date(item.createdAt);
-    d.setSeconds(0, 0);
-    dataMap.set(d.getTime(), item);
-  }
-
-  while (current < end) {
-    const key = current.getTime();
-    const item = dataMap.get(key);
-
-    if (item) {
-      const isHeartbeatMiss = item.metrics?._heartbeat === 'miss';
-      filled.push({ ...item, isOnline: !isHeartbeatMiss });
-    } else {
-      filled.push({
-        _id: 'gap-' + key,
-        createdAt: current.toISOString(),
-        isOnline: false,
-        metrics: { ...EMPTY_VPS_METRICS },
-      });
-    }
-
-    current.setMinutes(current.getMinutes() + 1);
-  }
-
-  return filled;
+  return rows.map((b: any) => {
+    const lastMetrics = b.last?.metrics ?? {};
+    return {
+      _id: b.last?._id,
+      // _id is the bucketFormat string (e.g. "2024-01-15" or full ISO); parse
+      // back to the bucket-start Date. The 1d format yields UTC midnight.
+      createdAt: new Date(b._id),
+      isOnline: b.realSamples > 0,
+      uptimeRatio: b.total > 0 ? b.realSamples / b.total : 0,
+      // Merge averaged scalars over the last sample's full structure so the
+      // response shape is identical to a raw run.
+      metrics: {
+        ...lastMetrics,
+        cpu: { ...lastMetrics.cpu, usagePercent: round2(b.cpuUsage) },
+        memory: {
+          ...lastMetrics.memory,
+          usagePercent: round2(b.memUsagePercent),
+          used: round2(b.memUsed),
+          active: round2(b.memActive),
+          free: round2(b.memFree),
+          total: round2(b.memTotal),
+        },
+        network: {
+          ...lastMetrics.network,
+          bytesRecvSec: round2(b.netRecv),
+          bytesSentSec: round2(b.netSent),
+          latencyMs: round2(b.latencyMs),
+        },
+        hardware: {
+          ...lastMetrics.hardware,
+          temperature: round2(b.temperature),
+          powerDraw: round2(b.powerDraw),
+        },
+        processes: {
+          ...lastMetrics.processes,
+          running: round2(b.procRunning),
+          sleeping: round2(b.procSleeping),
+          blocked: round2(b.procBlocked),
+          total: round2(b.procTotal),
+        },
+      },
+    };
+  });
 }
 
 // --- Dashboard Stats Controller ---
@@ -204,23 +261,31 @@ export const getVpsStats = async (req: Request, res: Response, next: NextFunctio
     const vps = await Vps.findOne({ _id: id, ownerId });
     if (!vps) return res.status(404).json({ error: "VPS not found" });
 
-    // Resolve time range via centralized utility
+    // Resolve time range via the centralized utility — identical bucketing to
+    // every other dashboard (1m / 1h / 1d by span). No VPS-specific profile.
     const maxRetention = await getEffectiveRetention('server', ownerId);
     const resolved = resolveTimeRange(
       { range: range as string | undefined, start: start as string | undefined, end: end as string | undefined },
       maxRetention
     );
 
-    const runs = await VpsRun.find({
-      vpsId: id,
-      createdAt: { $gte: resolved.startDate, $lte: resolved.endDate },
+    // Downsample server-side: one representative point per bucket (averaged
+    // scalar gauges + the bucket's last structural sample), bounded regardless
+    // of range. For minute granularity (short windows) each bucket holds a
+    // single sample, so this is loss-free and matches the raw real-time view.
+    const buckets = await aggregateVpsBuckets(vps._id, resolved);
+    const history = fillTimeGapsWithStatus(buckets, resolved, EMPTY_VPS_METRICS as any);
+
+    // Most recent ONLINE snapshot, for the "current" stat cards — independent of
+    // the (possibly downsampled) series so the cards always show real values.
+    const latest = await VpsRun.findOne({
+      vpsId: vps._id,
+      'metrics._heartbeat': { $ne: 'miss' },
     })
-      .sort({ createdAt: 1 })
+      .sort({ createdAt: -1 })
       .lean();
 
-    const history = fillVpsTimeGaps(runs, resolved);
-
-    res.json({ vps, history });
+    res.json({ vps, history, latest, granularity: resolved.granularityLabel });
   } catch (error) {
     if (error instanceof TimeRangeError) {
       return res.status(400).json({ error: error.message });

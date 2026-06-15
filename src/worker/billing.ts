@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { Subscription } from '../models/Subscription';
 import { logger } from '../utils/logger';
+import { reconcileOwnerRetentionInBackground } from '../services/retentionReconciler';
 
 export const startBillingCron = () => {
   cron.schedule('*/15 * * * *', async () => {
@@ -17,6 +18,9 @@ export const startBillingCron = () => {
       
       const bulkOps = [];
       let processed = 0;
+      // Owners whose plan changed this cycle — their stored telemetry needs its
+      // retention window recomputed once the downgrade is persisted.
+      const downgradedOwnerIds: string[] = [];
 
       for await (const sub of cursor) {
         const updateFields: any = {};
@@ -58,6 +62,7 @@ export const startBillingCron = () => {
           nextBilling.setMonth(nextBilling.getMonth() + 1);
           updateFields.billingCycleReset = nextBilling;
           updateFields.quotaResetAt = nextBilling;
+          downgradedOwnerIds.push(sub.ownerId);
           logger.info(`[Worker] Downgrading canceled subscription for ${sub.ownerId} to starter`);
         }
 
@@ -81,6 +86,11 @@ export const startBillingCron = () => {
       // Execute remaining batch
       if (bulkOps.length > 0) {
         await Subscription.bulkWrite(bulkOps, { ordered: false });
+      }
+
+      // Recompute stored-telemetry retention for any owner downgraded this run.
+      for (const ownerId of downgradedOwnerIds) {
+        reconcileOwnerRetentionInBackground(ownerId);
       }
 
       if (processed > 0) {

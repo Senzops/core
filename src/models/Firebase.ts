@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyPlanBasedTtl } from '../utils/ttl';
 
 // --- 1. Firebase Service (Configuration) ---
 export interface IFirebaseService extends Document {
@@ -52,6 +53,7 @@ export interface IFirebaseMetric extends Document {
     anonymous: number;
     other: number;
   };
+  expiresAt?: Date; // Plan-based TTL (anchor: timestamp)
 }
 
 const FirebaseMetricSchema = new Schema<IFirebaseMetric>({
@@ -83,7 +85,8 @@ const FirebaseMetricSchema = new Schema<IFirebaseMetric>({
 });
 
 FirebaseMetricSchema.index({ serviceId: 1, timestamp: 1 });
-FirebaseMetricSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 });
+// Plan-based retention (per-document expiresAt + hard-cap backstop on timestamp)
+applyPlanBasedTtl(FirebaseMetricSchema, 'timestamp');
 
 // --- 3. Firebase Auth Snapshot (Upserted per service, recent user activity) ---
 export interface IFirebaseAuthSnapshot extends Document {

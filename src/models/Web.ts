@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyPlanBasedTtl } from '../utils/ttl';
 
 // --- Website Registry Schema ---
 export interface IWebsite extends Document {
@@ -37,6 +38,7 @@ export interface IWebEvent extends Document {
   city: string;
 
   createdAt: Date;
+  expiresAt?: Date; // Plan-based TTL (anchor: createdAt)
 }
 
 const WebEventSchema = new Schema<IWebEvent>({
@@ -61,8 +63,8 @@ const WebEventSchema = new Schema<IWebEvent>({
 
 }, { timestamps: true });
 
-// TTL Index: Delete logs after 30 days (2592000 seconds)
-WebEventSchema.index({ createdAt: 1 }, { expireAfterSeconds: 2592000 });
+// Plan-based retention (per-document expiresAt + hard-cap backstop on createdAt)
+applyPlanBasedTtl(WebEventSchema, 'createdAt');
 
 export const WebEvent = mongoose.model<IWebEvent>('WebEvent', WebEventSchema);
 
@@ -88,6 +90,8 @@ export interface IWebMetric extends Document {
   browsers: Map<string, number>;
   os: Map<string, number>;
   devices: Map<string, number>;
+
+  expiresAt?: Date; // Plan-based TTL (anchor: timestamp)
 }
 
 const WebMetricSchema = new Schema<IWebMetric>({
@@ -111,7 +115,7 @@ const WebMetricSchema = new Schema<IWebMetric>({
 // Compound unique index — prevents duplicate metric buckets under concurrency
 WebMetricSchema.index({ webId: 1, timestamp: 1 }, { unique: true });
 
-// TTL: Keep aggregated stats for 32 days
-WebMetricSchema.index({ timestamp: 1 }, { expireAfterSeconds: 2764800 });
+// Plan-based retention (per-document expiresAt + hard-cap backstop on timestamp)
+applyPlanBasedTtl(WebMetricSchema, 'timestamp');
 
 export const WebMetric = mongoose.model<IWebMetric>('WebMetric', WebMetricSchema);

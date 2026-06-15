@@ -21,6 +21,7 @@ try {
 import { DatabaseService, DbCollectionStat, DbMetric } from '../models/Database';
 import { decrypt } from '../utils/crypto';
 import { logger } from '../utils/logger';
+import { getRetentionMs } from '../services/retentionCache';
 
 // --- IN-MEMORY STATE ---
 const mongoPool = new Map<string, MongoClient>();
@@ -241,6 +242,7 @@ const processRedis = async (dbObj: any, checkTime: Date) => {
     await DbMetric.create({
       dbId: dbObj._id,
       timestamp: checkTime,
+      expiresAt: new Date(checkTime.getTime() + (await getRetentionMs(dbObj.ownerId))),
       throughput: { read: 0, write: 0, total: throughputTotal },
       latency: { read: { avg: 0, max: 0 }, write: { avg: 0, max: 0 }, ping: pingLatency },
       uptimeSeconds: safeNum(info.uptime_in_seconds),
@@ -398,6 +400,7 @@ const processMongoDB = async (dbObj: any, checkTime: Date) => {
     await DbMetric.create({
       dbId: dbObj._id,
       timestamp: checkTime,
+      expiresAt: new Date(checkTime.getTime() + (await getRetentionMs(dbObj.ownerId))),
       throughput,
       latency,
       uptimeSeconds: serverStatus.uptime,
@@ -659,6 +662,7 @@ const processPostgreSQL = async (dbObj: any, checkTime: Date) => {
     await DbMetric.create({
       dbId: dbObj._id,
       timestamp: checkTime,
+      expiresAt: new Date(checkTime.getTime() + (await getRetentionMs(dbObj.ownerId))),
       throughput,
       latency: { read: { avg: 0, max: 0 }, write: { avg: 0, max: 0 }, ping: pingLatency },
       uptimeSeconds,
@@ -904,6 +908,7 @@ const processMySQL = async (dbObj: any, checkTime: Date) => {
     await DbMetric.create({
       dbId: dbObj._id,
       timestamp: checkTime,
+      expiresAt: new Date(checkTime.getTime() + (await getRetentionMs(dbObj.ownerId))),
       throughput,
       latency: { read: { avg: 0, max: 0 }, write: { avg: 0, max: 0 }, ping: pingLatency },
       uptimeSeconds,

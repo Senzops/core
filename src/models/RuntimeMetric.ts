@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyPlanBasedTtl } from '../utils/ttl';
 
 // ---------------------------------------------------------------------------
 // Runtime Metrics Model
@@ -45,6 +46,8 @@ export interface IRuntimeMetric extends Document {
 
   // Sample count for averaging within bucket
   sampleCount: number;
+
+  expiresAt?: Date; // Plan-based TTL (anchor: timestamp)
 }
 
 const RuntimeMetricSchema = new Schema<IRuntimeMetric>({
@@ -85,7 +88,7 @@ const RuntimeMetricSchema = new Schema<IRuntimeMetric>({
 // Query index: service + time range
 RuntimeMetricSchema.index({ serviceId: 1, timestamp: -1 });
 
-// 8-day TTL (matches ApmMetric retention)
-RuntimeMetricSchema.index({ timestamp: 1 }, { expireAfterSeconds: 691200 });
+// Plan-based retention (per-document expiresAt + hard-cap backstop on timestamp)
+applyPlanBasedTtl(RuntimeMetricSchema, 'timestamp');
 
 export const RuntimeMetric = mongoose.model<IRuntimeMetric>('RuntimeMetric', RuntimeMetricSchema);

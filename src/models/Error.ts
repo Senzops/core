@@ -1,5 +1,6 @@
 import mongoose, { Schema, Document } from 'mongoose';
 import crypto from 'crypto';
+import { applyPlanBasedTtl } from '../utils/ttl';
 
 // --- Utility: Deterministic & Isolated Fingerprinting ---
 /**
@@ -34,6 +35,7 @@ export interface IErrorGroup extends Document {
   lastSeen: Date;
   totalCount: number;
   status: 'unresolved' | 'resolved' | 'ignored';
+  expiresAt?: Date; // Plan-based TTL (anchor: lastSeen)
 }
 
 const ErrorGroupSchema = new Schema<IErrorGroup>({
@@ -58,9 +60,9 @@ ErrorGroupSchema.index({ ownerId: 1, fingerprint: 1 }, { unique: true });
 // Index for dashboard queries and filtering
 ErrorGroupSchema.index({ ownerId: 1, status: 1, lastSeen: -1 });
 
-// TTL: If an error doesn't happen for 30 days, auto-delete the group to save DB space.
-// (30 days = 2,592,000 seconds). Relies on the `lastSeen` field.
-ErrorGroupSchema.index({ lastSeen: 1 }, { expireAfterSeconds: 2592000 });
+// Plan-based retention: a group is kept for the owner's retention window after
+// its last occurrence (anchor: lastSeen), with a hard-cap backstop on lastSeen.
+applyPlanBasedTtl(ErrorGroupSchema, 'lastSeen');
 
 
 // --- 2. Error Event (The Individual Occurrence) ---
@@ -75,6 +77,7 @@ export interface IErrorEvent extends Document {
   stackTrace: string;
   context?: any;
   timestamp: Date;
+  expiresAt?: Date; // Plan-based TTL (anchor: timestamp)
 }
 
 const ErrorEventSchema = new Schema<IErrorEvent>({
@@ -90,9 +93,8 @@ const ErrorEventSchema = new Schema<IErrorEvent>({
   timestamp: { type: Date, required: true }
 });
 
-// TTL: Auto-delete individual stack traces after 7 days (Matches Trace TTL)
-// (7 days = 604,800 seconds). Prevents massive DB bloat from raw traces.
-ErrorEventSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 });
+// Plan-based retention (per-document expiresAt + hard-cap backstop on timestamp)
+applyPlanBasedTtl(ErrorEventSchema, 'timestamp');
 
 export const ErrorGroup = mongoose.model<IErrorGroup>('ErrorGroup', ErrorGroupSchema);
 export const ErrorEvent = mongoose.model<IErrorEvent>('ErrorEvent', ErrorEventSchema);

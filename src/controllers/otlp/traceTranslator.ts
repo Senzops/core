@@ -6,6 +6,28 @@ import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../models/E
 import { UAParser } from 'ua-parser-js';
 import { normaliseIP } from '../../utils/getClientIp';
 import { getGeoData } from '../../utils/getGeoData';
+import { getRetentionMs, stampExpiry } from '../../services/retentionCache';
+
+/**
+ * Stamps plan-based `expiresAt` onto a set of upsert bulk ops. The expiry is
+ * anchored on the doc's `timestamp` (carried in $set or $setOnInsert) and added
+ * to the same operator so the upsert never sets the field twice. Inserts get a
+ * fixed expiry at creation; documents that only ever update keep their original.
+ */
+const stampTraceOpsExpiry = (ops: any[], retentionMs: number): void => {
+  for (const op of ops) {
+    const update = op?.updateOne?.update;
+    if (!update) continue;
+    const soi = update.$setOnInsert;
+    const set = update.$set;
+    const holder = soi && soi.timestamp ? soi : set && set.timestamp ? set : null;
+    const anchorMs = holder?.timestamp ? new Date(holder.timestamp).getTime() : Date.now();
+    const expiresAt = new Date(anchorMs + retentionMs);
+    if (soi) soi.expiresAt = expiresAt;
+    else if (set) set.expiresAt = expiresAt;
+    else update.$set = { expiresAt };
+  }
+};
 
 // ---------------------------------------------------------------------------
 // OTel Attribute Helpers
@@ -406,9 +428,21 @@ export const translateOtlpTraces = async (
   // -----------------------------------------------------------------------
   const promises = [];
 
-  if (apmTraceOps.length > 0) promises.push(ApmTrace.bulkWrite(apmTraceOps, { ordered: false }));
-  if (taskRunOps.length > 0) promises.push(TaskRun.bulkWrite(taskRunOps, { ordered: false }));
-  if (rumTraceOps.length > 0) promises.push(RumTrace.bulkWrite(rumTraceOps, { ordered: false }));
+  // Resolve the owner's plan-based retention window once for this batch.
+  const retentionMs = await getRetentionMs(context.ownerId);
+
+  if (apmTraceOps.length > 0) {
+    stampTraceOpsExpiry(apmTraceOps, retentionMs);
+    promises.push(ApmTrace.bulkWrite(apmTraceOps, { ordered: false }));
+  }
+  if (taskRunOps.length > 0) {
+    stampTraceOpsExpiry(taskRunOps, retentionMs);
+    promises.push(TaskRun.bulkWrite(taskRunOps, { ordered: false }));
+  }
+  if (rumTraceOps.length > 0) {
+    stampTraceOpsExpiry(rumTraceOps, retentionMs);
+    promises.push(RumTrace.bulkWrite(rumTraceOps, { ordered: false }));
+  }
 
   if (apmMetricsMap.size > 0) {
     const apmMetOps = Array.from(apmMetricsMap.values()).map(m => {
@@ -437,7 +471,11 @@ export const translateOtlpTraces = async (
       return {
         updateOne: {
           filter: { serviceId: context.serviceId, timestamp: m.timestamp },
-          update: { $inc: incUpdate, $max: { durationMax: m.durationMax } },
+          update: {
+            $inc: incUpdate,
+            $max: { durationMax: m.durationMax },
+            $set: { expiresAt: new Date(m.timestamp.getTime() + retentionMs) },
+          },
           upsert: true
         }
       };
@@ -447,7 +485,7 @@ export const translateOtlpTraces = async (
 
   if (taskMetricsMap.size > 0) {
     const taskMetOps = Array.from(taskMetricsMap.values()).map(m => ({
-      updateOne: { filter: { serviceId: context.serviceId, taskName: m.taskName, timestamp: m.timestamp }, update: { $inc: { runs: m.runs, failures: m.failures, durationSum: m.durationSum }, $max: { durationMax: m.durationMax } }, upsert: true }
+      updateOne: { filter: { serviceId: context.serviceId, taskName: m.taskName, timestamp: m.timestamp }, update: { $inc: { runs: m.runs, failures: m.failures, durationSum: m.durationSum }, $max: { durationMax: m.durationMax }, $set: { expiresAt: new Date(m.timestamp.getTime() + retentionMs) } }, upsert: true }
     }));
     promises.push(TaskMetric.bulkWrite(taskMetOps, { ordered: false }));
   }
@@ -461,7 +499,11 @@ export const translateOtlpTraces = async (
             ownerId: context.ownerId, serviceId: context.serviceId, serviceModel: context.target === 'task' ? 'TaskService' : context.target === 'rum' ? 'RumService' : 'ApmService',
             fingerprint: g.fingerprint, errorClass: g.errorClass, message: g.message, firstSeen: g.firstSeen, status: 'unresolved'
           },
-          $max: { lastSeen: g.lastSeen }, $inc: { totalCount: g.count }
+          $max: {
+            lastSeen: g.lastSeen,
+            expiresAt: new Date(g.lastSeen.getTime() + retentionMs),
+          },
+          $inc: { totalCount: g.count }
         },
         { upsert: true, new: true }
       );
@@ -475,6 +517,7 @@ export const translateOtlpTraces = async (
           const { fingerprint, ...rest } = e;
           return { ...rest, groupId: fingerprintToGroupId.get(fingerprint) };
         });
+        stampExpiry(finalErrorEvents, 'timestamp', retentionMs);
         return ErrorEvent.insertMany(finalErrorEvents, { ordered: false });
       })
     );

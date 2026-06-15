@@ -2,6 +2,7 @@ import { OtlpContext } from '../../middlewares/otlpAuth';
 import { LogEvent } from '../../models/Log';
 import { normalizeSeverity } from '../../utils/severity';
 import { recordIngestStat } from '../../services/logIngestStats';
+import { getRetentionMs, stampExpiry } from '../../services/retentionCache';
 
 const extractValue = (valueObj: any): any => {
   if (!valueObj) return undefined;
@@ -76,6 +77,8 @@ export const translateOtlpLogs = async (context: OtlpContext, resourceLogs: any[
   }
 
   if (logsToInsert.length > 0) {
+    // anchor: timestamp (the log's event time)
+    stampExpiry(logsToInsert, 'timestamp', await getRetentionMs(context.ownerId));
     try {
       const result = await LogEvent.insertMany(logsToInsert, { ordered: false });
       recordIngestStat(context.ownerId, result.length, logsToInsert.length - result.length);

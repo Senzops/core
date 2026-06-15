@@ -9,6 +9,7 @@ import { RumBatchSchema } from '../../utils/validation';
 import { getClientIp } from "../../utils/getClientIp";
 import { getGeoData } from "../../utils/getGeoData";
 import { rumIngestQueue, enqueue, type RumIngestPayload } from '../../lib/queue';
+import { getRetentionMs, stampExpiry } from '../../services/retentionCache';
 
 const cleanMessageForFingerprint = (message: string): string => {
   return message
@@ -77,6 +78,9 @@ export const ingestRumBatch = async (req: Request, res: Response) => {
 
 export const processRumBatchBackground = async (data: { traces: any[], errors: any[], logs?: any[] }, service: any, clientIp: string) => {
   await RumService.findByIdAndUpdate(service._id, { lastSeen: new Date() });
+
+  // Resolve the owner's plan-based retention window once for this batch.
+  const retentionMs = await getRetentionMs(service.ownerId);
 
   const traceDocs = [];
   const metricsMap = new Map<string, any>();
@@ -206,7 +210,11 @@ export const processRumBatchBackground = async (data: { traces: any[], errors: a
   }
 
   // --- 3. Database Bulk Execution ---
-  if (traceDocs.length > 0) await RumTrace.insertMany(traceDocs);
+  // anchor: timestamp (the trace's event time)
+  if (traceDocs.length > 0) {
+    stampExpiry(traceDocs, 'timestamp', retentionMs);
+    await RumTrace.insertMany(traceDocs);
+  }
 
   if (errorGroupsMap.size > 0) {
     const groupPromises = Array.from(errorGroupsMap.values()).map(async (g) => {
@@ -223,7 +231,10 @@ export const processRumBatchBackground = async (data: { traces: any[], errors: a
             firstSeen: g.firstSeen,
             status: 'unresolved'
           },
-          $max: { lastSeen: g.lastSeen },
+          $max: {
+            lastSeen: g.lastSeen,
+            expiresAt: new Date(g.lastSeen.getTime() + retentionMs),
+          },
           $inc: { totalCount: g.count }
         },
         { upsert: true, new: true }
@@ -239,6 +250,8 @@ export const processRumBatchBackground = async (data: { traces: any[], errors: a
       return { ...rest, groupId: fingerprintToGroupId.get(fingerprint) };
     });
 
+    // anchor: timestamp (the error's event time)
+    stampExpiry(finalErrorEvents, 'timestamp', retentionMs);
     await ErrorEvent.insertMany(finalErrorEvents);
   }
 
@@ -273,7 +286,10 @@ export const processRumBatchBackground = async (data: { traces: any[], errors: a
     return {
       updateOne: {
         filter: { serviceId: service._id, timestamp: m.timestamp },
-        update: { $inc: incUpdate },
+        update: {
+          $inc: incUpdate,
+          $set: { expiresAt: new Date(m.timestamp.getTime() + retentionMs) },
+        },
         upsert: true
       }
     };
@@ -291,6 +307,7 @@ export const processRumBatchBackground = async (data: { traces: any[], errors: a
     }));
 
     if (logsToInsert.length > 0) {
+      stampExpiry(logsToInsert, 'timestamp', retentionMs);
       await LogEvent.insertMany(logsToInsert, { ordered: false });
     }
   }

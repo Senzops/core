@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyPlanBasedTtl } from '../utils/ttl';
 /**
  * Service
  * */
@@ -64,6 +65,7 @@ export interface IApmTrace extends Document {
   error?: IError,
 
   timestamp: Date;
+  expiresAt?: Date; // Plan-based TTL (anchor: createdAt)
 }
 
 const SpanSchema = new Schema({
@@ -121,8 +123,8 @@ ApmTraceSchema.index({ serviceId: 1, timestamp: -1 });
 // Covers: { serviceId: 1, route: 1, timestamp: 1 }
 ApmTraceSchema.index({ serviceId: 1, route: 1, timestamp: -1 });
 
-// 7 Days Retention
-ApmTraceSchema.index({ createdAt: 1 }, { expireAfterSeconds: 604800 });
+// Plan-based retention (per-document expiresAt + hard-cap backstop on createdAt)
+applyPlanBasedTtl(ApmTraceSchema, 'createdAt');
 
 export const ApmTrace = mongoose.model<IApmTrace>('ApmTrace', ApmTraceSchema);
 
@@ -149,6 +151,8 @@ export interface IApmMetric extends Document {
   browsers: Map<string, number>;
   os: Map<string, number>;
   devices: Map<string, number>;
+
+  expiresAt?: Date; // Plan-based TTL (anchor: timestamp)
 }
 
 const ApmMetricSchema = new Schema<IApmMetric>({
@@ -173,8 +177,7 @@ const ApmMetricSchema = new Schema<IApmMetric>({
 // Compound Index for fast range queries
 ApmMetricSchema.index({ serviceId: 1, timestamp: 1 });
 
-// UPDATE: Changed TTL to 8 Days (691200 seconds)
-// 60 * 60 * 24 * 8 = 691200
-ApmMetricSchema.index({ timestamp: 1 }, { expireAfterSeconds: 691200 });
+// Plan-based retention (per-document expiresAt + hard-cap backstop on timestamp)
+applyPlanBasedTtl(ApmMetricSchema, 'timestamp');
 
 export const ApmMetric = mongoose.model<IApmMetric>('ApmMetric', ApmMetricSchema);

@@ -4,6 +4,7 @@ import os from 'os';
 import { TaskSignature, TaskService, TaskRun, TaskMetric, SystemLock } from '../models/Task';
 import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../models/Error';
 import { logger } from '../utils/logger';
+import { getRetentionMs } from './retentionCache';
 
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
 const LOCK_NAME = 'task-watchdog-sweep';
@@ -550,13 +551,18 @@ const flushBatches = async (ctx: SweepContext) => {
     const eventDocs: any[] = [];
 
     for (const anomaly of ctx.anomalies) {
+      // Plan-based retention. ErrorGroup anchors on lastSeen, ErrorEvent on
+      // timestamp; both equal anomaly.timestamp here.
+      const retentionMs = await getRetentionMs(anomaly.service.ownerId);
+      const expiresAt = new Date(anomaly.timestamp.getTime() + retentionMs);
+
       let groupId = existingGroupMap.get(anomaly.fingerprint);
 
       if (groupId) {
         groupBulkOps.push({
           updateOne: {
             filter: { _id: groupId },
-            update: { $max: { lastSeen: anomaly.timestamp }, $inc: { totalCount: 1 } },
+            update: { $max: { lastSeen: anomaly.timestamp, expiresAt }, $inc: { totalCount: 1 } },
           },
         });
       } else {
@@ -577,6 +583,7 @@ const flushBatches = async (ctx: SweepContext) => {
               lastSeen: anomaly.timestamp,
               totalCount: 1,
               status: 'unresolved',
+              expiresAt,
             },
           },
         });
@@ -590,6 +597,7 @@ const flushBatches = async (ctx: SweepContext) => {
         stackTrace: anomaly.stackTrace,
         context: anomaly.context,
         timestamp: anomaly.timestamp,
+        expiresAt,
       });
     }
 

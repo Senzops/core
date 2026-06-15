@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyPlanBasedTtl } from '../utils/ttl';
 
 // --- 1. RUM Service Registry ---
 export interface IRumService extends Document {
@@ -87,6 +88,7 @@ export interface IRumTrace extends Document {
   spans: IRumSpan[];
   duration: number;
   timestamp: Date;
+  expiresAt?: Date; // Plan-based TTL (anchor: timestamp)
 }
 
 const RumSpanSchema = new Schema({
@@ -131,7 +133,8 @@ const RumTraceSchema = new Schema<IRumTrace>({
 
 RumTraceSchema.index({ serviceId: 1, timestamp: -1 });
 RumTraceSchema.index({ serviceId: 1, path: 1, timestamp: -1 });
-RumTraceSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 }); // 7 Days TTL
+// Plan-based retention (per-document expiresAt + hard-cap backstop on timestamp)
+applyPlanBasedTtl(RumTraceSchema, 'timestamp');
 
 export const RumTrace = mongoose.model<IRumTrace>('RumTrace', RumTraceSchema);
 
@@ -161,6 +164,8 @@ export interface IRumMetric extends Document {
   browsers: Map<string, number>;
   os: Map<string, number>;
   devices: Map<string, number>;
+
+  expiresAt?: Date; // Plan-based TTL (anchor: timestamp)
 }
 
 const RumMetricSchema = new Schema<IRumMetric>({
@@ -190,6 +195,7 @@ const RumMetricSchema = new Schema<IRumMetric>({
 });
 
 RumMetricSchema.index({ serviceId: 1, timestamp: 1 });
-RumMetricSchema.index({ timestamp: 1 }, { expireAfterSeconds: 691200 }); // 8 Days TTL
+// Plan-based retention (per-document expiresAt + hard-cap backstop on timestamp)
+applyPlanBasedTtl(RumMetricSchema, 'timestamp');
 
 export const RumMetric = mongoose.model<IRumMetric>('RumMetric', RumMetricSchema);

@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyPlanBasedTtl } from '../utils/ttl';
 
 // --- 1. Database Service (Configuration) ---
 export interface IDatabaseService extends Document {
@@ -31,6 +32,7 @@ const DatabaseServiceSchema = new Schema<IDatabaseService>({
 export interface IDbMetric extends Document {
   dbId: mongoose.Types.ObjectId;
   timestamp: Date;
+  expiresAt?: Date; // Plan-based TTL (anchor: timestamp)
   throughput: { read: number; write: number; total?: number }; // Added total for Redis
   latency: { read: { avg: number; max: number }; write: { avg: number; max: number }; ping?: number }; // Added ping
   // 1. Health & Uptime
@@ -142,8 +144,8 @@ const DbMetricSchema = new Schema<IDbMetric>({
 });
 
 DbMetricSchema.index({ dbId: 1, timestamp: 1 });
-// TTL: Keep granular DB metrics for 7 days (60 * 60 * 24 * 7 = 604800 seconds)
-DbMetricSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 });
+// Plan-based retention (per-document expiresAt + hard-cap backstop on timestamp)
+applyPlanBasedTtl(DbMetricSchema, 'timestamp');
 
 // --- 3. Decoupled Collection Stats (1 doc per DB, Upserted) ---
 export interface IDbCollectionStat extends Document {

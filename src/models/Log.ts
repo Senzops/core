@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyPlanBasedTtl } from '../utils/ttl';
 
 export interface ILogEvent extends Document {
   ownerId: string;
@@ -16,6 +17,7 @@ export interface ILogEvent extends Document {
   message: string;
   attributes: Record<string, any>;
   timestamp: Date;
+  expiresAt?: Date; // Plan-based TTL (anchor: timestamp)
 }
 
 const LogEventSchema = new Schema<ILogEvent>({
@@ -39,10 +41,10 @@ const LogEventSchema = new Schema<ILogEvent>({
 }, { timestamps: true });
 
 // --- Indexes for Enterprise Performance ---
-// 1. 7-Day TTL Index (Auto-deletes old logs). Flat retention for all tenants,
-//    consistent with the platform's other per-collection TTLs. Change the single
-//    value below to adjust the baseline retention window.
-LogEventSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 });
+// 1. Plan-based retention: each log expires at `expiresAt` (timestamp + the
+//    owner's plan retention window), with a hard-cap backstop on `timestamp`.
+//    See src/utils/ttl.ts and src/config/retention.ts.
+applyPlanBasedTtl(LogEventSchema, 'timestamp');
 
 // 2. Compound Index for Dashboard Filtering (legacy `level`).
 LogEventSchema.index({ ownerId: 1, timestamp: -1, level: 1 });

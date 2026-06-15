@@ -74,6 +74,7 @@ export interface WebIngestPayload {
     width?: number;
     duration?: number;
   };
+  ownerId: string;
   clientIp: string;
   userAgent: string;
 }

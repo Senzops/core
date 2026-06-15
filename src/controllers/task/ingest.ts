@@ -6,6 +6,7 @@ import { buildServiceLogDoc } from '../../utils/buildLogDoc';
 import { logger } from '../../utils/logger';
 import { TaskBatchSchema } from '../../utils/validation';
 import { taskIngestQueue, enqueue, type TaskIngestPayload } from '../../lib/queue';
+import { getRetentionMs, stampExpiry } from '../../services/retentionCache';
 
 // Helper: Clean Dynamic Data before Fingerprinting
 const cleanMessageForFingerprint = (message: string): string => {
@@ -48,6 +49,9 @@ export const ingestTaskBatch = async (req: Request, res: Response) => {
 
 export const processTaskBatchBackground = async (data: { runs: any[], errors: any[], logs: any[] }, service: any) => {
   await TaskService.findByIdAndUpdate(service._id, { lastSeen: new Date(), status: 'online' });
+
+  // Resolve the owner's plan-based retention window once for this batch.
+  const retentionMs = await getRetentionMs(service.ownerId);
 
   const runDocs = [];
   const metricsMap = new Map<string, any>();
@@ -160,12 +164,17 @@ export const processTaskBatchBackground = async (data: { runs: any[], errors: an
     ));
 
     if (logsToInsert.length > 0) {
+      stampExpiry(logsToInsert, 'timestamp', retentionMs);
       await LogEvent.insertMany(logsToInsert, { ordered: false });
     }
   }
 
   // --- 4. DB Writes ---
-  if (runDocs.length > 0) await TaskRun.insertMany(runDocs);
+  // anchor: timestamp (the run's event time)
+  if (runDocs.length > 0) {
+    stampExpiry(runDocs, 'timestamp', retentionMs);
+    await TaskRun.insertMany(runDocs);
+  }
 
   if (signaturesMap.size > 0) {
     const signatureOps = Array.from(signaturesMap.values()).map(sig => {
@@ -216,7 +225,10 @@ export const processTaskBatchBackground = async (data: { runs: any[], errors: an
             firstSeen: g.firstSeen,
             status: 'unresolved'
           },
-          $max: { lastSeen: g.lastSeen },
+          $max: {
+            lastSeen: g.lastSeen,
+            expiresAt: new Date(g.lastSeen.getTime() + retentionMs),
+          },
           $inc: { totalCount: g.count }
         },
         { upsert: true, new: true }
@@ -232,6 +244,8 @@ export const processTaskBatchBackground = async (data: { runs: any[], errors: an
       return { ...rest, groupId: fingerprintToGroupId.get(fingerprint) };
     });
 
+    // anchor: timestamp (the error's event time)
+    stampExpiry(finalErrorEvents, 'timestamp', retentionMs);
     await ErrorEvent.insertMany(finalErrorEvents);
   }
 
@@ -244,7 +258,8 @@ export const processTaskBatchBackground = async (data: { runs: any[], errors: an
           queueDelaySum: m.queueDelaySum, attemptsSum: m.attemptsSum
         },
         $max: { durationMax: m.durationMax },
-        $min: { durationMin: m.durationMin }
+        $min: { durationMin: m.durationMin },
+        $set: { expiresAt: new Date(m.timestamp.getTime() + retentionMs) }
       },
       upsert: true
     }

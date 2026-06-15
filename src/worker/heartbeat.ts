@@ -3,6 +3,7 @@ import os from 'os';
 import { Vps, VpsRun } from '../models/Vps';
 import { SystemLock } from '../models/Task';
 import { logger } from '../utils/logger';
+import { getRetentionMs } from '../services/retentionCache';
 
 const WORKER_ID = `heartbeat-${os.hostname()}-${process.pid}`;
 const LOCK_NAME = 'vps-heartbeat-sweep';
@@ -46,7 +47,7 @@ export const runHeartbeatSweep = async () => {
     // Find all VPS that were active at some point but stopped reporting
     const staleServers = await Vps.find({
       lastSeen: { $ne: null, $lt: staleThreshold },
-    }).select('_id status').lean();
+    }).select('_id status ownerId').lean();
 
     if (staleServers.length === 0) return;
 
@@ -61,11 +62,16 @@ export const runHeartbeatSweep = async () => {
       logger.info(`[Heartbeat] ${onlineToOffline.length} VPS transitioned to offline`);
     }
 
-    // Insert synthetic heartbeat-miss records for all stale servers
-    const syntheticRuns = staleServers.map(s => ({
-      vpsId: s._id,
-      metrics: { ...EMPTY_HEARTBEAT_METRICS },
-    }));
+    // Insert synthetic heartbeat-miss records for all stale servers.
+    // anchor: createdAt ≈ now; expiry resolved per-owner (cached).
+    const nowMs = Date.now();
+    const syntheticRuns = await Promise.all(
+      staleServers.map(async (s) => ({
+        vpsId: s._id,
+        metrics: { ...EMPTY_HEARTBEAT_METRICS },
+        expiresAt: new Date(nowMs + (await getRetentionMs(s.ownerId))),
+      }))
+    );
 
     await VpsRun.insertMany(syntheticRuns, { ordered: false });
 

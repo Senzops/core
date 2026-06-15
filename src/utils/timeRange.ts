@@ -1,24 +1,18 @@
 import { Subscription } from '../models/Subscription';
 import { getPlanConfig } from '../config/pricing';
 
-// Supported relative range presets
-const RELATIVE_RANGES = ['30m', '1h', '3h', '6h', '12h', '24h', '3d', '7d'] as const;
+// Supported relative range presets. Extended to 90d so higher plans can select
+// long windows; presets beyond a tenant's retention are gated client-side using
+// the limits from /dashboard/capabilities.
+const RELATIVE_RANGES = ['30m', '1h', '3h', '6h', '12h', '24h', '3d', '7d', '14d', '30d', '90d'] as const;
 export type RelativeRange = typeof RELATIVE_RANGES[number];
 
-// Collection-level TTL in days (derived from MongoDB expireAfterSeconds indexes)
-const COLLECTION_TTL_DAYS: Record<string, number> = {
-  apm: 8,
-  rum: 8,
-  logs: 7,
-  task: 30,
-  web: 32,
-  database: 7,
-  firebase: 7,
-  server: 1,
-  errors: 30,
-  monitor: 7,
-  views: 8,
-};
+// Service types surfaced to the dashboard. Retention is now unified and
+// plan-based (identical across all of these); this list only fixes the key set
+// returned by getAllRetentionLimits.
+const SERVICE_TYPES = [
+  'apm', 'rum', 'logs', 'task', 'web', 'database', 'firebase', 'server', 'errors', 'monitor', 'views',
+] as const;
 
 export interface ResolvedTimeRange {
   startDate: Date;
@@ -44,6 +38,9 @@ const RELATIVE_RANGE_MS: Record<RelativeRange, number> = {
   '24h': 24 * 60 * 60 * 1000,
   '3d': 3 * 24 * 60 * 60 * 1000,
   '7d': 7 * 24 * 60 * 60 * 1000,
+  '14d': 14 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+  '90d': 90 * 24 * 60 * 60 * 1000,
 };
 
 function isRelativeRange(value: string): value is RelativeRange {
@@ -138,25 +135,27 @@ export function buildTimeRangeMeta(resolved: ResolvedTimeRange, maxRetentionDays
 }
 
 /**
- * Computes the effective max retention for a service type, clamped to the user's plan.
+ * Effective max retention for a service type. Retention is unified and
+ * plan-based across all collections, so this is simply the plan's window.
+ * `serviceType` is retained for call-site compatibility and future per-type
+ * overrides.
  */
-export async function getEffectiveRetention(serviceType: string, ownerId: string): Promise<number> {
-  const collectionTtl = COLLECTION_TTL_DAYS[serviceType] ?? 7;
+export async function getEffectiveRetention(_serviceType: string, ownerId: string): Promise<number> {
   const sub = await Subscription.findOne({ ownerId }).select('planId').lean();
-  const plan = getPlanConfig(sub?.planId);
-  return Math.min(collectionTtl, plan.retentionDays);
+  return getPlanConfig(sub?.planId).retentionDays;
 }
 
 /**
- * Returns max retention days for all service types, clamped to the user's plan.
+ * Returns max retention days for all service types. With unified plan-based
+ * retention every service shares the same window (the plan's retentionDays).
  */
 export async function getAllRetentionLimits(ownerId: string): Promise<Record<string, number>> {
   const sub = await Subscription.findOne({ ownerId }).select('planId').lean();
-  const plan = getPlanConfig(sub?.planId);
+  const retentionDays = getPlanConfig(sub?.planId).retentionDays;
 
   const result: Record<string, number> = {};
-  for (const [service, ttl] of Object.entries(COLLECTION_TTL_DAYS)) {
-    result[service] = Math.min(ttl, plan.retentionDays);
+  for (const service of SERVICE_TYPES) {
+    result[service] = retentionDays;
   }
   return result;
 }
@@ -213,6 +212,73 @@ export function fillTimeGaps<T extends Record<string, any>>(
   return filled;
 }
 
+/**
+ * Aligns a date DOWN to the bucket boundary for the given granularity, in UTC.
+ * UTC is used so these boundaries match MongoDB's `$dateTrunc`/`$dateToString`
+ * (which operate in UTC by default) regardless of the server's local timezone.
+ */
+function alignToBucket(date: Date, granularityLabel: string): Date {
+  const d = new Date(date);
+  if (granularityLabel === '1m') d.setUTCSeconds(0, 0);
+  else if (granularityLabel === '1h') d.setUTCMinutes(0, 0, 0);
+  else d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
+
+/**
+ * Fills a time series that carries an online/offline status, used for
+ * agent-style telemetry (e.g. VPS) where the heartbeat itself is the liveness
+ * signal. Bucket-aware: steps at the resolved granularity (1m / 1h / 1d) so it
+ * works for both the fine-grained real-time view and downsampled long ranges,
+ * marks present buckets online (carry `isOnline` from the data, defaulting to
+ * "online unless a synthetic heartbeat-miss"), and emits offline placeholder
+ * points for empty buckets.
+ *
+ * `emptyMetrics` is the zero-valued metrics shape to stamp on gap/offline
+ * points, keeping this helper decoupled from any specific telemetry schema.
+ */
+export function fillTimeGapsWithStatus(
+  data: any[],
+  resolved: ResolvedTimeRange,
+  emptyMetrics: Record<string, any>
+): any[] {
+  const { startDate, endDate, bucketIncrementMs, granularityLabel } = resolved;
+  const filled: any[] = [];
+
+  // Index existing points by bucket-aligned timestamp.
+  const dataMap = new Map<number, any>();
+  for (const item of data) {
+    const key = alignToBucket(new Date(item.createdAt), granularityLabel).getTime();
+    dataMap.set(key, item);
+  }
+
+  const current = alignToBucket(startDate, granularityLabel);
+  const end = endDate.getTime();
+
+  while (current.getTime() <= end) {
+    const key = current.getTime();
+    const item = dataMap.get(key);
+
+    if (item) {
+      // Pre-aggregated points carry their own isOnline; raw samples are online
+      // unless they are synthetic heartbeat-miss records.
+      const isOnline = item.isOnline ?? item.metrics?._heartbeat !== 'miss';
+      filled.push({ ...item, isOnline, createdAt: new Date(key).toISOString() });
+    } else {
+      filled.push({
+        _id: 'gap-' + key,
+        createdAt: new Date(key).toISOString(),
+        isOnline: false,
+        metrics: { ...emptyMetrics },
+      });
+    }
+
+    current.setTime(current.getTime() + bucketIncrementMs);
+  }
+
+  return filled;
+}
+
 export class TimeRangeError extends Error {
   constructor(message: string) {
     super(message);
@@ -220,4 +286,4 @@ export class TimeRangeError extends Error {
   }
 }
 
-export { COLLECTION_TTL_DAYS, RELATIVE_RANGES };
+export { SERVICE_TYPES, RELATIVE_RANGES };

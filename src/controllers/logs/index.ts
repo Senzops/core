@@ -10,6 +10,7 @@ import { recordIngestStat } from '../../services/logIngestStats';
 import { logger } from '../../utils/logger';
 import { resolveTimeRange, getEffectiveRetention, buildTimeRangeMeta, TimeRangeError } from '../../utils/timeRange';
 import { logIngestQueue, enqueue, type LogIngestPayload } from '../../lib/queue';
+import { getRetentionMs, stampExpiry } from '../../services/retentionCache';
 
 // ============================================================================
 // ENTERPRISE INGESTION CACHE
@@ -608,6 +609,9 @@ export const processLogIngestion = async (payloads: any[], ownerId: string): Pro
   if (isRedactionEnabled()) {
     for (const doc of logsToInsert) redactLogDoc(doc, true);
   }
+
+  // Stamp plan-based expiry (anchor: timestamp) before insert.
+  stampExpiry(logsToInsert, 'timestamp', await getRetentionMs(ownerId));
 
   try {
     const result = await LogEvent.insertMany(logsToInsert, { ordered: false });

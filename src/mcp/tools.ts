@@ -30,6 +30,7 @@ import { getDynamicSchema } from '../controllers/schema';
 import { getDashboardCapabilities } from '../controllers/dashboard/capabilities';
 
 import { McpUsage } from "../models/Mcp";
+import { getRetentionMs } from "../services/retentionCache";
 
 // --- 1. Mock Express Runtime (TypeScript Safe) ---
 // We use a closure (currentStatus) instead of 'this' to avoid TypeScript context binding errors.
@@ -84,11 +85,19 @@ const simulateExpressCall = async (
 const trackUsage = (ownerId: string, toolName: string) => {
   const bucketTime = new Date();
   bucketTime.setMinutes(0, 0, 0);
-  McpUsage.updateOne(
-    { ownerId, timestamp: bucketTime },
-    { $inc: { totalQueries: 1, [`toolCalls.${toolName}`]: 1 } },
-    { upsert: true }
-  ).catch(() => { });
+  // Fire-and-forget: resolve plan-based expiry (anchor: timestamp) then upsert.
+  getRetentionMs(ownerId)
+    .then((retentionMs) =>
+      McpUsage.updateOne(
+        { ownerId, timestamp: bucketTime },
+        {
+          $inc: { totalQueries: 1, [`toolCalls.${toolName}`]: 1 },
+          $set: { expiresAt: new Date(bucketTime.getTime() + retentionMs) },
+        },
+        { upsert: true }
+      )
+    )
+    .catch(() => { });
 };
 
 // --- 3. Complete Tool Definitions ---

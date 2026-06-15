@@ -4,6 +4,7 @@ import { URL } from 'url';
 import axios from 'axios';
 import { Monitor, MonitorRun, MonitorIncident } from '../models/Monitor';
 import { logger } from '../utils/logger';
+import { getRetentionMs } from '../services/retentionCache';
 
 const BATCH_SIZE = 50;
 const TIMEOUT_MS = 10000;
@@ -103,7 +104,15 @@ const performCheck = async (monitor: any) => {
     }
   }
 
-  await MonitorRun.create({ monitorId: monitor._id, status, latency, statusCode });
+  // Plan-based retention (anchor: createdAt ≈ now)
+  const retentionMs = await getRetentionMs(monitor.ownerId);
+  await MonitorRun.create({
+    monitorId: monitor._id,
+    status,
+    latency,
+    statusCode,
+    expiresAt: new Date(Date.now() + retentionMs),
+  });
 
   const previousStatus = monitor.status;
   const updateFields: Record<string, any> = {
@@ -130,6 +139,7 @@ const performCheck = async (monitor: any) => {
         startedAt: new Date(),
         cause: status,
         statusCode,
+        expiresAt: new Date(Date.now() + retentionMs),
       });
     } else if (status === 'up' && previousStatus !== 'up' && previousStatus !== 'pending') {
       const openIncident = await MonitorIncident.findOne({

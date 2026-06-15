@@ -6,6 +6,7 @@ import { Transaction } from '../models/Transaction';
 import { WebhookEvent } from '../models/WebhookEvent';
 import { dodoRequest, DodoApiError } from '../utils/dodoClient';
 import { logger } from '../utils/logger';
+import { reconcileOwnerRetentionInBackground } from '../services/retentionReconciler';
 
 // ============================================================================
 // CONSTANTS
@@ -362,6 +363,9 @@ export const cancelSubscription = async (req: Request, res: Response) => {
       sub.currentMonthBytes = 0;
       sub.billingCycleReset = nextMonth;
       await sub.save();
+
+      // Immediate downgrade — recompute stored-telemetry retention to Starter.
+      reconcileOwnerRetentionInBackground(ownerId);
 
       logger.info(`[Billing] User ${ownerId} canceled on-hold subscription. Immediate downgrade to starter.`);
 
@@ -856,6 +860,9 @@ async function handleDodoSubscriptionActivation(payload: any, ownerId: string): 
     { upsert: true },
   );
 
+  // Plan window changed — recompute retention for already-stored telemetry.
+  reconcileOwnerRetentionInBackground(ownerId);
+
   logger.info(`[Dodo Webhook] subscription.active — ${ownerId} upgraded to ${targetPlanId}`);
 }
 
@@ -914,6 +921,10 @@ async function handleDodoSubscriptionUpdate(payload: any, ownerId: string): Prom
 
   if (Object.keys(updateFields).length > 0) {
     await Subscription.findOneAndUpdate({ ownerId }, { $set: updateFields });
+    // If the plan itself changed, recompute stored-telemetry retention.
+    if (updateFields.planId) {
+      reconcileOwnerRetentionInBackground(ownerId);
+    }
     logger.info(`[Dodo Webhook] subscription.updated for ${ownerId}: ${Object.keys(updateFields).join(', ')}`);
   }
 }
@@ -938,6 +949,9 @@ async function handleDodoSubscriptionCancelled(payload: any, ownerId: string): P
       },
     },
   );
+
+  // Immediate downgrade to Starter — recompute stored-telemetry retention.
+  reconcileOwnerRetentionInBackground(ownerId);
 
   logger.info(`[Dodo Webhook] subscription.cancelled — ${ownerId} downgraded to starter`);
 }
@@ -1052,6 +1066,9 @@ export const handlePaddleWebhook = async (req: Request, res: Response) => {
           },
           { upsert: true },
         );
+
+        // Plan window changed — recompute retention for stored telemetry.
+        reconcileOwnerRetentionInBackground(ownerId);
       } else if (eventType === 'subscription.canceled' || eventType === 'subscription.past_due') {
         await Subscription.findOneAndUpdate(
           { ownerId },

@@ -3,6 +3,7 @@ import admin from 'firebase-admin';
 import { FirebaseService, FirebaseMetric, FirebaseAuthSnapshot, IFirebaseService } from '../models/Firebase';
 import { decrypt } from '../utils/crypto';
 import { logger } from '../utils/logger';
+import { getRetentionMs } from '../services/retentionCache';
 
 const appPool = new Map<string, admin.app.App>();
 const PROCESSOR_TIMEOUT_MS = 90_000;
@@ -143,6 +144,7 @@ async function processFirebaseProject(service: IFirebaseService): Promise<void> 
     FirebaseMetric.create({
       serviceId: service._id,
       timestamp: now,
+      expiresAt: new Date(now.getTime() + (await getRetentionMs(service.ownerId))),
       auth: {
         totalUsers,
         activeUsersDaily,

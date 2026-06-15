@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyPlanBasedTtl } from '../utils/ttl';
 
 // --- VPS Schema ---
 export interface IVps extends Document {
@@ -42,6 +43,7 @@ export interface IRun extends Document {
   vpsId: mongoose.Types.ObjectId;
   metrics: any; // Storing the full JSON payload
   createdAt: Date;
+  expiresAt?: Date; // Plan-based TTL (anchor: createdAt)
 }
 
 const RunSchema = new Schema<IRun>({
@@ -49,7 +51,10 @@ const RunSchema = new Schema<IRun>({
   metrics: { type: Object, required: true },
 }, { timestamps: true });
 
-// CRITICAL: Auto-delete documents after 24 hours (86400 seconds)
-RunSchema.index({ createdAt: 1 }, { expireAfterSeconds: 86400 });
+// Range + sort for dashboard/downsampling queries (match vpsId, filter+sort by time)
+RunSchema.index({ vpsId: 1, createdAt: 1 });
+
+// Plan-based retention (per-document expiresAt + hard-cap backstop on createdAt)
+applyPlanBasedTtl(RunSchema, 'createdAt');
 
 export const VpsRun = mongoose.model<IRun>('VpsRun', RunSchema);

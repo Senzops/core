@@ -1,4 +1,5 @@
 import mongoose, { Schema, Document } from 'mongoose';
+import { applyPlanBasedTtl } from '../utils/ttl';
 
 export interface IMcpApiKey extends Document {
   ownerId: string;
@@ -24,6 +25,7 @@ export interface IMcpUsage extends Document {
   timestamp: Date;
   totalQueries: number;
   toolCalls: Map<string, number>;
+  expiresAt?: Date; // Plan-based TTL (anchor: timestamp)
 }
 
 const McpUsageSchema = new Schema<IMcpUsage>({
@@ -33,8 +35,8 @@ const McpUsageSchema = new Schema<IMcpUsage>({
   toolCalls: { type: Map, of: Number, default: {} }
 });
 
-// TTL of 7 days (604800 seconds) for usage metrics to match frontend views
-McpUsageSchema.index({ timestamp: 1 }, { expireAfterSeconds: 604800 });
+// Plan-based retention (per-document expiresAt + hard-cap backstop on timestamp)
+applyPlanBasedTtl(McpUsageSchema, 'timestamp');
 McpUsageSchema.index({ ownerId: 1, timestamp: 1 }, { unique: true });
 
 export const McpUsage = mongoose.model<IMcpUsage>('McpUsage', McpUsageSchema);

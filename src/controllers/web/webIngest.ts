@@ -8,6 +8,7 @@ import { getGeoData } from "../../utils/getGeoData";
 import { getChannel } from "../../utils/categorizeReferrers";
 import { WebIngestSchema } from "../../utils/validation";
 import { webIngestQueue, enqueue, type WebIngestPayload } from '../../lib/queue';
+import { getRetentionMs } from '../../services/retentionCache';
 
 // ---------------------------------------------------------------------------
 // Bot detection — skip known crawlers to keep analytics clean
@@ -73,6 +74,7 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
     const clientIp = getClientIp(req) || 'Unknown';
     const jobData: WebIngestPayload = {
       eventData: { webId, visitorId, sessionId, type, url, path, title, referrer, width, duration },
+      ownerId: site.ownerId,
       clientIp,
       userAgent: uaString as string,
     };
@@ -91,8 +93,11 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
 // Background Web Processor (called by queue worker or in-process fallback)
 // ---------------------------------------------------------------------------
 export const processWebIngestion = async (job: WebIngestPayload): Promise<void> => {
-  const { eventData, clientIp, userAgent } = job;
+  const { eventData, ownerId, clientIp, userAgent } = job;
   const { webId, visitorId, sessionId, type, url, path, title, referrer, width, duration } = eventData;
+
+  // Resolve the owner's plan-based retention window once for this event.
+  const retentionMs = await getRetentionMs(ownerId);
 
   const { country, city } = getGeoData(clientIp);
 
@@ -118,7 +123,10 @@ export const processWebIngestion = async (job: WebIngestPayload): Promise<void> 
 
     await WebMetric.updateOne(
       { webId, timestamp: bucketTime },
-      { $inc: { durationSum: duration || 0 } },
+      {
+        $inc: { durationSum: duration || 0 },
+        $set: { expiresAt: new Date(bucketTime.getTime() + retentionMs) },
+      },
       { upsert: true }
     );
     return;
@@ -141,6 +149,7 @@ export const processWebIngestion = async (job: WebIngestPayload): Promise<void> 
     country,
     city,
     createdAt: timestamp,
+    expiresAt: new Date(timestamp.getTime() + retentionMs),
   });
 
   const bucketTime = new Date(timestamp);
@@ -149,7 +158,8 @@ export const processWebIngestion = async (job: WebIngestPayload): Promise<void> 
   const pipeline: any[] = [
     {
       $set: {
-        views: { $add: [{ $ifNull: ["$views", 0] }, 1] }
+        views: { $add: [{ $ifNull: ["$views", 0] }, 1] },
+        expiresAt: new Date(bucketTime.getTime() + retentionMs),
       }
     }
   ];

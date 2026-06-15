@@ -10,6 +10,7 @@ import { ApmBatchSchema } from '../../utils/validation';
 import { normaliseIP, isPrivateOrLoopback } from '../../utils/getClientIp';
 import { getGeoData } from '../../utils/getGeoData';
 import { apmIngestQueue, enqueue, type ApmIngestPayload } from '../../lib/queue';
+import { getRetentionMs, stampExpiry } from '../../services/retentionCache';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -93,6 +94,9 @@ export const processBatchBackground = async (
   service: any
 ) => {
   await ApmService.findByIdAndUpdate(service._id, { lastSeen: new Date() });
+
+  // Resolve the owner's plan-based retention window once for this batch.
+  const retentionMs = await getRetentionMs(service.ownerId);
 
   const traceDocs: any[] = [];
   const metricsMap = new Map<string, any>();
@@ -248,8 +252,9 @@ export const processBatchBackground = async (
   // 3. DB Writes
   // -------------------------------------------------------------------------
 
-  // Traces
+  // Traces (anchor: createdAt ≈ now at insert)
   if (traceDocs.length > 0) {
+    stampExpiry(traceDocs, 'createdAt', retentionMs);
     await ApmTrace.insertMany(traceDocs, { ordered: false });
   }
 
@@ -269,7 +274,12 @@ export const processBatchBackground = async (
             firstSeen: g.firstSeen,
             status: 'unresolved',
           },
-          $max: { lastSeen: g.lastSeen },
+          $max: {
+            lastSeen: g.lastSeen,
+            // expiresAt tracks lastSeen (anchor) + retention; $max keeps it
+            // monotonic with the newest occurrence.
+            expiresAt: new Date(g.lastSeen.getTime() + retentionMs),
+          },
           $inc: { totalCount: g.count },
         },
         { upsert: true, new: true }
@@ -287,6 +297,8 @@ export const processBatchBackground = async (
       groupId: fingerprintToGroupId.get(fingerprint),
     }));
 
+    // anchor: timestamp (the error's event time)
+    stampExpiry(finalErrorEvents, 'timestamp', retentionMs);
     await ErrorEvent.insertMany(finalErrorEvents, { ordered: false });
   }
 
@@ -321,7 +333,13 @@ export const processBatchBackground = async (
     return {
       updateOne: {
         filter: { serviceId: service._id, timestamp: m.timestamp },
-        update: { $inc: incUpdate, $max: { durationMax: m.durationMax } },
+        update: {
+          $inc: incUpdate,
+          $max: { durationMax: m.durationMax },
+          // anchor: timestamp (the metric bucket). Refreshed each upsert so an
+          // actively-written bucket always reflects the current plan.
+          $set: { expiresAt: new Date(m.timestamp.getTime() + retentionMs) },
+        },
         upsert: true,
       },
     };
@@ -342,6 +360,8 @@ export const processBatchBackground = async (
       source: service.name,
     }));
 
+    // anchor: timestamp (the log's event time)
+    stampExpiry(logsToInsert, 'timestamp', retentionMs);
     // ordered: false — one malformed log doc must not abort the whole batch
     await LogEvent.insertMany(logsToInsert, { ordered: false });
   }
@@ -385,6 +405,8 @@ export const processBatchBackground = async (
               activeRequests: m.process?.activeRequests ?? 0,
               uptimeSeconds: m.process?.uptimeSeconds ?? 0,
             },
+            // anchor: timestamp (the 1-minute bucket)
+            $set: { expiresAt: new Date(bucketTime.getTime() + retentionMs) },
           },
           upsert: true,
         },
