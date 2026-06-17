@@ -3,7 +3,6 @@ import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { z } from 'zod';
 import { DashboardShare, SHARE_SCOPE_TYPES, ShareScopeType } from '../../models/DashboardShare';
-import { hashShareToken } from '../../middlewares/shareAuth';
 import { SavedView, ViewWidget } from '../../models/View';
 import { buildAndExecutePipeline } from './engine';
 import { getEffectivePermissions } from '../../middlewares/orgAuth';
@@ -60,18 +59,38 @@ const MAX_SHARES_PER_DASHBOARD = 25;
 // Helpers
 // ----------------------------------------------------------------------------
 
-function generateShareToken(): { token: string; tokenHash: string } {
-  const token = crypto.randomBytes(32).toString('hex');
-  return { token, tokenHash: hashShareToken(token) };
+function generateShareToken(): string {
+  return crypto.randomBytes(32).toString('hex');
 }
 
-function computeExpiry(expiresInDays: number | null | undefined): Date | null {
-  if (expiresInDays === null) return null; // explicit "never"
-  const days = expiresInDays === undefined ? DEFAULT_EXPIRY_DAYS : expiresInDays;
-  return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+function shareUrl(token: string): string {
+  return `${FRONTEND_URL}/shared/${token}`;
 }
 
-// Strips secret/internal fields before returning a share to the owner's UI.
+/**
+ * Resolves the effective expiry from a request. Precedence:
+ *   1. explicit `expiresAt` (custom date-time; null = never)
+ *   2. `expiresInDays` preset (null = never)
+ *   3. default (30 days)
+ */
+function resolveExpiry(input: {
+  expiresAt?: string | null;
+  expiresInDays?: number | null;
+}): Date | null {
+  if (input.expiresAt !== undefined) {
+    return input.expiresAt ? new Date(input.expiresAt) : null;
+  }
+  if (input.expiresInDays !== undefined) {
+    return input.expiresInDays === null
+      ? null
+      : new Date(Date.now() + input.expiresInDays * 24 * 60 * 60 * 1000);
+  }
+  return new Date(Date.now() + DEFAULT_EXPIRY_DAYS * 24 * 60 * 60 * 1000);
+}
+
+// Shapes a share for the owner's UI. The token IS included (as the full URL) so
+// the link can be retrieved and re-copied at any time — it is a capability URL,
+// not a secret credential.
 function sanitizeShare(share: any) {
   const status = share.revokedAt
     ? 'revoked'
@@ -83,6 +102,7 @@ function sanitizeShare(share: any) {
     id: share._id,
     scopeType: share.scopeType,
     scopeId: share.scopeId,
+    url: shareUrl(share.token),
     label: share.label || null,
     defaultRange: share.defaultRange,
     timeRangeMode: share.timeRangeMode,
@@ -127,12 +147,18 @@ const CreateShareSchema = z
     timeRangeMode: z.enum(['flexible', 'locked']).optional(),
     lockedStart: z.string().datetime().optional(),
     lockedEnd: z.string().datetime().optional(),
-    // number of days until expiry; null = never; omitted = default (30d)
+    // Expiry — provide ONE of: a custom `expiresAt` (ISO; null = never), or an
+    // `expiresInDays` preset (null = never). Omitting both uses the 30-day default.
+    expiresAt: z.string().datetime().nullable().optional(),
     expiresInDays: z.number().int().positive().max(3650).nullable().optional(),
   })
   .refine(
     (d) => d.timeRangeMode !== 'locked' || (d.lockedStart && d.lockedEnd),
     { message: 'Locked shares require lockedStart and lockedEnd.' }
+  )
+  .refine(
+    (d) => d.expiresAt == null || new Date(d.expiresAt).getTime() > Date.now(),
+    { message: 'Expiry must be in the future.', path: ['expiresAt'] }
   );
 
 export const createShare = async (req: Request, res: Response) => {
@@ -171,30 +197,25 @@ export const createShare = async (req: Request, res: Response) => {
       });
     }
 
-    const { token, tokenHash } = generateShareToken();
+    const token = generateShareToken();
 
     const share = await DashboardShare.create({
       ownerId,
       createdBy: uid,
       scopeType: body.scopeType,
       scopeId: body.scopeId,
-      tokenHash,
+      token,
       label: body.label,
       defaultRange: body.defaultRange || '24h',
       timeRangeMode: body.timeRangeMode || 'flexible',
       lockedStart: body.lockedStart ? new Date(body.lockedStart) : undefined,
       lockedEnd: body.lockedEnd ? new Date(body.lockedEnd) : undefined,
-      expiresAt: computeExpiry(body.expiresInDays),
+      expiresAt: resolveExpiry(body),
     });
 
     logger.info(`[Share] Created ${body.scopeType} share ${share._id} for ${body.scopeId} by ${uid}`);
 
-    // The raw token is returned exactly once — it is never stored or retrievable again.
-    res.status(201).json({
-      share: sanitizeShare(share.toObject()),
-      token,
-      url: `${FRONTEND_URL}/shared/${token}`,
-    });
+    res.status(201).json({ share: sanitizeShare(share.toObject()) });
   } catch (error: any) {
     logger.error(`[Share] Create failed: ${error.message}`);
     res.status(500).json({ error: 'Failed to create share link.' });
@@ -221,12 +242,18 @@ export const listShares = async (req: Request, res: Response) => {
   }
 };
 
-const UpdateShareSchema = z.object({
-  label: z.string().trim().max(120).nullable().optional(),
-  defaultRange: z.string().max(20).optional(),
-  timeRangeMode: z.enum(['flexible', 'locked']).optional(),
-  expiresInDays: z.number().int().positive().max(3650).nullable().optional(),
-});
+const UpdateShareSchema = z
+  .object({
+    label: z.string().trim().max(120).nullable().optional(),
+    defaultRange: z.string().max(20).optional(),
+    timeRangeMode: z.enum(['flexible', 'locked']).optional(),
+    expiresAt: z.string().datetime().nullable().optional(),
+    expiresInDays: z.number().int().positive().max(3650).nullable().optional(),
+  })
+  .refine(
+    (d) => d.expiresAt == null || new Date(d.expiresAt).getTime() > Date.now(),
+    { message: 'Expiry must be in the future.', path: ['expiresAt'] }
+  );
 
 export const updateShare = async (req: Request, res: Response) => {
   try {
@@ -248,7 +275,9 @@ export const updateShare = async (req: Request, res: Response) => {
     if (parsed.data.label !== undefined) existing.label = parsed.data.label ?? undefined;
     if (parsed.data.defaultRange !== undefined) existing.defaultRange = parsed.data.defaultRange;
     if (parsed.data.timeRangeMode !== undefined) existing.timeRangeMode = parsed.data.timeRangeMode;
-    if (parsed.data.expiresInDays !== undefined) existing.expiresAt = computeExpiry(parsed.data.expiresInDays);
+    if (parsed.data.expiresAt !== undefined || parsed.data.expiresInDays !== undefined) {
+      existing.expiresAt = resolveExpiry(parsed.data);
+    }
 
     await existing.save();
     res.json({ share: sanitizeShare(existing.toObject()) });

@@ -560,25 +560,13 @@ authRouter.post('/otp/verify', apiLimiter, verifyOtp);
 authRouter.post('/revoke-sessions', apiLimiter, revokeSessions);
 app.use('/api/auth', authRouter);
 
-// Telemetry Import Router (separate from apiRouter for higher body limit)
-// Mounted before the apiRouter so it's matched first. Uses its own body parser
-// with a 50MB limit since telemetry payloads can be large.
-const dataImportRouter = express.Router();
-dataImportRouter.use(express.json({ limit: '50mb' }));
-dataImportRouter.use(authenticateUser);
-dataImportRouter.use(resolveWorkspace);
-dataImportRouter.post('/data/import/telemetry', dataImportLimiter, importTelemetry);
-app.use('/api', dataImportRouter);
-
-// Public Organization Routes (No Auth Required)
-app.get('/api/org/invitations/details', getInvitationDetails);
-
 // --- PUBLIC DASHBOARD SHARES (No Auth Required) ---
 // Unauthenticated, view-only access to a single dashboard via a secret token.
-// Mounted BEFORE apiRouter so it bypasses the Firebase JWT middleware. Every
-// route resolves the token into a trusted ownerId (resolveShareContext) and pins
-// the request to the exact shared resource (enforceShareScope). Only read
-// endpoints are exposed here — this is an explicit allowlist, never a blocklist.
+// CRITICAL: mounted BEFORE the blanket `/api` routers below (dataImportRouter and
+// apiRouter both run authenticateUser on every `/api/*` request), otherwise these
+// public routes would be shadowed and 401. Every route resolves the token into a
+// trusted ownerId (resolveShareContext) and pins the request to the exact shared
+// resource (enforceShareScope). Only read endpoints are exposed — explicit allowlist.
 const publicShareRouter = express.Router();
 
 const shareViewLimiter = rateLimit({
@@ -623,11 +611,27 @@ publicShareRouter.get('/:token/web/:id/stats', resolveShareContext, enforceShare
 // Servers (VPS)
 publicShareRouter.get('/:token/vps/:id/stats', resolveShareContext, enforceShareScope('vps'), applyShareTimeRange, cachePublicShare(), getVpsStats);
 
-// Saved Views (custom dashboards) — widget MQL is stripped from these payloads
+// Saved Views (custom dashboards) — widget MQL is stripped from these payloads.
+// The `/:id` variant lets the reused canvas component fetch `/views/:id` (id is
+// pinned to the share's scope by enforceShareScope); both resolve the same view.
 publicShareRouter.get('/:token/views', resolveShareContext, enforceShareScope('savedview'), getSharedView);
+publicShareRouter.get('/:token/views/:id', resolveShareContext, enforceShareScope('savedview'), getSharedView);
 publicShareRouter.get('/:token/views/widgets/:widgetId/data', resolveShareContext, enforceShareScope('savedview'), applyShareTimeRange, cachePublicShare(), getSharedWidgetData);
 
 app.use('/api/public/shares', publicShareRouter);
+
+// Telemetry Import Router (separate from apiRouter for higher body limit)
+// Mounted before the apiRouter so it's matched first. Uses its own body parser
+// with a 50MB limit since telemetry payloads can be large.
+const dataImportRouter = express.Router();
+dataImportRouter.use(express.json({ limit: '50mb' }));
+dataImportRouter.use(authenticateUser);
+dataImportRouter.use(resolveWorkspace);
+dataImportRouter.post('/data/import/telemetry', dataImportLimiter, importTelemetry);
+app.use('/api', dataImportRouter);
+
+// Public Organization Routes (No Auth Required)
+app.get('/api/org/invitations/details', getInvitationDetails);
 
 // Mount Dashboard API SECOND.
 // This catches everything else starting with /api (like /api/vps/...)

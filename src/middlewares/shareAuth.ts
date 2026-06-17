@@ -1,5 +1,4 @@
 import { Request, Response, NextFunction } from 'express';
-import crypto from 'crypto';
 import { DashboardShare, IDashboardShare, ShareScopeType } from '../models/DashboardShare';
 import { cacheGet, cacheSet } from '../lib/cache';
 import { logger } from '../utils/logger';
@@ -12,18 +11,15 @@ declare global {
   }
 }
 
-export function hashShareToken(token: string): string {
-  return crypto.createHash('sha256').update(token).digest('hex');
-}
-
 /**
  * Resolves a public dashboard-share token into a trusted workspace context.
  *
- * The token arrives in `req.params.token`. We look it up by its sha256 hash,
- * reject revoked/expired links, then set `req.ownerId` FROM THE SHARE RECORD —
- * never from the client. Downstream controllers (re-used unchanged from the
- * authenticated path) therefore enforce tenant isolation exactly as they do for
- * logged-in users, because they already filter by `{ _id, ownerId }`.
+ * The token arrives in `req.params.token`. We look it up directly (it is an
+ * unguessable 256-bit capability token), reject revoked/expired links, then set
+ * `req.ownerId` FROM THE SHARE RECORD — never from the client. Downstream
+ * controllers (re-used unchanged from the authenticated path) therefore enforce
+ * tenant isolation exactly as they do for logged-in users, because they already
+ * filter by `{ _id, ownerId }`.
  */
 export const resolveShareContext = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -32,8 +28,7 @@ export const resolveShareContext = async (req: Request, res: Response, next: Nex
       return res.status(400).json({ error: 'Missing share token.' });
     }
 
-    const tokenHash = hashShareToken(token);
-    const share = await DashboardShare.findOne({ tokenHash });
+    const share = await DashboardShare.findOne({ token });
 
     if (!share) {
       return res.status(404).json({ error: 'This shared dashboard does not exist.' });
@@ -123,7 +118,7 @@ export const cachePublicShare = (ttlSeconds = 20) => {
     if (!share) return next();
 
     const subPath = req.originalUrl.split(`/${req.params.token}`)[1] || req.originalUrl;
-    const key = `pshare:${share.tokenHash}:${subPath}`;
+    const key = `pshare:${share.token}:${subPath}`;
 
     const cached = await cacheGet(key);
     if (cached) {
