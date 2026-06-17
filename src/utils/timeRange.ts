@@ -229,7 +229,16 @@ function alignToBucket(date: Date, granularityLabel: string): Date {
  * works for both the fine-grained real-time view and downsampled long ranges,
  * marks present buckets online (carry `isOnline` from the data, defaulting to
  * "online unless a synthetic heartbeat-miss"), and emits offline placeholder
- * points for empty buckets.
+ * points for empty *fully-elapsed* buckets.
+ *
+ * In-progress bucket handling: agents report a few seconds into each interval,
+ * so the bucket that currently contains `now` is frequently empty simply because
+ * its data hasn't arrived yet. Emitting it as "down" would be a false negative
+ * (briefly flashing the server offline every interval). We therefore never
+ * synthesize a down placeholder for the in-progress bucket — it is shown only
+ * once real data exists for it. Fully-elapsed buckets keep normal gap→down
+ * semantics (a genuine missing sample); real outages are also captured as
+ * synthetic heartbeat-miss records by the staleness sweep.
  *
  * `emptyMetrics` is the zero-valued metrics shape to stamp on gap/offline
  * points, keeping this helper decoupled from any specific telemetry schema.
@@ -249,6 +258,10 @@ export function fillTimeGapsWithStatus(
     dataMap.set(key, item);
   }
 
+  // Start of the bucket that currently contains "now" — its window has not yet
+  // fully elapsed, so an absent sample is "not yet reported", not "down".
+  const inProgressBucket = alignToBucket(new Date(), granularityLabel).getTime();
+
   const current = alignToBucket(startDate, granularityLabel);
   const end = endDate.getTime();
 
@@ -261,7 +274,8 @@ export function fillTimeGapsWithStatus(
       // unless they are synthetic heartbeat-miss records.
       const isOnline = item.isOnline ?? item.metrics?._heartbeat !== 'miss';
       filled.push({ ...item, isOnline, createdAt: new Date(key).toISOString() });
-    } else {
+    } else if (key < inProgressBucket) {
+      // Fully-elapsed bucket with no sample → genuine gap (offline).
       filled.push({
         _id: 'gap-' + key,
         createdAt: new Date(key).toISOString(),
@@ -269,6 +283,7 @@ export function fillTimeGapsWithStatus(
         metrics: { ...emptyMetrics },
       });
     }
+    // else: in-progress bucket awaiting data — skip (no false-negative).
 
     current.setTime(current.getTime() + bucketIncrementMs);
   }
