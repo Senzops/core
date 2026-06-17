@@ -251,6 +251,36 @@ async function aggregateVpsBuckets(vpsId: mongoose.Types.ObjectId, resolved: Res
   });
 }
 
+/**
+ * Builds the real-time availability strip: the last 60 minutes at fixed
+ * 1-minute resolution (online/offline per minute), independent of the
+ * dashboard's selected range. Cheap (≤60 raw docs) and keeps the strip's
+ * "last 1 hour" semantics stable regardless of how `history` is downsampled.
+ */
+async function buildUptimeStrip(vpsId: mongoose.Types.ObjectId) {
+  const endDate = new Date();
+  const startDate = new Date(endDate.getTime() - 60 * 60 * 1000);
+
+  const runs = await VpsRun.find({
+    vpsId,
+    createdAt: { $gte: startDate, $lte: endDate },
+  })
+    .sort({ createdAt: 1 })
+    .select('createdAt metrics._heartbeat')
+    .lean();
+
+  const resolved = {
+    startDate,
+    endDate,
+    bucketFormat: '%Y-%m-%dT%H:%M:00.000Z',
+    bucketIncrementMs: 60 * 1000,
+    granularityLabel: '1m',
+  } as ResolvedTimeRange;
+
+  // Minimal points — the strip only reads `createdAt` and `isOnline`.
+  return fillTimeGapsWithStatus(runs, resolved, {});
+}
+
 // --- Dashboard Stats Controller ---
 export const getVpsStats = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -285,7 +315,13 @@ export const getVpsStats = async (req: Request, res: Response, next: NextFunctio
       .sort({ createdAt: -1 })
       .lean();
 
-    res.json({ vps, history, latest, granularity: resolved.granularityLabel });
+    // Real-time availability strip: a FIXED last-60-minutes window at 1-minute
+    // resolution, independent of the selected dashboard range. Decoupled from
+    // `history` (which is now downsampled by span) so the strip always reflects
+    // the last hour minute-by-minute, as before.
+    const uptime = await buildUptimeStrip(vps._id);
+
+    res.json({ vps, history, latest, uptime, granularity: resolved.granularityLabel });
   } catch (error) {
     if (error instanceof TimeRangeError) {
       return res.status(400).json({ error: error.message });

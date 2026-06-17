@@ -1,10 +1,10 @@
 import { Subscription } from '../models/Subscription';
 import { getPlanConfig } from '../config/pricing';
 
-// Supported relative range presets. Extended to 90d so higher plans can select
-// long windows; presets beyond a tenant's retention are gated client-side using
-// the limits from /dashboard/capabilities.
-const RELATIVE_RANGES = ['30m', '1h', '3h', '6h', '12h', '24h', '3d', '7d', '14d', '30d', '90d'] as const;
+// Supported relative range presets. Capped at 7d — longer windows (up to the
+// plan's full retention) are selected via an absolute start/end ("custom")
+// range, which resolveTimeRange clamps to the tenant's retention.
+const RELATIVE_RANGES = ['30m', '1h', '3h', '6h', '12h', '24h', '3d', '7d'] as const;
 export type RelativeRange = typeof RELATIVE_RANGES[number];
 
 // Service types surfaced to the dashboard. Retention is now unified and
@@ -38,9 +38,6 @@ const RELATIVE_RANGE_MS: Record<RelativeRange, number> = {
   '24h': 24 * 60 * 60 * 1000,
   '3d': 3 * 24 * 60 * 60 * 1000,
   '7d': 7 * 24 * 60 * 60 * 1000,
-  '14d': 14 * 24 * 60 * 60 * 1000,
-  '30d': 30 * 24 * 60 * 60 * 1000,
-  '90d': 90 * 24 * 60 * 60 * 1000,
 };
 
 function isRelativeRange(value: string): value is RelativeRange {
