@@ -17,6 +17,7 @@ import { ingestWebMetrics } from '../controllers/web/webIngest';
 import { deleteWebsite, listWebsites, registerWebsite, updateWebsite } from '../controllers/web/main';
 import { getWebStats } from '../controllers/web/webStats';
 import { deleteMonitor, getMonitorStats, listMonitors, registerMonitor, updateMonitor } from '../controllers/monitor';
+import { listBoards, createBoard, getBoardById, updateBoard, deleteBoard, getBoardSummary } from '../controllers/monitorBoard';
 import { getRandomStatus } from '../controllers/demo';
 import { createServer } from 'http';
 import { initSocketServer } from '../services/socket';
@@ -299,6 +300,14 @@ apiRouter.get('/uptime/list', listMonitors);
 apiRouter.put('/uptime/:id', updateMonitor);
 apiRouter.delete('/uptime/:id', deleteMonitor);
 apiRouter.get('/uptime/:id/stats', getMonitorStats);
+
+// --- Status Boards (centralized, shareable uptime dashboards) ---
+apiRouter.get('/monitor-board', listBoards);
+apiRouter.post('/monitor-board', createBoard);
+apiRouter.get('/monitor-board/:id', getBoardById);
+apiRouter.put('/monitor-board/:id', updateBoard);
+apiRouter.delete('/monitor-board/:id', deleteBoard);
+apiRouter.get('/monitor-board/:id/summary', getBoardSummary);
 
 // --- APM (Dashboard) ---
 apiRouter.post('/apm/register', requireServiceQuota('ApmService', 'APM Component'), registerService);
@@ -593,6 +602,11 @@ publicShareRouter.get('/:token/rum/:id/trace/:traceId', resolveShareContext, enf
 
 // Uptime
 publicShareRouter.get('/:token/uptime/:id/stats', resolveShareContext, enforceShareScope('uptime'), applyShareTimeRange, cachePublicShare(), getMonitorStats);
+
+// Status Boards (centralized uptime dashboard / public status page).
+// The board's monitor target URLs are stripped from these payloads (see getBoardSummary).
+publicShareRouter.get('/:token/monitor-board/:id', resolveShareContext, enforceShareScope('monitorboard'), cachePublicShare(), getBoardById);
+publicShareRouter.get('/:token/monitor-board/:id/summary', resolveShareContext, enforceShareScope('monitorboard'), applyShareTimeRange, cachePublicShare(), getBoardSummary);
 
 // Database
 publicShareRouter.get('/:token/database/:id/stats', resolveShareContext, enforceShareScope('database'), applyShareTimeRange, cachePublicShare(), getDatabaseStats);

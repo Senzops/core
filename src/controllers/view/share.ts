@@ -20,6 +20,7 @@ import { FirebaseService } from '../../models/Firebase';
 import { TaskService } from '../../models/Task';
 import { Website } from '../../models/Web';
 import { Vps } from '../../models/Vps';
+import { MonitorBoard } from '../../models/MonitorBoard';
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
@@ -35,6 +36,7 @@ const SCOPE_MODELS: Record<ShareScopeType, { model: mongoose.Model<any>; nameFie
   web: { model: Website, nameField: 'name' },
   vps: { model: Vps, nameField: 'name' },
   savedview: { model: SavedView, nameField: 'name' },
+  monitorboard: { model: MonitorBoard, nameField: 'name' },
 };
 
 // Maps a share scope to the organization permission resource it falls under, so
@@ -50,6 +52,7 @@ const SCOPE_ORG_RESOURCE: Partial<Record<ShareScopeType, OrgResource>> = {
   web: 'web',
   vps: 'servers',
   savedview: 'views',
+  monitorboard: 'monitors',
 };
 
 const DEFAULT_EXPIRY_DAYS = 30;

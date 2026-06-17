@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { Monitor, MonitorRun, MonitorIncident } from '../models/Monitor';
+import { MonitorBoard } from '../models/MonitorBoard';
 import { DashboardShare } from '../models/DashboardShare';
 import { Subscription } from '../models/Subscription';
 import { getPlanConfig } from '../config/pricing';
@@ -125,6 +126,8 @@ export const deleteMonitor = async (req: Request, res: Response, next: NextFunct
       MonitorRun.deleteMany({ monitorId: id }),
       MonitorIncident.deleteMany({ monitorId: id }),
       DashboardShare.deleteMany({ scopeType: 'uptime', scopeId: id, ownerId }),
+      // Remove this monitor's card from any Status Board it appears on.
+      MonitorBoard.updateMany({ ownerId, 'layout.i': id }, { $pull: { layout: { i: id } } }),
     ]);
 
     res.json({ message: 'Monitor deleted' });

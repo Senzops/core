@@ -28,6 +28,7 @@ export const SHARE_SCOPE_TYPES = [
   'web',
   'vps',
   'savedview',
+  'monitorboard',
 ] as const;
 
 export type ShareScopeType = (typeof SHARE_SCOPE_TYPES)[number];
