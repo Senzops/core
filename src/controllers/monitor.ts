@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { Monitor, MonitorRun, MonitorIncident } from '../models/Monitor';
+import { DashboardShare } from '../models/DashboardShare';
 import { Subscription } from '../models/Subscription';
 import { getPlanConfig } from '../config/pricing';
 import { RegisterMonitorSchema, UpdateMonitorSchema, PREMIUM_INTERVALS } from '../utils/validation';
@@ -123,6 +124,7 @@ export const deleteMonitor = async (req: Request, res: Response, next: NextFunct
     await Promise.all([
       MonitorRun.deleteMany({ monitorId: id }),
       MonitorIncident.deleteMany({ monitorId: id }),
+      DashboardShare.deleteMany({ scopeType: 'uptime', scopeId: id, ownerId }),
     ]);
 
     res.json({ message: 'Monitor deleted' });

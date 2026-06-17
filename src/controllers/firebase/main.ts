@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import admin from 'firebase-admin';
 import { FirebaseService, FirebaseMetric, FirebaseAuthSnapshot } from '../../models/Firebase';
+import { DashboardShare } from '../../models/DashboardShare';
 import { encrypt } from '../../utils/crypto';
 import { removeApp as invalidateWorkerPool } from '../../worker/firebase';
 import { z } from 'zod';
@@ -178,7 +179,8 @@ export const deleteFirebase = async (req: Request, res: Response, next: NextFunc
 
     await Promise.all([
       FirebaseMetric.deleteMany({ serviceId: id }),
-      FirebaseAuthSnapshot.deleteOne({ serviceId: id })
+      FirebaseAuthSnapshot.deleteOne({ serviceId: id }),
+      DashboardShare.deleteMany({ scopeType: 'firebase', scopeId: id, ownerId })
     ]);
 
     res.json({ message: 'Firebase service and all metric history deleted' });

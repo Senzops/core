@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { Website, WebEvent, WebMetric } from '../../models/Web';
+import { DashboardShare } from '../../models/DashboardShare';
 import { User } from '../../models/User';
 import { RegisterWebsiteSchema, UpdateWebsiteSchema } from '../../utils/validation';
 
@@ -75,6 +76,7 @@ export const deleteWebsite = async (req: Request, res: Response, next: NextFunct
     await Promise.all([
       WebEvent.deleteMany({ webId: id }),
       WebMetric.deleteMany({ webId: id }),
+      DashboardShare.deleteMany({ scopeType: 'web', scopeId: id, ownerId }),
     ]);
 
     res.json({ message: 'Website and all associated analytics data successfully purged.' });

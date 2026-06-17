@@ -4,6 +4,7 @@ import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
 import { RuntimeMetric } from '../../models/RuntimeMetric';
 import { ErrorGroup, ErrorEvent } from '../../models/Error';
 import { LogEvent } from '../../models/Log';
+import { DashboardShare } from '../../models/DashboardShare';
 import { RegisterApmSchema, UpdateApmSchema } from '../../utils/validation';
 
 // --- Register New Service ---
@@ -80,6 +81,7 @@ export const deleteService = async (req: Request, res: Response, next: NextFunct
       ErrorGroup.deleteMany({ serviceId: id, serviceModel: 'ApmService' }),
       ErrorEvent.deleteMany({ serviceId: id, serviceModel: 'ApmService' }),
       LogEvent.deleteMany({ serviceId: id, serviceModel: 'ApmService' }),
+      DashboardShare.deleteMany({ scopeType: 'apm', scopeId: id, ownerId }),
     ]);
 
     res.json({ message: 'Service and all associated telemetry successfully purged.' });

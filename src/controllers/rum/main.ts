@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { RumService, RumTrace, RumMetric } from '../../models/Rum';
 import { ErrorGroup, ErrorEvent } from '../../models/Error';
+import { DashboardShare } from '../../models/DashboardShare';
 
 // --- Register New RUM Service ---
 export const registerService = async (req: Request, res: Response, next: NextFunction) => {
@@ -114,7 +115,13 @@ export const deleteService = async (req: Request, res: Response, next: NextFunct
     const errorGroupDelete = ErrorGroup.deleteMany({ serviceId: id, serviceModel: 'RumService' });
     const errorEventDelete = ErrorEvent.deleteMany({ serviceId: id, serviceModel: 'RumService' });
 
-    await Promise.all([traceDelete, metricDelete, errorGroupDelete, errorEventDelete]);
+    await Promise.all([
+      traceDelete,
+      metricDelete,
+      errorGroupDelete,
+      errorEventDelete,
+      DashboardShare.deleteMany({ scopeType: 'rum', scopeId: id, ownerId }),
+    ]);
 
     res.json({ message: 'RUM Service and all associated telemetry successfully purged.' });
   } catch (error) {

@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { SavedView, ViewWidget } from '../../models/View';
+import { DashboardShare } from '../../models/DashboardShare';
 
 // ============================================================================
 // 1. SAVED VIEWS (CANVAS)
@@ -67,8 +68,11 @@ export const deleteView = async (req: Request, res: Response, next: NextFunction
     const view = await SavedView.findOneAndDelete({ _id: id, ownerId });
     if (!view) return res.status(404).json({ error: "View not found" });
 
-    // CASCADE: Delete all widgets mapped to this view
-    await ViewWidget.deleteMany({ viewId: id });
+    // CASCADE: Delete all widgets mapped to this view + any public share links
+    await Promise.all([
+      ViewWidget.deleteMany({ viewId: id }),
+      DashboardShare.deleteMany({ scopeType: 'savedview', scopeId: id, ownerId }),
+    ]);
 
     res.json({ success: true, message: "View and all associated widgets deleted." });
   } catch (error) { next(error); }

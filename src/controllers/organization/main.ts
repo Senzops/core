@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
+import { DashboardShare } from '../../models/DashboardShare';
 import mongoose from 'mongoose';
 import { z } from 'zod';
 import { Resend } from 'resend';
@@ -219,6 +220,8 @@ export const deleteOrganization = async (req: Request, res: Response) => {
     await OrganizationMember.deleteMany({ orgId });
     await OrganizationInvitation.deleteMany({ orgId });
     await Subscription.deleteOne({ ownerId: org.ownerId });
+    // Tear down any public dashboard share links owned by this workspace.
+    await DashboardShare.deleteMany({ ownerId: org.ownerId });
 
     res.json({ message: 'Organization deleted successfully.' });
   } catch (error: any) {

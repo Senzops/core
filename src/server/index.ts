@@ -91,6 +91,16 @@ import {
   deleteWidget
 } from '../controllers/view/main';
 import { executeLivePreview, getWidgetData } from '../controllers/view/engine';
+import {
+  createShare,
+  listShares,
+  updateShare,
+  revokeShare,
+  getSharedMeta,
+  getSharedView,
+  getSharedWidgetData,
+} from '../controllers/view/share';
+import { resolveShareContext, enforceShareScope, applyShareTimeRange, cachePublicShare } from '../middlewares/shareAuth';
 import { authenticateOtlp } from '../middlewares/otlpAuth';
 import { ingestOtlpLogs, ingestOtlpTraces } from '../controllers/otlp/gateway';
 import { requireIngestionQuota } from '../middlewares/ingestionLimiter';
@@ -101,6 +111,7 @@ import { sendOtp, verifyOtp, revokeSessions } from '../controllers/auth/otp';
 import { getDynamicSchema } from '../controllers/schema';
 import { getDashboardCapabilities } from '../controllers/dashboard/capabilities';
 import { shutdownQueues } from '../lib/queue';
+import { shutdownCache } from '../lib/cache';
 import { resolveWorkspace } from '../middlewares/orgAuth';
 import {
   createOrganization,
@@ -409,6 +420,13 @@ apiRouter.delete('/views/widgets/:id', deleteWidget);
 apiRouter.get('/views/widgets/:id/data', getWidgetData); // Dashboard execution
 apiRouter.post('/views/execute', executeLivePreview);    // Live Preview execution
 
+// --- DASHBOARD SHARING (public view-only links; management side) ---
+// Creating a public link is a Pro+ feature. Viewing is public (see publicShareRouter).
+apiRouter.post('/shares', requirePlan('pro'), createShare);
+apiRouter.get('/shares', listShares);
+apiRouter.patch('/shares/:id', updateShare);
+apiRouter.delete('/shares/:id', revokeShare);
+
 // OTLP
 const otlpRouter = express.Router();
 
@@ -555,6 +573,62 @@ app.use('/api', dataImportRouter);
 // Public Organization Routes (No Auth Required)
 app.get('/api/org/invitations/details', getInvitationDetails);
 
+// --- PUBLIC DASHBOARD SHARES (No Auth Required) ---
+// Unauthenticated, view-only access to a single dashboard via a secret token.
+// Mounted BEFORE apiRouter so it bypasses the Firebase JWT middleware. Every
+// route resolves the token into a trusted ownerId (resolveShareContext) and pins
+// the request to the exact shared resource (enforceShareScope). Only read
+// endpoints are exposed here — this is an explicit allowlist, never a blocklist.
+const publicShareRouter = express.Router();
+
+const shareViewLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 120, // per IP across all public share reads
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+publicShareRouter.use(shareViewLimiter);
+
+// Metadata (tells the public page which dashboard to render)
+publicShareRouter.get('/:token', resolveShareContext, getSharedMeta);
+
+// APM
+publicShareRouter.get('/:token/apm/:id/stats', resolveShareContext, enforceShareScope('apm'), applyShareTimeRange, cachePublicShare(), getApmStats);
+publicShareRouter.get('/:token/apm/:id/runtime', resolveShareContext, enforceShareScope('apm'), applyShareTimeRange, cachePublicShare(), getRuntimeStats);
+publicShareRouter.get('/:token/apm/:id/invocations', resolveShareContext, enforceShareScope('apm'), applyShareTimeRange, cachePublicShare(), getInvocations);
+publicShareRouter.get('/:token/apm/:id/trace/:traceId', resolveShareContext, enforceShareScope('apm'), cachePublicShare(), getTraceDetail);
+publicShareRouter.get('/:token/apm/:id/trace/:traceId/errors', resolveShareContext, enforceShareScope('apm'), cachePublicShare(), getTraceErrors);
+
+// RUM
+publicShareRouter.get('/:token/rum/:id/dashboard', resolveShareContext, enforceShareScope('rum'), applyShareTimeRange, cachePublicShare(), getRumDashboard);
+publicShareRouter.get('/:token/rum/:id/trace/:traceId', resolveShareContext, enforceShareScope('rum'), cachePublicShare(), getRumTraceDetail);
+
+// Uptime
+publicShareRouter.get('/:token/uptime/:id/stats', resolveShareContext, enforceShareScope('uptime'), applyShareTimeRange, cachePublicShare(), getMonitorStats);
+
+// Database
+publicShareRouter.get('/:token/database/:id/stats', resolveShareContext, enforceShareScope('database'), applyShareTimeRange, cachePublicShare(), getDatabaseStats);
+
+// Firebase
+publicShareRouter.get('/:token/firebase/:id/stats', resolveShareContext, enforceShareScope('firebase'), applyShareTimeRange, cachePublicShare(), getFirebaseStats);
+
+// Background Tasks
+publicShareRouter.get('/:token/task/:id/dashboard', resolveShareContext, enforceShareScope('task'), applyShareTimeRange, cachePublicShare(), getTaskServiceDashboard);
+publicShareRouter.get('/:token/task/:id/entity/:taskName', resolveShareContext, enforceShareScope('task'), applyShareTimeRange, cachePublicShare(), getTaskEntityDetail);
+publicShareRouter.get('/:token/task/:id/run/:runId', resolveShareContext, enforceShareScope('task'), cachePublicShare(), getTaskRunDetail);
+
+// Web Analytics
+publicShareRouter.get('/:token/web/:id/stats', resolveShareContext, enforceShareScope('web'), applyShareTimeRange, cachePublicShare(), getWebStats);
+
+// Servers (VPS)
+publicShareRouter.get('/:token/vps/:id/stats', resolveShareContext, enforceShareScope('vps'), applyShareTimeRange, cachePublicShare(), getVpsStats);
+
+// Saved Views (custom dashboards) — widget MQL is stripped from these payloads
+publicShareRouter.get('/:token/views', resolveShareContext, enforceShareScope('savedview'), getSharedView);
+publicShareRouter.get('/:token/views/widgets/:widgetId/data', resolveShareContext, enforceShareScope('savedview'), applyShareTimeRange, cachePublicShare(), getSharedWidgetData);
+
+app.use('/api/public/shares', publicShareRouter);
+
 // Mount Dashboard API SECOND.
 // This catches everything else starting with /api (like /api/vps/...)
 // and applies the authenticateUser middleware.
@@ -588,6 +662,7 @@ mongoose.connect(MONGO_URI)
 process.on('SIGTERM', async () => {
   logger.info('[Server] SIGTERM received, shutting down...');
   await shutdownQueues();
+  await shutdownCache();
   httpServer.close();
   mongoose.connection.close();
 });

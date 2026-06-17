@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import mongoose from 'mongoose';
 import { Request, Response, NextFunction } from 'express';
 import { Vps, VpsRun } from '../models/Vps';
+import { DashboardShare } from '../models/DashboardShare';
 import { RegisterVpsSchema, UpdateVpsSchema, TelemetrySchema } from '../utils/validation';
 import { resolveTimeRange, getEffectiveRetention, fillTimeGapsWithStatus, TimeRangeError, type ResolvedTimeRange } from '../utils/timeRange';
 import { logger } from '../utils/logger';
@@ -55,7 +56,10 @@ export const deleteVps = async (req: Request, res: Response, next: NextFunction)
     if (!result) return res.status(404).json({ error: 'VPS not found' });
 
     // Cascade delete runs (Optional, or let TTL handle it)
-    await VpsRun.deleteMany({ vpsId: id });
+    await Promise.all([
+      VpsRun.deleteMany({ vpsId: id }),
+      DashboardShare.deleteMany({ scopeType: 'vps', scopeId: id, ownerId }),
+    ]);
 
     res.json({ message: 'VPS Deleted' });
   } catch (error) {

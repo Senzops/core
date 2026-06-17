@@ -4,6 +4,7 @@ import Redis from 'ioredis';
 import pg from 'pg';
 import mysql from 'mysql2/promise';
 import { DatabaseService, DbMetric, DbCollectionStat } from '../../models/Database';
+import { DashboardShare } from '../../models/DashboardShare';
 import { encrypt } from '../../utils/crypto';
 import { UpdateDbSchema } from '../../utils/validation';
 import { z } from 'zod';
@@ -189,6 +190,7 @@ export const deleteDatabase = async (req: Request, res: Response, next: NextFunc
 
     await DbMetric.deleteMany({ dbId: id });
     await DbCollectionStat.deleteOne({ dbId: id });
+    await DashboardShare.deleteMany({ scopeType: 'database', scopeId: id, ownerId });
 
     res.json({ message: 'Database and all metric history deleted' });
   } catch (error) {

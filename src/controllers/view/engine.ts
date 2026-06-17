@@ -75,7 +75,7 @@ export const sanitizeMql = (userQuery: any) => {
 // ============================================================================
 // CORE PIPELINE BUILDER (Optimized for Native Pipelines & Service Joins)
 // ============================================================================
-const buildAndExecutePipeline = async (
+export const buildAndExecutePipeline = async (
   ownerId: string,
   target: string,
   rangeParams: { range?: string; start?: string; end?: string },

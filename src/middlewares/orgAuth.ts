@@ -75,7 +75,7 @@ export const resolveWorkspace = async (req: Request, res: Response, next: NextFu
  * Returns effective permissions for a member by merging role defaults with explicit overrides.
  * Explicit permissions fully replace the role default for that resource.
  */
-function getEffectivePermissions(role: OrgRole, overrides: OrgPermissions): OrgPermissions {
+export function getEffectivePermissions(role: OrgRole, overrides: OrgPermissions): OrgPermissions {
   const defaults = ROLE_DEFAULT_PERMISSIONS[role];
   const effective: OrgPermissions = { ...defaults };
 

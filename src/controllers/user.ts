@@ -76,7 +76,7 @@ export const deleteAccount = async (req: Request, res: Response) => {
     // This stops all agents/SDKs from authenticating instantly because their API keys are purged.
     const configurationModels = [
       'ApmService', 'RumService', 'TaskService', 'Vps', 'Website', 'Monitor',
-      'DatabaseService', 'FirebaseService', 'SavedView', 'ViewWidget', 'LogApiKey', 'McpApiKey', 'McpUsage',
+      'DatabaseService', 'FirebaseService', 'SavedView', 'ViewWidget', 'DashboardShare', 'LogApiKey', 'McpApiKey', 'McpUsage',
       'AlertDestination', 'AlertPolicy', 'AlertCondition', 'AlertIncident', 'AlertSilence',
       'MonitorIncident', 'ErrorGroup', 'Transaction',
     ];

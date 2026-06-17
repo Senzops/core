@@ -4,6 +4,7 @@ import mongoose from 'mongoose';
 import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
 import { ErrorGroup, ErrorEvent } from '../../models/Error';
 import { LogEvent } from '../../models/Log';
+import { DashboardShare } from '../../models/DashboardShare';
 
 
 export const registerTaskService = async (req: Request, res: Response, next: NextFunction) => {
@@ -68,6 +69,7 @@ export const deleteTaskService = async (req: Request, res: Response, next: NextF
       ErrorGroup.deleteMany({ serviceId: id, serviceModel: 'TaskService' }),
       ErrorEvent.deleteMany({ serviceId: id, serviceModel: 'TaskService' }),
       LogEvent.deleteMany({ serviceId: id, serviceModel: 'TaskService' }),
+      DashboardShare.deleteMany({ scopeType: 'task', scopeId: id, ownerId }),
     ]);
 
     res.json({ message: 'Task service and all associated telemetry successfully purged.' });
