@@ -9,6 +9,12 @@ import { resolveTimeRange, getEffectiveRetention, TimeRangeError } from '../util
 const MAX_BOARDS_PER_WORKSPACE = 50;
 const MAX_ITEMS_PER_BOARD = 60;
 const STRIPE_BUCKETS = 60; // Availability stripe segments across the selected range.
+// Floor on the stripe window. Below this, the 60-bucket stripe is mostly empty
+// for typical check intervals — unprofessional on a (public) status page. The
+// UI already enforces this; we re-enforce here so the public share path and any
+// crafted `?range=30m` query still render a clean stripe. Always ≤ retention
+// (minimum plan retention is multiple days), so widening never exceeds it.
+const MIN_STRIPE_SPAN_MS = 24 * 60 * 60 * 1000;
 
 // react-grid-layout node ({ i, x, y, w, h }) where `i` is a Monitor _id.
 const LayoutItemSchema = z.object({
@@ -202,8 +208,13 @@ export const getBoardSummary = async (req: Request, res: Response, next: NextFun
       maxRetention
     );
 
-    const startMs = resolved.startDate.getTime();
+    // Enforce the minimum stripe window: if the resolved span is shorter than
+    // MIN_STRIPE_SPAN_MS (e.g. a sub-day range from the public path), widen the
+    // start so the stripe stays dense. Data older than retention is already
+    // TTL-pruned, so reaching slightly further back is harmless.
     const endMs = resolved.endDate.getTime();
+    const startMs = Math.min(resolved.startDate.getTime(), endMs - MIN_STRIPE_SPAN_MS);
+    const rangeStart = new Date(startMs);
     const bucketMs = Math.max(1000, Math.floor((endMs - startMs) / STRIPE_BUCKETS));
 
     const [monitors, bucketAgg, openIncidents] = await Promise.all([
@@ -212,7 +223,7 @@ export const getBoardSummary = async (req: Request, res: Response, next: NextFun
 
       // One pass: per monitor, per time bucket, roll up status counts + latency.
       MonitorRun.aggregate([
-        { $match: { monitorId: { $in: objectIds }, createdAt: { $gte: resolved.startDate, $lte: resolved.endDate } } },
+        { $match: { monitorId: { $in: objectIds }, createdAt: { $gte: rangeStart, $lte: resolved.endDate } } },
         {
           $group: {
             _id: {
@@ -220,7 +231,7 @@ export const getBoardSummary = async (req: Request, res: Response, next: NextFun
               b: {
                 $min: [
                   STRIPE_BUCKETS - 1,
-                  { $floor: { $divide: [{ $subtract: ['$createdAt', resolved.startDate] }, bucketMs] } },
+                  { $floor: { $divide: [{ $subtract: ['$createdAt', rangeStart] }, bucketMs] } },
                 ],
               },
             },
@@ -325,7 +336,7 @@ export const getBoardSummary = async (req: Request, res: Response, next: NextFun
     res.json({
       monitors: result,
       bucketMs,
-      rangeStart: resolved.startDate,
+      rangeStart,
       rangeEnd: resolved.endDate,
     });
   } catch (error) {
