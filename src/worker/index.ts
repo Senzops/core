@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 import { startUptimeWorker } from './uptime';
 import { logger } from '../utils/logger';
 import { startDatabaseWorker } from './database';
+import { startQueueWorker } from './queue';
 import { startWatchdogWorker } from './watchdog';
 import { startDemoWorker } from './demo';
 import { startAlertWatchdog } from './alertWatchdog';
@@ -40,6 +41,7 @@ const initWorker = async () => {
     // 2. Start Logic
     startUptimeWorker();
     startDatabaseWorker();
+    startQueueWorker();
     startWatchdogWorker();
     startDemoWorker(); // Demo worker
     startBillingCron();

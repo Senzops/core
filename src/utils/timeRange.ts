@@ -11,7 +11,7 @@ export type RelativeRange = typeof RELATIVE_RANGES[number];
 // plan-based (identical across all of these); this list only fixes the key set
 // returned by getAllRetentionLimits.
 const SERVICE_TYPES = [
-  'apm', 'rum', 'logs', 'task', 'web', 'database', 'firebase', 'server', 'errors', 'monitor', 'views',
+  'apm', 'rum', 'logs', 'task', 'web', 'database', 'firebase', 'server', 'errors', 'monitor', 'views', 'queue',
 ] as const;
 
 export interface ResolvedTimeRange {

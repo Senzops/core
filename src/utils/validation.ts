@@ -329,6 +329,27 @@ export const UpdateDbSchema = z.object({
   interval: z.number().min(1).max(60).optional(),
 }).refine(data => data.name || data.type || data.uri || data.interval !== undefined, { message: 'At least one field must be provided' });
 
+// --- Queue Monitoring Validation ---
+export const RegisterQueueSchema = z.object({
+  name: z.string().min(1).max(50),
+  system: z.enum(['bullmq']).default('bullmq'),
+  uri: z.string().min(1), // Redis connection string; redis:// or rediss:// (TLS)
+  prefix: z.string().min(1).max(100).default('bull'),
+  queueFilter: z.array(z.string().min(1).max(200)).max(500).default([]),
+  interval: z.number().min(1).max(60).default(1)
+});
+
+export const UpdateQueueSchema = z.object({
+  name: z.string().min(1).max(50).optional(),
+  uri: z.string().min(1).optional(),
+  prefix: z.string().min(1).max(100).optional(),
+  queueFilter: z.array(z.string().min(1).max(200)).max(500).optional(),
+  interval: z.number().min(1).max(60).optional(),
+}).refine(
+  data => data.name || data.uri || data.prefix || data.queueFilter !== undefined || data.interval !== undefined,
+  { message: 'At least one field must be provided' }
+);
+
 // --- APM Error Ingest Validation ---
 export const ApmErrorIngestSchema = z.object({
   namespace: z.string().default('default'),
