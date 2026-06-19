@@ -50,6 +50,7 @@ export const requireIngestionQuota = async (req: Request, res: Response, next: N
             mongoose.models.ApmService?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
             mongoose.models.RumService?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
             mongoose.models.TaskService?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
+            mongoose.models.QueueSource?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
             mongoose.models.Vps?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
             mongoose.models.LogApiKey?.findOne({
               $or: [{ keyHash: logKeyHash }, { key: possibleApiKey }],

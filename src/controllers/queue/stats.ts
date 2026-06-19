@@ -13,9 +13,19 @@ export const getQueueStats = async (req: Request, res: Response, next: NextFunct
     const ownerId = (req as any).ownerId;
     const { range, start, end, queue } = req.query;
 
-    const source = await QueueSource.findOne({ _id: id, ownerId })
-      .select('-encryptedConfig -leasedBy -leaseExpiresAt');
+    // apiKey is never needed by the stats consumer; exclude it everywhere.
+    const source: any = await QueueSource.findOne({ _id: id, ownerId })
+      .select('-encryptedConfig -leasedBy -leaseExpiresAt -apiKey')
+      .lean();
     if (!source) return res.status(404).json({ error: 'Queue source not found' });
+
+    // On the PUBLIC share path, also strip non-secret-but-sensitive config so a
+    // share link never exposes broker hostnames, AWS access-key-ids, usernames,
+    // or the management deep-link.
+    if ((req as any).share) {
+      delete source.connectionMeta;
+      delete source.managementUrl;
+    }
 
     const maxRetention = await getEffectiveRetention('queue', ownerId);
     const resolved = resolveTimeRange(

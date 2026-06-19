@@ -133,6 +133,15 @@ export const buildAndExecutePipeline = async (
         preserveNullAndEmptyArrays: true // Prevents dropping events if the service was deleted
       }
     });
+    // Strip secret/credential fields from the joined service so a user-authored
+    // pipeline can never project them (and leak them through a shared view).
+    pipeline.push({
+      $unset: [
+        'service.apiKey', 'service.encryptedConfig', 'service.encryptedUri',
+        'service.encryptedServiceAccount', 'service.connectionMeta',
+        'service.leasedBy', 'service.leaseExpiresAt'
+      ]
+    });
   }
 
   // 5. User Pipeline/Query Execution

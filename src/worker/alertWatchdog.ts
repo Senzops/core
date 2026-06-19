@@ -106,6 +106,14 @@ const buildPipeline = async (ownerId: string, target: string, query: any, window
       }
     });
     pipeline.push({ $unwind: { path: '$service', preserveNullAndEmptyArrays: true } });
+    // Never let a user-authored query match on joined secret/credential fields.
+    pipeline.push({
+      $unset: [
+        'service.apiKey', 'service.encryptedConfig', 'service.encryptedUri',
+        'service.encryptedServiceAccount', 'service.connectionMeta',
+        'service.leasedBy', 'service.leaseExpiresAt'
+      ]
+    });
   }
 
   const sanitizedQuery = sanitizeMql(query);
