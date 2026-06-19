@@ -29,7 +29,7 @@ import { getInvocations, getTraceDetail } from '../controllers/apm/traces';
 import { registerDatabase, listDatabases, deleteDatabase, updateDatabase } from '../controllers/database/main';
 import { getDatabaseStats } from '../controllers/database/stats';
 import { registerQueueSource, listQueueSources, updateQueueSource, deleteQueueSource } from '../controllers/queue/main';
-import { getQueueStats } from '../controllers/queue/stats';
+import { getQueueStats, getQueueEntityDetail } from '../controllers/queue/stats';
 import { getQueueExecutions, getDiscoveredQueues } from '../controllers/queue/correlation';
 import { registerFirebase, listFirebaseServices, updateFirebase, deleteFirebase } from '../controllers/firebase/main';
 import { getFirebaseStats } from '../controllers/firebase/stats';
@@ -352,6 +352,7 @@ apiRouter.get('/queue/discovered', getDiscoveredQueues);
 apiRouter.put('/queue/:id', updateQueueSource);
 apiRouter.delete('/queue/:id', deleteQueueSource);
 apiRouter.get('/queue/:id/stats', getQueueStats);
+apiRouter.get('/queue/:id/entity/:queueName', getQueueEntityDetail);
 apiRouter.get('/queue/:id/executions', getQueueExecutions);
 
 // --- Firebase Monitoring ---
