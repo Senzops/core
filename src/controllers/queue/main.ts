@@ -72,11 +72,17 @@ export const registerQueueSource = async (req: Request, res: Response, next: Nex
     }
     const conn = validateConnection(system, connection);
 
-    let probe: { version?: string; discoveredQueues: number };
+    let probe: { version?: string; discoveredQueues: number; effectivePrefix?: string };
     try {
       probe = await getAdapter(system).testConnection(conn);
     } catch (err: any) {
       return res.status(400).json({ error: 'Queue Source Connection Failed', details: err.message });
+    }
+
+    // Self-correct the BullMQ prefix when the configured one matched nothing but
+    // the adapter detected the real one (e.g. cluster hash-tag `{bull}`).
+    if (system === 'bullmq' && probe.effectivePrefix && probe.effectivePrefix !== conn.prefix) {
+      conn.prefix = probe.effectivePrefix;
     }
 
     const newSource = await QueueSource.create({
@@ -152,6 +158,9 @@ export const updateQueueSource = async (req: Request, res: Response, next: NextF
 
       try {
         const probe = await getAdapter(existing.system).testConnection(conn);
+        if (existing.system === 'bullmq' && probe.effectivePrefix && probe.effectivePrefix !== conn.prefix) {
+          conn.prefix = probe.effectivePrefix;
+        }
         updateFields.version = probe.version;
         updateFields.discoveredQueues = probe.discoveredQueues;
       } catch (err: any) {

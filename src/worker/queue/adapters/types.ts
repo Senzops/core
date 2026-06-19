@@ -32,12 +32,17 @@ export interface QueueSample {
   consumerCount: number;
   isPaused: boolean;
   // Throughput (jobs/sec). Adapters provide EITHER a direct rate the broker
-  // exposes (completedRate/failedRate), OR a cumulative processed counter
-  // (processedTotal) from which the poller derives the rate via deltas. Leave
-  // all undefined when the broker offers no reliable throughput signal.
+  // exposes (completedRate/failedRate), OR a cumulative *processed* counter
+  // (processedTotal), OR a cumulative *produced/incoming* counter
+  // (incomingTotal). The poller derives rates from whichever is present:
+  //   completedRate          → used directly
+  //   processedTotal delta   → completedRate
+  //   incomingTotal delta    → completedRate ≈ incomingRate − backlogGrowth
+  // Leave all undefined when the broker offers no reliable throughput signal.
   completedRate?: number;
   failedRate?: number;
   processedTotal?: number;
+  incomingTotal?: number;
 }
 
 export interface SampleResult {
@@ -53,6 +58,9 @@ export interface TestResult {
   version?: string;
   discoveredQueues: number;
   truncated: boolean;
+  /** Adapter-resolved connection value to persist (e.g. the auto-detected
+   *  BullMQ prefix when the configured one matched nothing). */
+  effectivePrefix?: string;
 }
 
 export interface SampleOpts {

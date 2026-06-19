@@ -35,13 +35,20 @@ export const computeRates = (
   let completedRate = sample.completedRate ?? 0;
   const failedRate = sample.failedRate ?? 0;
 
-  if (
-    sample.completedRate === undefined &&
-    sample.processedTotal !== undefined &&
-    prev?.processedTotal !== undefined &&
-    elapsedSec > 0
-  ) {
-    completedRate = Math.max(0, (sample.processedTotal - prev.processedTotal) / elapsedSec);
+  if (sample.completedRate === undefined && elapsedSec > 0) {
+    if (sample.processedTotal !== undefined && prev?.processedTotal !== undefined) {
+      // Direct cumulative processed counter (e.g. Kafka committed offsets).
+      completedRate = Math.max(0, (sample.processedTotal - prev.processedTotal) / elapsedSec);
+    } else if (
+      sample.incomingTotal !== undefined &&
+      prev?.incomingTotal !== undefined &&
+      sample.incomingTotal >= prev.incomingTotal // guard against counter resets
+    ) {
+      // Only a cumulative *produced* counter is available (BullMQ id counter):
+      // over the interval, processed = produced − backlog growth.
+      const incomingRate = (sample.incomingTotal - prev.incomingTotal) / elapsedSec;
+      completedRate = Math.max(0, incomingRate - netRate);
+    }
   }
 
   return { netRate, etaToEmptyMs, completedRate, failedRate };
@@ -93,7 +100,8 @@ export const persistQueueSamples = async (source: any, samples: QueueSample[]): 
       isPaused: sample.isPaused,
       oldestWaitingAgeMs: sample.oldestWaitingAgeMs,
       netRate,
-      processedTotal: sample.processedTotal
+      processedTotal: sample.processedTotal,
+      incomingTotal: sample.incomingTotal
     });
   }
 
