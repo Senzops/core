@@ -23,6 +23,7 @@ export const SHARE_SCOPE_TYPES = [
   'rum',
   'uptime',
   'database',
+  'queue',
   'firebase',
   'task',
   'web',

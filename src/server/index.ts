@@ -634,6 +634,9 @@ publicShareRouter.get('/:token/monitor-board/:id/summary', resolveShareContext, 
 // Database
 publicShareRouter.get('/:token/database/:id/stats', resolveShareContext, enforceShareScope('database'), applyShareTimeRange, cachePublicShare(), getDatabaseStats);
 
+// Queue
+publicShareRouter.get('/:token/queue/:id/stats', resolveShareContext, enforceShareScope('queue'), applyShareTimeRange, cachePublicShare(), getQueueStats);
+
 // Firebase
 publicShareRouter.get('/:token/firebase/:id/stats', resolveShareContext, enforceShareScope('firebase'), applyShareTimeRange, cachePublicShare(), getFirebaseStats);
 

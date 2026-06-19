@@ -16,6 +16,7 @@ import { ApmService } from '../../models/Apm';
 import { RumService } from '../../models/Rum';
 import { Monitor } from '../../models/Monitor';
 import { DatabaseService } from '../../models/Database';
+import { QueueSource } from '../../models/Queue';
 import { FirebaseService } from '../../models/Firebase';
 import { TaskService } from '../../models/Task';
 import { Website } from '../../models/Web';
@@ -31,6 +32,7 @@ const SCOPE_MODELS: Record<ShareScopeType, { model: mongoose.Model<any>; nameFie
   rum: { model: RumService, nameField: 'name' },
   uptime: { model: Monitor, nameField: 'name' },
   database: { model: DatabaseService, nameField: 'name' },
+  queue: { model: QueueSource, nameField: 'name' },
   firebase: { model: FirebaseService, nameField: 'name' },
   task: { model: TaskService, nameField: 'name' },
   web: { model: Website, nameField: 'name' },
