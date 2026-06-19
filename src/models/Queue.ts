@@ -36,6 +36,13 @@ export interface IQueueSource extends Document {
   apiKey?: string;
   /** Non-secret connection fields surfaced to the UI for display/edit prefill. */
   connectionMeta: Record<string, any>;
+  /**
+   * Optional deep-link to the broker's own console / a runbook (e.g. the AWS SQS
+   * console, Bull Board, RabbitMQ management UI). Used for safe hand-off: Senzor
+   * observes dead letters and links the operator out to act in their own system
+   * of record — it never writes to the broker itself.
+   */
+  managementUrl?: string;
   /** Optional allowlist of queue/topic/group names. Empty = auto-discover all. */
   queueFilter: string[];
   /** Poll cadence in minutes. */
@@ -69,6 +76,7 @@ const QueueSourceSchema = new Schema<IQueueSource>({
   encryptedConfig: { type: String },
   apiKey: { type: String, unique: true, sparse: true, index: true },
   connectionMeta: { type: Schema.Types.Mixed, default: {} },
+  managementUrl: { type: String },
   queueFilter: { type: [String], default: [] },
   interval: { type: Number, default: 1, min: 1, max: 60 },
   status: { type: String, enum: ['online', 'offline', 'error'], default: 'offline' },

@@ -372,6 +372,7 @@ export const RegisterQueueSchema = z.object({
   // and needs no server-side connection.
   mode: z.enum(['agentless', 'collector']).default('agentless'),
   connection: z.record(z.any()).optional(),
+  managementUrl: z.union([z.string().url(), z.literal('')]).optional(),
   queueFilter: z.array(z.string().min(1).max(500)).max(1000).default([]),
   interval: z.number().min(1).max(60).default(1),
 });
@@ -409,10 +410,11 @@ export const QueueIngestSchema = z.object({
 export const UpdateQueueSchema = z.object({
   name: z.string().min(1).max(50).optional(),
   connection: z.record(z.any()).optional(),
+  managementUrl: z.union([z.string().url(), z.literal('')]).optional(),
   queueFilter: z.array(z.string().min(1).max(500)).max(1000).optional(),
   interval: z.number().min(1).max(60).optional(),
 }).refine(
-  data => data.name || data.connection || data.queueFilter !== undefined || data.interval !== undefined,
+  data => data.name || data.connection || data.managementUrl !== undefined || data.queueFilter !== undefined || data.interval !== undefined,
   { message: 'At least one field must be provided' }
 );
 

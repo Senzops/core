@@ -34,7 +34,7 @@ const validateConnection = (system: QueueSystem, raw: any) => {
 export const registerQueueSource = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ownerId = (req as any).ownerId;
-    const { name, system, mode, connection, queueFilter, interval } = RegisterQueueSchema.parse(req.body);
+    const { name, system, mode, connection, managementUrl, queueFilter, interval } = RegisterQueueSchema.parse(req.body);
 
     // --- Collector (push) mode: issue an ingest key, no server-side connection ---
     if (mode === 'collector') {
@@ -46,6 +46,7 @@ export const registerQueueSource = async (req: Request, res: Response, next: Nex
         mode: 'collector',
         apiKey,
         connectionMeta: {},
+        managementUrl: managementUrl || undefined,
         queueFilter,
         interval,
         status: 'offline', // becomes online on first push
@@ -85,6 +86,7 @@ export const registerQueueSource = async (req: Request, res: Response, next: Nex
       mode: 'agentless',
       encryptedConfig: encrypt(JSON.stringify(conn)),
       connectionMeta: stripSecrets(system, conn),
+      managementUrl: managementUrl || undefined,
       queueFilter,
       interval,
       status: 'online',
@@ -133,6 +135,7 @@ export const updateQueueSource = async (req: Request, res: Response, next: NextF
     if (updates.name !== undefined) updateFields.name = updates.name;
     if (updates.interval !== undefined) updateFields.interval = updates.interval;
     if (updates.queueFilter !== undefined) updateFields.queueFilter = updates.queueFilter;
+    if (updates.managementUrl !== undefined) updateFields.managementUrl = updates.managementUrl || undefined;
 
     // Collector-mode sources hold no server-side connection — ignore any
     // connection payload for them (only name/interval/queueFilter apply).
