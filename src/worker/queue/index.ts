@@ -147,7 +147,8 @@ const processSource = async (source: any) => {
   const snapshotEntries: IQueueSnapshotEntry[] = [];
 
   for (const sample of samples) {
-    const { netRate, etaToEmptyMs } = computeRates(sample, prevByQueue.get(sample.queueName), elapsedSec);
+    const prev = prevByQueue.get(sample.queueName);
+    const { netRate, etaToEmptyMs, completedRate, failedRate } = computeRates(sample, prev, elapsedSec);
 
     metricDocs.push({
       sourceId: source._id,
@@ -161,8 +162,8 @@ const processSource = async (source: any) => {
       consumerCount: sample.consumerCount,
       isPaused: sample.isPaused,
       netRate,
-      completedRate: 0, // reliable cumulative throughput requires broker metrics — P3+
-      failedRate: 0,
+      completedRate,
+      failedRate,
       etaToEmptyMs
     });
 
@@ -174,7 +175,8 @@ const processSource = async (source: any) => {
       consumerCount: sample.consumerCount,
       isPaused: sample.isPaused,
       oldestWaitingAgeMs: sample.oldestWaitingAgeMs,
-      netRate
+      netRate,
+      processedTotal: sample.processedTotal
     });
   }
 
@@ -213,20 +215,42 @@ const processSource = async (source: any) => {
   logger.debug(`[Queue Engine] Polled ${source.system} source ${sourceId}: ${samples.length} entities`);
 };
 
-/** Net backlog rate (signed jobs/sec) and drain ETA, derived statelessly. */
+/**
+ * Net backlog rate (signed jobs/sec), drain ETA, and throughput — all derived
+ * statelessly from the previous persisted snapshot.
+ *
+ * Throughput precedence: a broker-provided direct rate (RabbitMQ message_stats)
+ * wins; otherwise it's derived from the delta of a cumulative processed counter
+ * (Kafka committed-offset sum). Brokers exposing neither report 0.
+ */
 const computeRates = (
   sample: QueueSample,
   prev: IQueueSnapshotEntry | undefined,
   elapsedSec: number
-): { netRate: number; etaToEmptyMs: number } => {
-  if (!prev || elapsedSec <= 0) {
-    return { netRate: 0, etaToEmptyMs: -1 };
+): { netRate: number; etaToEmptyMs: number; completedRate: number; failedRate: number } => {
+  let netRate = 0;
+  let etaToEmptyMs = -1;
+  if (prev && elapsedSec > 0) {
+    netRate = (sample.pending - prev.pending) / elapsedSec;
+    etaToEmptyMs = netRate < 0 && sample.pending > 0
+      ? Math.round((sample.pending / -netRate) * 1000)
+      : -1;
   }
-  const netRate = (sample.pending - prev.pending) / elapsedSec;
-  const etaToEmptyMs = netRate < 0 && sample.pending > 0
-    ? Math.round((sample.pending / -netRate) * 1000)
-    : -1;
-  return { netRate, etaToEmptyMs };
+
+  let completedRate = sample.completedRate ?? 0;
+  const failedRate = sample.failedRate ?? 0;
+
+  // Derive consumed/sec from a cumulative counter when no direct rate is given.
+  if (
+    sample.completedRate === undefined &&
+    sample.processedTotal !== undefined &&
+    prev?.processedTotal !== undefined &&
+    elapsedSec > 0
+  ) {
+    completedRate = Math.max(0, (sample.processedTotal - prev.processedTotal) / elapsedSec);
+  }
+
+  return { netRate, etaToEmptyMs, completedRate, failedRate };
 };
 
 // ─── Circuit breaker on failure ──────────────────────────────────────────────

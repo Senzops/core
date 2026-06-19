@@ -31,6 +31,13 @@ export interface QueueSample {
   oldestDelayedAgeMs: number;
   consumerCount: number;
   isPaused: boolean;
+  // Throughput (jobs/sec). Adapters provide EITHER a direct rate the broker
+  // exposes (completedRate/failedRate), OR a cumulative processed counter
+  // (processedTotal) from which the poller derives the rate via deltas. Leave
+  // all undefined when the broker offers no reliable throughput signal.
+  completedRate?: number;
+  failedRate?: number;
+  processedTotal?: number;
 }
 
 export interface SampleResult {

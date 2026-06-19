@@ -130,9 +130,11 @@ export const kafkaAdapter: QueueAdapter = {
           }
 
           let lag = 0;
+          let committedTotal = 0;
           for (const p of t.partitions) {
             const c = toNum(p.offset);
             if (c < 0) continue; // no committed offset for this partition
+            committedTotal += c;
             const high = highs.get(p.partition) ?? c;
             lag += Math.max(0, high - c);
           }
@@ -148,7 +150,10 @@ export const kafkaAdapter: QueueAdapter = {
             oldestWaitingAgeMs: 0,
             oldestDelayedAgeMs: 0,
             consumerCount: memberCounts.get(groupId) || 0,
-            isPaused: false
+            isPaused: false,
+            // Cumulative consumed messages (sum of committed offsets). The poller
+            // turns successive samples into a consumed/sec rate.
+            processedTotal: committedTotal
           });
         }
       } catch {

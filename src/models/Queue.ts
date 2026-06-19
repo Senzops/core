@@ -201,6 +201,8 @@ export interface IQueueSnapshotEntry {
   isPaused: boolean;
   oldestWaitingAgeMs: number;
   netRate: number;
+  /** Cumulative processed counter (e.g. Kafka committed-offset sum) for rate deltas. */
+  processedTotal?: number;
 }
 
 export interface IQueueSnapshot extends Document {
@@ -220,7 +222,8 @@ const QueueSnapshotSchema = new Schema<IQueueSnapshot>({
     consumerCount: Number,
     isPaused: Boolean,
     oldestWaitingAgeMs: Number,
-    netRate: Number
+    netRate: Number,
+    processedTotal: Number
   }]
 });
 

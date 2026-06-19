@@ -58,6 +58,13 @@ const mapQueue = (q: any): QueueSample => {
     if (Number.isFinite(tsMs) && tsMs > 0) oldestWaitingAgeMs = Math.max(0, Date.now() - tsMs);
   }
 
+  // Throughput comes straight from the Management API's rolling rates:
+  //   ack       = messages successfully consumed/sec
+  //   redeliver = messages requeued/redelivered/sec (processing-failure proxy)
+  const stats = q.message_stats || {};
+  const completedRate = Number(stats.ack_details?.rate) || 0;
+  const failedRate = Number(stats.redeliver_details?.rate) || 0;
+
   return {
     queueName: q.vhost && q.vhost !== '/' ? `${q.vhost}/${q.name}` : q.name,
     depth,
@@ -67,7 +74,9 @@ const mapQueue = (q: any): QueueSample => {
     oldestWaitingAgeMs,
     oldestDelayedAgeMs: 0,
     consumerCount: Number(q.consumers) || 0,
-    isPaused: false
+    isPaused: false,
+    completedRate,
+    failedRate
   };
 };
 
