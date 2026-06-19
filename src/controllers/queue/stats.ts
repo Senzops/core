@@ -14,7 +14,7 @@ export const getQueueStats = async (req: Request, res: Response, next: NextFunct
     const { range, start, end, queue } = req.query;
 
     const source = await QueueSource.findOne({ _id: id, ownerId })
-      .select('-encryptedUri -leasedBy -leaseExpiresAt');
+      .select('-encryptedConfig -leasedBy -leaseExpiresAt');
     if (!source) return res.status(404).json({ error: 'Queue source not found' });
 
     const maxRetention = await getEffectiveRetention('queue', ownerId);

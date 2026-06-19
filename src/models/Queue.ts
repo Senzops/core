@@ -15,18 +15,19 @@ import { applyPlanBasedTtl } from '../utils/ttl';
 // `QueueSnapshot` holds the latest per-queue breakdown for fast list rendering.
 // ============================================================================
 
-export type QueueSystem = 'bullmq';
-export const QUEUE_SYSTEMS: QueueSystem[] = ['bullmq'];
+export type QueueSystem = 'bullmq' | 'rabbitmq' | 'kafka' | 'sqs';
+export const QUEUE_SYSTEMS: QueueSystem[] = ['bullmq', 'rabbitmq', 'kafka', 'sqs'];
 
 // --- 1. Queue Source (Configuration + Distributed Scheduler State) ---
 export interface IQueueSource extends Document {
   ownerId: string;
   name: string;
   system: QueueSystem;
-  encryptedUri: string;
-  /** BullMQ key prefix on the Redis instance (default 'bull'). */
-  prefix: string;
-  /** Optional allowlist of queue names. Empty = auto-discover all queues. */
+  /** Encrypted JSON of the full broker connection, including secrets. */
+  encryptedConfig: string;
+  /** Non-secret connection fields surfaced to the UI for display/edit prefill. */
+  connectionMeta: Record<string, any>;
+  /** Optional allowlist of queue/topic/group names. Empty = auto-discover all. */
   queueFilter: string[];
   /** Poll cadence in minutes. */
   interval: number;
@@ -55,8 +56,8 @@ const QueueSourceSchema = new Schema<IQueueSource>({
   ownerId: { type: String, required: true, index: true },
   name: { type: String, required: true },
   system: { type: String, enum: QUEUE_SYSTEMS, required: true },
-  encryptedUri: { type: String, required: true },
-  prefix: { type: String, default: 'bull' },
+  encryptedConfig: { type: String, required: true },
+  connectionMeta: { type: Schema.Types.Mixed, default: {} },
   queueFilter: { type: [String], default: [] },
   interval: { type: Number, default: 1, min: 1, max: 60 },
   status: { type: String, enum: ['online', 'offline', 'error'], default: 'offline' },

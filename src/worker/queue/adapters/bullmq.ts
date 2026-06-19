@@ -1,12 +1,12 @@
-import type Redis from 'ioredis';
+import Redis from 'ioredis';
+import { QueueAdapter, QueueSample, SampleOpts, SampleResult, TestResult, emptyDepth } from './types';
 
 // ============================================================================
 // BullMQ adapter — samples queue state directly from Redis.
 // ----------------------------------------------------------------------------
 // We read BullMQ's documented key layout via raw Redis commands rather than
-// instantiating bullmq.Queue objects per queue. This is the most efficient and
-// lifecycle-safe path: one pipeline per queue, no per-poll object allocation,
-// and no ambiguity about who owns the (pooled, source-level) connection.
+// instantiating bullmq.Queue objects per queue: one pipeline per queue, no
+// per-poll object allocation, no connection-lifecycle ambiguity.
 //
 // BullMQ v5 key layout, prefix default 'bull':
 //   <prefix>:<queue>:wait              (LIST)  waiting jobs
@@ -21,37 +21,56 @@ import type Redis from 'ioredis';
 //   <prefix>:<queue>:<jobId>           (HASH)  field 'timestamp' = enqueue time
 // Workers set their Redis client name to '<prefix>:<queue>', so CLIENT LIST
 // names give the consumer count.
+//
+// Connection config: { uri, prefix }
 // ============================================================================
 
 const SCAN_COUNT = 200;
-const MAX_SCAN_ITERATIONS = 2000; // hard ceiling so a huge keyspace can't stall a poll
-export const DEFAULT_MAX_QUEUES = 250;
+const MAX_SCAN_ITERATIONS = 2000;
 
-export interface QueueSample {
-  queueName: string;
-  depth: {
-    waiting: number;
-    active: number;
-    delayed: number;
-    prioritized: number;
-    waitingChildren: number;
-    paused: number;
-  };
-  pending: number;
-  dlqDepth: number;
-  completed: number;
-  oldestWaitingAgeMs: number;
-  oldestDelayedAgeMs: number;
-  consumerCount: number;
-  isPaused: boolean;
-}
+interface BullmqConfig { uri: string; prefix?: string; }
+interface PoolEntry { client: Redis; uri: string; }
 
-/**
- * Discover BullMQ queues on the instance by scanning for `<prefix>:*:meta`
- * marker keys. Bounded by both an iteration ceiling and `maxQueues` so a large
- * shared Redis can never stall or balloon a poll cycle.
- */
-export const discoverQueues = async (
+const pool = new Map<string, PoolEntry>();
+
+const buildClient = (uri: string): Redis => {
+  const client = new Redis(uri, {
+    maxRetriesPerRequest: 1,
+    connectTimeout: 5000,
+    commandTimeout: 5000,
+    enableReadyCheck: true,
+    lazyConnect: true,
+    retryStrategy: () => null
+  });
+  client.on('error', () => {}); // surfaced via command rejections
+  return client;
+};
+
+const getPooled = async (sourceId: string, uri: string): Promise<Redis> => {
+  const existing = pool.get(sourceId);
+  if (existing && existing.uri === uri && existing.client.status !== 'end') {
+    return existing.client;
+  }
+  if (existing) {
+    existing.client.disconnect();
+    pool.delete(sourceId);
+  }
+  const client = buildClient(uri);
+  await client.connect();
+  pool.set(sourceId, { client, uri });
+  return client;
+};
+
+const readVersion = async (redis: Redis): Promise<string | undefined> => {
+  try {
+    const info = await redis.info('server');
+    return info.split('\n').find(l => l.startsWith('redis_version:'))?.split(':')[1]?.trim();
+  } catch {
+    return undefined;
+  }
+};
+
+const discoverQueues = async (
   redis: Redis,
   prefix: string,
   maxQueues: number
@@ -73,14 +92,9 @@ export const discoverQueues = async (
     for (const key of keys) {
       if (key.startsWith(head) && key.endsWith(suffix)) {
         const name = key.slice(head.length, key.length - suffix.length);
-        // Flow-producer child meta keys never appear here; a queue name is the
-        // segment between the prefix and the ':meta' suffix.
         if (name) found.add(name);
       }
-      if (found.size >= maxQueues) {
-        truncated = true;
-        break;
-      }
+      if (found.size >= maxQueues) { truncated = true; break; }
     }
 
     if (found.size >= maxQueues || iterations >= MAX_SCAN_ITERATIONS) {
@@ -92,7 +106,6 @@ export const discoverQueues = async (
   return { names: Array.from(found), truncated };
 };
 
-/** Parse CLIENT LIST output into per-queue consumer counts keyed by client name. */
 const parseConsumerCounts = (clientList: string): Map<string, number> => {
   const counts = new Map<string, number>();
   for (const line of clientList.split('\n')) {
@@ -104,29 +117,11 @@ const parseConsumerCounts = (clientList: string): Map<string, number> => {
   return counts;
 };
 
-/**
- * Sample every (filtered/discovered) queue on a source's Redis instance.
- * Never throws per-queue: a single malformed queue is skipped, not fatal.
- */
-export const sampleBullMqSource = async (
+const sampleQueues = async (
   redis: Redis,
-  opts: { prefix: string; queueFilter: string[]; maxQueues: number }
-): Promise<{ samples: QueueSample[]; discovered: number; truncated: boolean }> => {
-  const prefix = opts.prefix || 'bull';
-
-  let names: string[];
-  let truncated = false;
-  if (opts.queueFilter && opts.queueFilter.length > 0) {
-    names = opts.queueFilter.slice(0, opts.maxQueues);
-    truncated = opts.queueFilter.length > opts.maxQueues;
-  } else {
-    const discovery = await discoverQueues(redis, prefix, opts.maxQueues);
-    names = discovery.names;
-    truncated = discovery.truncated;
-  }
-
-  // Consumer counts: one CLIENT LIST for the whole instance. Best-effort —
-  // managed Redis may deny the command (NOPERM); degrade to 0 rather than fail.
+  prefix: string,
+  names: string[]
+): Promise<QueueSample[]> => {
   let consumerCounts = new Map<string, number>();
   try {
     const clientList = (await redis.client('LIST')) as string;
@@ -151,7 +146,6 @@ export const sampleBullMqSource = async (
       pipeline.zcard(`${base}:failed`);
       pipeline.zcard(`${base}:completed`);
       pipeline.hexists(`${base}:meta`, 'paused');
-      // Head jobs for oldest-age (next to be processed sits at the tail of wait).
       pipeline.lindex(`${base}:wait`, -1);
       pipeline.zrange(`${base}:delayed`, 0, 0);
 
@@ -179,8 +173,6 @@ export const sampleBullMqSource = async (
 
       const pending = waiting + delayed + prioritized + waitingChildren + paused;
 
-      // Oldest ages: fetch the head jobs' enqueue timestamps (bounded — at most
-      // two HGETs per queue, only when a head exists).
       let oldestWaitingAgeMs = 0;
       let oldestDelayedAgeMs = 0;
       const ageTargets: string[] = [];
@@ -218,10 +210,57 @@ export const sampleBullMqSource = async (
         isPaused
       });
     } catch {
-      // Skip a single problematic queue; never abort the whole source.
       continue;
     }
   }
 
-  return { samples, discovered: names.length, truncated };
+  return samples;
 };
+
+export const bullmqAdapter: QueueAdapter = {
+  system: 'bullmq',
+
+  async testConnection(config: BullmqConfig): Promise<TestResult> {
+    const prefix = config.prefix || 'bull';
+    const client = buildClient(config.uri);
+    try {
+      await client.connect();
+      await client.ping();
+      const version = await readVersion(client);
+      const { names, truncated } = await discoverQueues(client, prefix, 250);
+      return { version, discoveredQueues: names.length, truncated };
+    } finally {
+      client.disconnect();
+    }
+  },
+
+  async sample(sourceId: string, config: BullmqConfig, opts: SampleOpts): Promise<SampleResult> {
+    const prefix = config.prefix || 'bull';
+    const client = await getPooled(sourceId, config.uri);
+
+    let names: string[];
+    let truncated = false;
+    if (opts.queueFilter.length > 0) {
+      names = opts.queueFilter.slice(0, opts.maxQueues);
+      truncated = opts.queueFilter.length > opts.maxQueues;
+    } else {
+      const discovery = await discoverQueues(client, prefix, opts.maxQueues);
+      names = discovery.names;
+      truncated = discovery.truncated;
+    }
+
+    const samples = await sampleQueues(client, prefix, names);
+    const version = await readVersion(client);
+    return { samples, discovered: names.length, truncated, version };
+  },
+
+  dispose(sourceId: string) {
+    const entry = pool.get(sourceId);
+    if (entry) {
+      entry.client.disconnect();
+      pool.delete(sourceId);
+    }
+  }
+};
+
+export { emptyDepth };

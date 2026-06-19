@@ -8,6 +8,7 @@ import { LogEvent } from '../models/Log';
 import { TaskRun, TaskService } from '../models/Task';
 import { VpsRun, Vps } from '../models/Vps';
 import { DbMetric, DatabaseService } from '../models/Database';
+import { QueueMetric, QueueSource } from '../models/Queue';
 import { MonitorRun, Monitor } from '../models/Monitor';
 import { ErrorGroup } from '../models/Error';
 import { RuntimeMetric } from '../models/RuntimeMetric';
@@ -24,6 +25,7 @@ const COLLECTION_MAP: Record<string, { event: string; service: string | null }> 
   logs: { event: LogEvent.collection.name, service: null }, // Logs have no strict parent service
   vps: { event: VpsRun.collection.name, service: Vps.collection.name },
   database: { event: DbMetric.collection.name, service: DatabaseService.collection.name },
+  queue: { event: QueueMetric.collection.name, service: QueueSource.collection.name },
   uptime: { event: MonitorRun.collection.name, service: Monitor.collection.name },
   rum: { event: RumTrace.collection.name, service: RumService.collection.name },
   task: { event: TaskRun.collection.name, service: TaskService.collection.name },
@@ -37,7 +39,7 @@ const COLLECTION_MAP: Record<string, { event: string; service: string | null }> 
 // SECURITY & INFERENCE BLACKLISTS
 // Prevent sensitive or internal database fields from appearing in the UI schema
 // ============================================================================
-const SERVICE_BLACKLIST = ['_id', 'apiKey', 'ownerId', 'createdAt', 'updatedAt', '__v', 'encryptedServiceAccount'];
+const SERVICE_BLACKLIST = ['_id', 'apiKey', 'ownerId', 'createdAt', 'updatedAt', '__v', 'encryptedServiceAccount', 'encryptedConfig', 'encryptedUri', 'leasedBy', 'leaseExpiresAt'];
 const EVENT_BLACKLIST = ['ownerId', '__v'];
 
 // ============================================================================

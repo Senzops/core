@@ -330,23 +330,56 @@ export const UpdateDbSchema = z.object({
 }).refine(data => data.name || data.type || data.uri || data.interval !== undefined, { message: 'At least one field must be provided' });
 
 // --- Queue Monitoring Validation ---
+// Per-broker connection schemas. Secrets are encrypted at rest; the controller
+// derives a non-secret `connectionMeta` for UI prefill from the same object.
+export const BullmqConnSchema = z.object({
+  uri: z.string().min(1), // redis:// or rediss:// (TLS)
+  prefix: z.string().min(1).max(100).default('bull'),
+});
+export const RabbitmqConnSchema = z.object({
+  apiUrl: z.string().url(), // Management API base, e.g. http://host:15672
+  username: z.string().min(1),
+  password: z.string().min(1),
+  vhost: z.string().max(255).default('/'),
+});
+export const KafkaConnSchema = z.object({
+  brokers: z.array(z.string().min(1)).min(1).max(50),
+  ssl: z.boolean().default(false),
+  saslMechanism: z.enum(['plain', 'scram-sha-256', 'scram-sha-512']).optional(),
+  username: z.string().optional(),
+  password: z.string().optional(),
+});
+export const SqsConnSchema = z.object({
+  region: z.string().min(1).max(50),
+  accessKeyId: z.string().min(1),
+  secretAccessKey: z.string().min(1),
+});
+
+export const queueConnectionSchema = (system: string) => {
+  switch (system) {
+    case 'bullmq': return BullmqConnSchema;
+    case 'rabbitmq': return RabbitmqConnSchema;
+    case 'kafka': return KafkaConnSchema;
+    case 'sqs': return SqsConnSchema;
+    default: return null;
+  }
+};
+
 export const RegisterQueueSchema = z.object({
   name: z.string().min(1).max(50),
-  system: z.enum(['bullmq']).default('bullmq'),
-  uri: z.string().min(1), // Redis connection string; redis:// or rediss:// (TLS)
-  prefix: z.string().min(1).max(100).default('bull'),
-  queueFilter: z.array(z.string().min(1).max(200)).max(500).default([]),
-  interval: z.number().min(1).max(60).default(1)
+  system: z.enum(['bullmq', 'rabbitmq', 'kafka', 'sqs']),
+  connection: z.record(z.any()), // validated per-system in the controller
+  queueFilter: z.array(z.string().min(1).max(500)).max(1000).default([]),
+  interval: z.number().min(1).max(60).default(1),
 });
 
 export const UpdateQueueSchema = z.object({
   name: z.string().min(1).max(50).optional(),
-  uri: z.string().min(1).optional(),
-  prefix: z.string().min(1).max(100).optional(),
-  queueFilter: z.array(z.string().min(1).max(200)).max(500).optional(),
+  connection: z.record(z.any()).optional(),
+  queueFilter: z.array(z.string().min(1).max(500)).max(1000).optional(),
   interval: z.number().min(1).max(60).optional(),
 }).refine(
-  data => data.name || data.uri || data.prefix || data.queueFilter !== undefined || data.interval !== undefined,
+  data => data.name || data.connection || data.queueFilter !== undefined || data.interval !== undefined,
   { message: 'At least one field must be provided' }
 );
 

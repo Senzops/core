@@ -12,6 +12,7 @@ import { LogEvent } from '../models/Log';
 import { TaskRun, TaskService } from '../models/Task';
 import { VpsRun, Vps } from '../models/Vps';
 import { DbMetric, DatabaseService } from '../models/Database';
+import { QueueMetric, QueueSource } from '../models/Queue';
 import { FirebaseMetric, FirebaseService } from '../models/Firebase';
 import { MonitorRun, Monitor } from '../models/Monitor';
 import { ErrorGroup } from '../models/Error';
@@ -50,6 +51,7 @@ const getTargetModel = (target: string) => {
     case 'task': return { model: TaskRun, parentModel: TaskService, foreignKey: 'serviceId', timeField: 'timestamp' };
     case 'vps': return { model: VpsRun, parentModel: Vps, foreignKey: 'vpsId', timeField: 'createdAt' };
     case 'database': return { model: DbMetric, parentModel: DatabaseService, foreignKey: 'dbId', timeField: 'timestamp' };
+    case 'queue': return { model: QueueMetric, parentModel: QueueSource, foreignKey: 'sourceId', timeField: 'timestamp' };
     case 'uptime': return { model: MonitorRun, parentModel: Monitor, foreignKey: 'monitorId', timeField: 'createdAt' };
     case 'errors': return { model: ErrorGroup, parentModel: null, foreignKey: 'ownerId', timeField: 'lastSeen' };
     case 'runtime': return { model: RuntimeMetric, parentModel: ApmService, foreignKey: 'serviceId', timeField: 'timestamp' };

@@ -1,6 +1,5 @@
 import cron from 'node-cron';
 import os from 'os';
-import Redis from 'ioredis';
 import {
   QueueSource, QueueMetric, QueueSnapshot, QueueRollup,
   IQueueSnapshotEntry
@@ -9,10 +8,10 @@ import { SystemLock } from '../../models/Task';
 import { decrypt } from '../../utils/crypto';
 import { logger } from '../../utils/logger';
 import { getRetentionMs, stampExpiry } from '../../services/retentionCache';
-import { sampleBullMqSource, DEFAULT_MAX_QUEUES, QueueSample } from './adapters/bullmq';
+import { getAdapter, disposeAllAdapters, DEFAULT_MAX_QUEUES, QueueSample } from './adapters';
 
 // ============================================================================
-// Queue Monitoring poller (agentless, pull-plane).
+// Queue Monitoring poller (agentless, pull-plane, multi-broker).
 // ----------------------------------------------------------------------------
 // Distributed and horizontally scalable: each tick atomically *leases* due
 // sources, so polling shards across worker replicas with no double-polling.
@@ -20,24 +19,23 @@ import { sampleBullMqSource, DEFAULT_MAX_QUEUES, QueueSample } from './adapters/
 // they stay correct across restarts and across pods. A per-source circuit
 // breaker backs off failing sources with exponential delay.
 //
-// Isolated by design — this module is the only thing that touches queue data
-// and can be lifted into its own worker process later without changes here.
+// The poller is broker-agnostic: it resolves the source's adapter from the
+// registry and delegates all connection + sampling concerns to it.
 // ============================================================================
 
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
 
-const LEASE_TTL_MS = 60_000;          // a poll must finish well within this
-const PROCESSOR_TIMEOUT_MS = 30_000;  // hard cap per source per cycle
-const MAX_SOURCES_PER_TICK = 50;      // backpressure on a single replica
-const MIN_BACKOFF_MS = 60_000;        // first failure backoff
-const MAX_BACKOFF_MS = 30 * 60_000;   // capped exponential backoff
+const LEASE_TTL_MS = 60_000;
+const PROCESSOR_TIMEOUT_MS = 30_000;
+const MAX_SOURCES_PER_TICK = 50;
+const MIN_BACKOFF_MS = 60_000;
+const MAX_BACKOFF_MS = 30 * 60_000;
 const ROLLUP_LOCK = 'queue-rollup-sweep';
 const ROLLUP_LOCK_TTL_MS = 5 * 60_000;
 
-// Pooled outbound connections, keyed by sourceId. We track the encrypted URI a
-// connection was opened with so config edits transparently re-establish it.
-interface PoolEntry { client: Redis; encryptedUri: string; }
-const connectionPool = new Map<string, PoolEntry>();
+// Source ids this replica has opened adapter connections for, so cleanup can
+// release pooled clients of sources that were deleted out from under us.
+const touchedSources = new Set<string>();
 
 const withTimeout = <T>(promise: Promise<T>, ms: number, label: string): Promise<T> =>
   new Promise<T>((resolve, reject) => {
@@ -69,7 +67,7 @@ export const startQueueWorker = () => {
 
   cron.schedule('0 * * * *', async () => {
     try {
-      await cleanupPool();
+      await cleanupPools();
     } catch (error: any) {
       logger.error(`[Queue Engine] Pool cleanup failed: ${error.message}`);
     }
@@ -77,8 +75,6 @@ export const startQueueWorker = () => {
 };
 
 // ─── Lease-based claiming ────────────────────────────────────────────────────
-// Each findOneAndUpdate atomically claims one due, unleased source. A second
-// replica's filter won't match an already-claimed doc, guaranteeing exclusivity.
 
 const claimDueSources = async (limit: number): Promise<any[]> => {
   const claimed: any[] = [];
@@ -114,51 +110,24 @@ const pollDueSources = async () => {
   );
 };
 
-// ─── Connection management ───────────────────────────────────────────────────
-
-const getConnection = async (source: any): Promise<Redis> => {
-  const sourceId = source._id.toString();
-  const existing = connectionPool.get(sourceId);
-
-  if (existing && existing.encryptedUri === source.encryptedUri && existing.client.status !== 'end') {
-    return existing.client;
-  }
-
-  // Config changed or no live connection — tear down the stale one.
-  if (existing) {
-    existing.client.disconnect();
-    connectionPool.delete(sourceId);
-  }
-
-  const uri = decrypt(source.encryptedUri);
-  const client = new Redis(uri, {
-    maxRetriesPerRequest: 1,
-    connectTimeout: 5000,
-    commandTimeout: 5000,
-    enableReadyCheck: true,
-    lazyConnect: true,
-    // Don't let ioredis spam reconnects against an unreachable source between polls.
-    retryStrategy: () => null
-  });
-  // Swallow async connection errors; the poll's try/catch surfaces failures.
-  client.on('error', () => {});
-
-  await client.connect();
-  connectionPool.set(sourceId, { client, encryptedUri: source.encryptedUri });
-  return client;
-};
-
 // ─── Per-source processing ───────────────────────────────────────────────────
 
 const processSource = async (source: any) => {
   const sourceId = source._id.toString();
-  const client = await getConnection(source);
+  const adapter = getAdapter(source.system);
 
-  const maxQueues = DEFAULT_MAX_QUEUES;
-  const { samples, discovered, truncated } = await sampleBullMqSource(client, {
-    prefix: source.prefix || 'bull',
+  let config: any;
+  try {
+    config = JSON.parse(decrypt(source.encryptedConfig));
+  } catch {
+    throw new Error('Failed to decrypt connection config');
+  }
+
+  touchedSources.add(sourceId);
+
+  const { samples, discovered, truncated, version } = await adapter.sample(sourceId, config, {
     queueFilter: source.queueFilter || [],
-    maxQueues
+    maxQueues: DEFAULT_MAX_QUEUES
   });
 
   const now = new Date();
@@ -192,7 +161,7 @@ const processSource = async (source: any) => {
       consumerCount: sample.consumerCount,
       isPaused: sample.isPaused,
       netRate,
-      completedRate: 0, // reliable cumulative throughput requires broker metrics — P2
+      completedRate: 0, // reliable cumulative throughput requires broker metrics — P3+
       failedRate: 0,
       etaToEmptyMs
     });
@@ -220,13 +189,6 @@ const processSource = async (source: any) => {
     { upsert: true }
   );
 
-  // Read the instance version once for display (best-effort).
-  let version: string | undefined;
-  try {
-    const info = await client.info('server');
-    version = info.split('\n').find(l => l.startsWith('redis_version:'))?.split(':')[1]?.trim();
-  } catch { /* non-fatal */ }
-
   const intervalMs = (source.interval || 1) * 60_000;
   await QueueSource.updateOne(
     { _id: source._id },
@@ -236,7 +198,7 @@ const processSource = async (source: any) => {
         lastCheck: now,
         nextPollAt: new Date(now.getTime() + intervalMs),
         errorMessage: truncated
-          ? `Queue limit reached: monitoring first ${maxQueues} of ${discovered}+ queues.`
+          ? `Queue limit reached: monitoring first ${DEFAULT_MAX_QUEUES} of ${discovered}+ queues.`
           : undefined,
         version,
         discoveredQueues: discovered,
@@ -248,7 +210,7 @@ const processSource = async (source: any) => {
     }
   );
 
-  logger.debug(`[Queue Engine] Polled source ${sourceId}: ${samples.length} queues`);
+  logger.debug(`[Queue Engine] Polled ${source.system} source ${sourceId}: ${samples.length} entities`);
 };
 
 /** Net backlog rate (signed jobs/sec) and drain ETA, derived statelessly. */
@@ -261,7 +223,6 @@ const computeRates = (
     return { netRate: 0, etaToEmptyMs: -1 };
   }
   const netRate = (sample.pending - prev.pending) / elapsedSec;
-  // Only project a drain time when the backlog is actually shrinking.
   const etaToEmptyMs = netRate < 0 && sample.pending > 0
     ? Math.round((sample.pending / -netRate) * 1000)
     : -1;
@@ -305,7 +266,7 @@ const rollupPreviousHour = async () => {
       { upsert: true }
     );
   } catch (err: any) {
-    if (err.code === 11000) return; // another replica holds it
+    if (err.code === 11000) return;
     throw err;
   }
 
@@ -338,7 +299,6 @@ const rollupPreviousHour = async () => {
 
     if (grouped.length === 0) return;
 
-    // Resolve owners for plan-based expiry (one lookup per distinct source).
     const sourceIds = [...new Set(grouped.map(g => g._id.sourceId.toString()))];
     const sources = await QueueSource.find({ _id: { $in: sourceIds } }).select('ownerId').lean();
     const ownerBySource = new Map(sources.map(s => [s._id.toString(), s.ownerId]));
@@ -384,19 +344,18 @@ const rollupPreviousHour = async () => {
 };
 
 // ─── Pool cleanup ────────────────────────────────────────────────────────────
-// Drop connections for sources that were deleted out from under the poller.
+// Release adapter connections for sources that were deleted out from under us.
 
-const cleanupPool = async () => {
-  if (connectionPool.size === 0) return;
-  const pooledIds = [...connectionPool.keys()];
-  const alive = await QueueSource.find({ _id: { $in: pooledIds } }).select('_id').lean();
+const cleanupPools = async () => {
+  if (touchedSources.size === 0) return;
+  const ids = [...touchedSources];
+  const alive = await QueueSource.find({ _id: { $in: ids } }).select('_id').lean();
   const aliveSet = new Set(alive.map(s => s._id.toString()));
 
-  for (const id of pooledIds) {
+  for (const id of ids) {
     if (!aliveSet.has(id)) {
-      const entry = connectionPool.get(id);
-      entry?.client.disconnect();
-      connectionPool.delete(id);
+      await disposeAllAdapters(id);
+      touchedSources.delete(id);
     }
   }
 };

@@ -1,51 +1,45 @@
 import { Request, Response, NextFunction } from 'express';
-import Redis from 'ioredis';
-import { QueueSource, QueueMetric, QueueRollup, QueueSnapshot } from '../../models/Queue';
+import { QueueSource, QueueMetric, QueueRollup, QueueSnapshot, QueueSystem } from '../../models/Queue';
 import { DashboardShare } from '../../models/DashboardShare';
-import { encrypt } from '../../utils/crypto';
-import { RegisterQueueSchema, UpdateQueueSchema } from '../../utils/validation';
-import { discoverQueues, DEFAULT_MAX_QUEUES } from '../../worker/queue/adapters/bullmq';
+import { encrypt, decrypt } from '../../utils/crypto';
+import { RegisterQueueSchema, UpdateQueueSchema, queueConnectionSchema } from '../../utils/validation';
+import { getAdapter, disposeAllAdapters } from '../../worker/queue/adapters';
 
-// Verifies a BullMQ/Redis source is reachable and reports basic facts. A fresh
-// instance with no queues yet is valid — we only require connectivity.
-const testRedisConnection = async (
-  uri: string,
-  prefix: string
-): Promise<{ version?: string; discoveredQueues: number; truncated: boolean }> => {
-  const client = new Redis(uri, {
-    maxRetriesPerRequest: 1,
-    connectTimeout: 5000,
-    commandTimeout: 5000,
-    lazyConnect: true,
-    retryStrategy: () => null
-  });
-  client.on('error', () => {}); // surfaced via the connect/command rejection below
+const SELECT_PUBLIC = '-encryptedConfig -leasedBy -leaseExpiresAt';
 
-  try {
-    await client.connect();
-    await client.ping();
-
-    let version: string | undefined;
-    try {
-      const info = await client.info('server');
-      version = info.split('\n').find(l => l.startsWith('redis_version:'))?.split(':')[1]?.trim();
-    } catch { /* non-fatal */ }
-
-    const { names, truncated } = await discoverQueues(client, prefix, DEFAULT_MAX_QUEUES);
-    return { version, discoveredQueues: names.length, truncated };
-  } finally {
-    client.disconnect();
+// Non-secret connection fields surfaced to the UI for display/edit prefill.
+// Anything that grants access (URIs with creds, passwords, secret keys) is
+// deliberately omitted and only ever lives encrypted in `encryptedConfig`.
+const stripSecrets = (system: QueueSystem, conn: any): Record<string, any> => {
+  switch (system) {
+    case 'bullmq': return { prefix: conn.prefix };
+    case 'rabbitmq': return { apiUrl: conn.apiUrl, username: conn.username, vhost: conn.vhost };
+    case 'kafka': return { brokers: conn.brokers, ssl: conn.ssl, saslMechanism: conn.saslMechanism, username: conn.username };
+    case 'sqs': return { region: conn.region, accessKeyId: conn.accessKeyId };
+    default: return {};
   }
+};
+
+const validateConnection = (system: QueueSystem, raw: any) => {
+  const schema = queueConnectionSchema(system);
+  if (!schema) throw Object.assign(new Error(`Unsupported queue system: ${system}`), { statusCode: 400 });
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) {
+    throw Object.assign(new Error('Invalid connection config'), { statusCode: 400, details: parsed.error });
+  }
+  return parsed.data as any;
 };
 
 export const registerQueueSource = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ownerId = (req as any).ownerId;
-    const { name, system, uri, prefix, queueFilter, interval } = RegisterQueueSchema.parse(req.body);
+    const { name, system, connection, queueFilter, interval } = RegisterQueueSchema.parse(req.body);
+
+    const conn = validateConnection(system, connection);
 
     let probe: { version?: string; discoveredQueues: number };
     try {
-      probe = await testRedisConnection(uri, prefix);
+      probe = await getAdapter(system).testConnection(conn);
     } catch (err: any) {
       return res.status(400).json({ error: 'Queue Source Connection Failed', details: err.message });
     }
@@ -54,8 +48,8 @@ export const registerQueueSource = async (req: Request, res: Response, next: Nex
       ownerId,
       name,
       system,
-      encryptedUri: encrypt(uri),
-      prefix,
+      encryptedConfig: encrypt(JSON.stringify(conn)),
+      connectionMeta: stripSecrets(system, conn),
       queueFilter,
       interval,
       status: 'online',
@@ -72,7 +66,10 @@ export const registerQueueSource = async (req: Request, res: Response, next: Nex
       system: newSource.system,
       discoveredQueues: probe.discoveredQueues
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.statusCode === 400) {
+      return res.status(400).json({ error: error.message, details: error.details });
+    }
     next(error);
   }
 };
@@ -80,9 +77,7 @@ export const registerQueueSource = async (req: Request, res: Response, next: Nex
 export const listQueueSources = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ownerId = (req as any).ownerId;
-    const sources = await QueueSource.find({ ownerId })
-      .select('-encryptedUri -leasedBy -leaseExpiresAt')
-      .sort({ createdAt: -1 });
+    const sources = await QueueSource.find({ ownerId }).select(SELECT_PUBLIC).sort({ createdAt: -1 });
     res.json(sources);
   } catch (error) {
     next(error);
@@ -103,39 +98,49 @@ export const updateQueueSource = async (req: Request, res: Response, next: NextF
     if (updates.interval !== undefined) updateFields.interval = updates.interval;
     if (updates.queueFilter !== undefined) updateFields.queueFilter = updates.queueFilter;
 
-    const effectivePrefix = updates.prefix ?? existing.prefix;
-    if (updates.prefix !== undefined) updateFields.prefix = updates.prefix;
-
-    // Re-test connectivity whenever the endpoint or prefix changes.
-    if (updates.uri !== undefined || updates.prefix !== undefined) {
-      const effectiveUri = updates.uri ?? null;
+    if (updates.connection !== undefined) {
+      // The connection may arrive partial (e.g. secrets unchanged). Merge over
+      // the decrypted existing config, then re-validate and re-test as a whole.
+      let current: any = {};
       try {
-        if (effectiveUri !== null) {
-          const probe = await testRedisConnection(effectiveUri, effectivePrefix);
-          updateFields.encryptedUri = encrypt(effectiveUri);
-          updateFields.version = probe.version;
-          updateFields.discoveredQueues = probe.discoveredQueues;
-        }
+        current = JSON.parse(decrypt(existing.encryptedConfig));
+      } catch { /* fall back to provided values only */ }
+
+      const merged = { ...current, ...updates.connection };
+      const conn = validateConnection(existing.system, merged);
+
+      try {
+        const probe = await getAdapter(existing.system).testConnection(conn);
+        updateFields.version = probe.version;
+        updateFields.discoveredQueues = probe.discoveredQueues;
       } catch (err: any) {
         return res.status(400).json({ error: 'Queue Source Connection Failed', details: err.message });
       }
-      // Reset health and re-poll promptly after a config change.
+
+      updateFields.encryptedConfig = encrypt(JSON.stringify(conn));
+      updateFields.connectionMeta = stripSecrets(existing.system, conn);
       updateFields.status = 'online';
       updateFields.lastCheck = new Date();
       updateFields.errorMessage = undefined;
       updateFields.consecutiveFailures = 0;
       updateFields.backoffUntil = undefined;
       updateFields.nextPollAt = new Date();
+
+      // Drop any pooled client bound to the previous config.
+      await disposeAllAdapters(id as string);
     }
 
     const updated = await QueueSource.findOneAndUpdate(
       { _id: id, ownerId },
       updateFields,
       { new: true, runValidators: true }
-    ).select('-encryptedUri -leasedBy -leaseExpiresAt');
+    ).select(SELECT_PUBLIC);
 
     res.json({ message: 'Queue Source Updated', source: updated });
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.statusCode === 400) {
+      return res.status(400).json({ error: error.message, details: error.details });
+    }
     next(error);
   }
 };
@@ -152,7 +157,8 @@ export const deleteQueueSource = async (req: Request, res: Response, next: NextF
       QueueMetric.deleteMany({ sourceId: id }),
       QueueRollup.deleteMany({ sourceId: id }),
       QueueSnapshot.deleteOne({ sourceId: id }),
-      DashboardShare.deleteMany({ scopeType: 'queue', scopeId: id, ownerId })
+      DashboardShare.deleteMany({ scopeType: 'queue', scopeId: id, ownerId }),
+      disposeAllAdapters(id as string)
     ]);
 
     res.json({ message: 'Queue source and all metric history deleted' });
