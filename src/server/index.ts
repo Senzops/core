@@ -30,6 +30,7 @@ import { registerDatabase, listDatabases, deleteDatabase, updateDatabase } from 
 import { getDatabaseStats } from '../controllers/database/stats';
 import { registerQueueSource, listQueueSources, updateQueueSource, deleteQueueSource } from '../controllers/queue/main';
 import { getQueueStats } from '../controllers/queue/stats';
+import { getQueueExecutions, getDiscoveredQueues } from '../controllers/queue/correlation';
 import { registerFirebase, listFirebaseServices, updateFirebase, deleteFirebase } from '../controllers/firebase/main';
 import { getFirebaseStats } from '../controllers/firebase/stats';
 import { ingestTaskBatch } from '../controllers/task/ingest';
@@ -345,9 +346,11 @@ apiRouter.get('/database/:id/stats', getDatabaseStats);
 // --- Queue Monitoring (BullMQ/Redis, agentless pull-plane) ---
 apiRouter.post('/queue/register', requireServiceQuota('QueueSource', 'Queue'), registerQueueSource);
 apiRouter.get('/queue/list', listQueueSources);
+apiRouter.get('/queue/discovered', getDiscoveredQueues);
 apiRouter.put('/queue/:id', updateQueueSource);
 apiRouter.delete('/queue/:id', deleteQueueSource);
 apiRouter.get('/queue/:id/stats', getQueueStats);
+apiRouter.get('/queue/:id/executions', getQueueExecutions);
 
 // --- Firebase Monitoring ---
 apiRouter.post('/firebase/register', requireServiceQuota('FirebaseService', 'Firebase Project'), registerFirebase);
