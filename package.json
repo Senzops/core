@@ -12,6 +12,7 @@
     "lint": "eslint src/**/*.ts",
     "start:server": "node --import ./dist/utils/otlp.js dist/server/index.js",
     "start:worker": "node dist/worker/index.js",
+    "collector:queue": "node dist/collector/queue.js",
     "dev:server": "ts-node-dev --respawn --transpile-only src/server/index.ts",
     "dev:worker": "ts-node-dev --respawn --transpile-only src/worker/index.ts",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:worker\" --names \"API,WORKER\" --prefix-colors \"yellow,blue\"",

@@ -1,14 +1,12 @@
 import cron from 'node-cron';
 import os from 'os';
-import {
-  QueueSource, QueueMetric, QueueSnapshot, QueueRollup,
-  IQueueSnapshotEntry
-} from '../../models/Queue';
+import { QueueSource, QueueMetric, QueueRollup } from '../../models/Queue';
 import { SystemLock } from '../../models/Task';
 import { decrypt } from '../../utils/crypto';
 import { logger } from '../../utils/logger';
-import { getRetentionMs, stampExpiry } from '../../services/retentionCache';
-import { getAdapter, disposeAllAdapters, DEFAULT_MAX_QUEUES, QueueSample } from './adapters';
+import { getRetentionMs } from '../../services/retentionCache';
+import { getAdapter, disposeAllAdapters, DEFAULT_MAX_QUEUES } from './adapters';
+import { persistQueueSamples } from './persist';
 
 // ============================================================================
 // Queue Monitoring poller (agentless, pull-plane, multi-broker).
@@ -82,6 +80,8 @@ const claimDueSources = async (limit: number): Promise<any[]> => {
     const now = new Date();
     const src = await QueueSource.findOneAndUpdate(
       {
+        // Collector-mode sources are pushed to, not polled.
+        mode: { $ne: 'collector' },
         nextPollAt: { $lte: now },
         $or: [
           { leaseExpiresAt: { $exists: false } },
@@ -131,65 +131,7 @@ const processSource = async (source: any) => {
   });
 
   const now = new Date();
-
-  // Previous state for stateless rate derivation comes from the persisted
-  // snapshot — survives restarts and is shared across replicas.
-  const prevSnapshot = await QueueSnapshot.findOne({ sourceId: source._id }).lean();
-  const prevByQueue = new Map<string, IQueueSnapshotEntry>(
-    (prevSnapshot?.queues || []).map(q => [q.queueName, q])
-  );
-  const prevTimeMs = prevSnapshot?.lastCheck ? new Date(prevSnapshot.lastCheck).getTime() : 0;
-  const elapsedSec = prevTimeMs > 0 ? Math.max(1, (now.getTime() - prevTimeMs) / 1000) : 0;
-
-  const retentionMs = await getRetentionMs(source.ownerId);
-
-  const metricDocs: any[] = [];
-  const snapshotEntries: IQueueSnapshotEntry[] = [];
-
-  for (const sample of samples) {
-    const prev = prevByQueue.get(sample.queueName);
-    const { netRate, etaToEmptyMs, completedRate, failedRate } = computeRates(sample, prev, elapsedSec);
-
-    metricDocs.push({
-      sourceId: source._id,
-      queueName: sample.queueName,
-      timestamp: now,
-      depth: sample.depth,
-      pending: sample.pending,
-      dlqDepth: sample.dlqDepth,
-      oldestWaitingAgeMs: sample.oldestWaitingAgeMs,
-      oldestDelayedAgeMs: sample.oldestDelayedAgeMs,
-      consumerCount: sample.consumerCount,
-      isPaused: sample.isPaused,
-      netRate,
-      completedRate,
-      failedRate,
-      etaToEmptyMs
-    });
-
-    snapshotEntries.push({
-      queueName: sample.queueName,
-      pending: sample.pending,
-      active: sample.depth.active,
-      dlqDepth: sample.dlqDepth,
-      consumerCount: sample.consumerCount,
-      isPaused: sample.isPaused,
-      oldestWaitingAgeMs: sample.oldestWaitingAgeMs,
-      netRate,
-      processedTotal: sample.processedTotal
-    });
-  }
-
-  if (metricDocs.length > 0) {
-    stampExpiry(metricDocs, 'timestamp', retentionMs);
-    await QueueMetric.insertMany(metricDocs, { ordered: false });
-  }
-
-  await QueueSnapshot.updateOne(
-    { sourceId: source._id },
-    { $set: { lastCheck: now, queues: snapshotEntries } },
-    { upsert: true }
-  );
+  await persistQueueSamples(source, samples);
 
   const intervalMs = (source.interval || 1) * 60_000;
   await QueueSource.updateOne(
@@ -213,44 +155,6 @@ const processSource = async (source: any) => {
   );
 
   logger.debug(`[Queue Engine] Polled ${source.system} source ${sourceId}: ${samples.length} entities`);
-};
-
-/**
- * Net backlog rate (signed jobs/sec), drain ETA, and throughput — all derived
- * statelessly from the previous persisted snapshot.
- *
- * Throughput precedence: a broker-provided direct rate (RabbitMQ message_stats)
- * wins; otherwise it's derived from the delta of a cumulative processed counter
- * (Kafka committed-offset sum). Brokers exposing neither report 0.
- */
-const computeRates = (
-  sample: QueueSample,
-  prev: IQueueSnapshotEntry | undefined,
-  elapsedSec: number
-): { netRate: number; etaToEmptyMs: number; completedRate: number; failedRate: number } => {
-  let netRate = 0;
-  let etaToEmptyMs = -1;
-  if (prev && elapsedSec > 0) {
-    netRate = (sample.pending - prev.pending) / elapsedSec;
-    etaToEmptyMs = netRate < 0 && sample.pending > 0
-      ? Math.round((sample.pending / -netRate) * 1000)
-      : -1;
-  }
-
-  let completedRate = sample.completedRate ?? 0;
-  const failedRate = sample.failedRate ?? 0;
-
-  // Derive consumed/sec from a cumulative counter when no direct rate is given.
-  if (
-    sample.completedRate === undefined &&
-    sample.processedTotal !== undefined &&
-    prev?.processedTotal !== undefined &&
-    elapsedSec > 0
-  ) {
-    completedRate = Math.max(0, (sample.processedTotal - prev.processedTotal) / elapsedSec);
-  }
-
-  return { netRate, etaToEmptyMs, completedRate, failedRate };
 };
 
 // ─── Circuit breaker on failure ──────────────────────────────────────────────

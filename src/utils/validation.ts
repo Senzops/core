@@ -368,9 +368,42 @@ export const queueConnectionSchema = (system: string) => {
 export const RegisterQueueSchema = z.object({
   name: z.string().min(1).max(50),
   system: z.enum(['bullmq', 'rabbitmq', 'kafka', 'sqs']),
-  connection: z.record(z.any()), // validated per-system in the controller
+  // 'agentless' (default) requires `connection`; 'collector' issues an apiKey
+  // and needs no server-side connection.
+  mode: z.enum(['agentless', 'collector']).default('agentless'),
+  connection: z.record(z.any()).optional(),
   queueFilter: z.array(z.string().min(1).max(500)).max(1000).default([]),
   interval: z.number().min(1).max(60).default(1),
+});
+
+// --- Collector push ingest ---
+const QueueSampleSchema = z.object({
+  queueName: z.string().min(1).max(500),
+  depth: z.object({
+    waiting: z.number().default(0),
+    active: z.number().default(0),
+    delayed: z.number().default(0),
+    prioritized: z.number().default(0),
+    waitingChildren: z.number().default(0),
+    paused: z.number().default(0),
+  }).default({}),
+  pending: z.number().default(0),
+  dlqDepth: z.number().default(0),
+  completed: z.number().default(0),
+  oldestWaitingAgeMs: z.number().default(0),
+  oldestDelayedAgeMs: z.number().default(0),
+  consumerCount: z.number().default(0),
+  isPaused: z.boolean().default(false),
+  completedRate: z.number().optional(),
+  failedRate: z.number().optional(),
+  processedTotal: z.number().optional(),
+});
+
+export const QueueIngestSchema = z.object({
+  samples: z.array(QueueSampleSchema).max(1000),
+  version: z.string().max(80).optional(),
+  discovered: z.number().optional(),
+  truncated: z.boolean().optional(),
 });
 
 export const UpdateQueueSchema = z.object({

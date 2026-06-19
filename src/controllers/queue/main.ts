@@ -1,4 +1,5 @@
 import { Request, Response, NextFunction } from 'express';
+import crypto from 'crypto';
 import { QueueSource, QueueMetric, QueueRollup, QueueSnapshot, QueueSystem } from '../../models/Queue';
 import { DashboardShare } from '../../models/DashboardShare';
 import { encrypt, decrypt } from '../../utils/crypto';
@@ -33,8 +34,41 @@ const validateConnection = (system: QueueSystem, raw: any) => {
 export const registerQueueSource = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ownerId = (req as any).ownerId;
-    const { name, system, connection, queueFilter, interval } = RegisterQueueSchema.parse(req.body);
+    const { name, system, mode, connection, queueFilter, interval } = RegisterQueueSchema.parse(req.body);
 
+    // --- Collector (push) mode: issue an ingest key, no server-side connection ---
+    if (mode === 'collector') {
+      const apiKey = `sqk_${crypto.randomBytes(24).toString('hex')}`;
+      const newSource = await QueueSource.create({
+        ownerId,
+        name,
+        system,
+        mode: 'collector',
+        apiKey,
+        connectionMeta: {},
+        queueFilter,
+        interval,
+        status: 'offline', // becomes online on first push
+        discoveredQueues: 0,
+        // Never claimed by the poller (collector sources are excluded), but keep
+        // it far in the future as defence-in-depth.
+        nextPollAt: new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000)
+      });
+
+      return res.status(201).json({
+        message: 'Queue Collector Registered',
+        sourceId: newSource._id,
+        name: newSource.name,
+        system: newSource.system,
+        mode: 'collector',
+        apiKey
+      });
+    }
+
+    // --- Agentless (pull) mode: validate + test the connection we'll poll ---
+    if (!connection) {
+      return res.status(400).json({ error: 'A connection is required for agentless mode.' });
+    }
     const conn = validateConnection(system, connection);
 
     let probe: { version?: string; discoveredQueues: number };
@@ -48,6 +82,7 @@ export const registerQueueSource = async (req: Request, res: Response, next: Nex
       ownerId,
       name,
       system,
+      mode: 'agentless',
       encryptedConfig: encrypt(JSON.stringify(conn)),
       connectionMeta: stripSecrets(system, conn),
       queueFilter,
@@ -64,6 +99,7 @@ export const registerQueueSource = async (req: Request, res: Response, next: Nex
       sourceId: newSource._id,
       name: newSource.name,
       system: newSource.system,
+      mode: 'agentless',
       discoveredQueues: probe.discoveredQueues
     });
   } catch (error: any) {
@@ -98,12 +134,14 @@ export const updateQueueSource = async (req: Request, res: Response, next: NextF
     if (updates.interval !== undefined) updateFields.interval = updates.interval;
     if (updates.queueFilter !== undefined) updateFields.queueFilter = updates.queueFilter;
 
-    if (updates.connection !== undefined) {
+    // Collector-mode sources hold no server-side connection — ignore any
+    // connection payload for them (only name/interval/queueFilter apply).
+    if (updates.connection !== undefined && existing.mode === 'agentless') {
       // The connection may arrive partial (e.g. secrets unchanged). Merge over
       // the decrypted existing config, then re-validate and re-test as a whole.
       let current: any = {};
       try {
-        current = JSON.parse(decrypt(existing.encryptedConfig));
+        if (existing.encryptedConfig) current = JSON.parse(decrypt(existing.encryptedConfig));
       } catch { /* fall back to provided values only */ }
 
       const merged = { ...current, ...updates.connection };

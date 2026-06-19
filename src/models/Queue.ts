@@ -23,8 +23,17 @@ export interface IQueueSource extends Document {
   ownerId: string;
   name: string;
   system: QueueSystem;
-  /** Encrypted JSON of the full broker connection, including secrets. */
-  encryptedConfig: string;
+  /**
+   * 'agentless' — Senzor polls the broker (encryptedConfig holds the connection).
+   * 'collector'  — a customer-run collector samples the broker locally and pushes
+   *                to /api/ingest/queue (apiKey authenticates it; no connection
+   *                config is held server-side). For locked-down / VPC envs.
+   */
+  mode: 'agentless' | 'collector';
+  /** Encrypted JSON of the full broker connection (agentless mode only). */
+  encryptedConfig?: string;
+  /** Ingest API key (collector mode only). */
+  apiKey?: string;
   /** Non-secret connection fields surfaced to the UI for display/edit prefill. */
   connectionMeta: Record<string, any>;
   /** Optional allowlist of queue/topic/group names. Empty = auto-discover all. */
@@ -56,7 +65,9 @@ const QueueSourceSchema = new Schema<IQueueSource>({
   ownerId: { type: String, required: true, index: true },
   name: { type: String, required: true },
   system: { type: String, enum: QUEUE_SYSTEMS, required: true },
-  encryptedConfig: { type: String, required: true },
+  mode: { type: String, enum: ['agentless', 'collector'], default: 'agentless', index: true },
+  encryptedConfig: { type: String },
+  apiKey: { type: String, unique: true, sparse: true, index: true },
   connectionMeta: { type: Schema.Types.Mixed, default: {} },
   queueFilter: { type: [String], default: [] },
   interval: { type: Number, default: 1, min: 1, max: 60 },

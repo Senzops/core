@@ -34,6 +34,7 @@ import { getQueueExecutions, getDiscoveredQueues } from '../controllers/queue/co
 import { registerFirebase, listFirebaseServices, updateFirebase, deleteFirebase } from '../controllers/firebase/main';
 import { getFirebaseStats } from '../controllers/firebase/stats';
 import { ingestTaskBatch } from '../controllers/task/ingest';
+import { ingestQueueBatch } from '../controllers/queue/ingest';
 import { deleteTaskService, listTaskServices, registerTaskService, updateTaskService } from '../controllers/task/main';
 import { getTaskEntityDetail, getTaskRunDetail, getTaskServiceDashboard } from '../controllers/task/stats';
 import { getErrorGroupDetails, getGlobalErrors, getTraceErrors, updateErrorStatus } from '../controllers/error';
@@ -291,6 +292,7 @@ ingestRouter.post('/stats', agentIngestLimiter, authenticateAgent, requireIngest
 ingestRouter.post('/web', webIngestLimiter, requireIngestionQuota, ingestWebMetrics);
 ingestRouter.post('/apm', agentBatchBody, apmLimiter, requireIngestionQuota, ingestApmBatch);
 ingestRouter.post('/task', agentBatchBody, apmLimiter, requireIngestionQuota, ingestTaskBatch);
+ingestRouter.post('/queue', agentBatchBody, apmLimiter, requireIngestionQuota, ingestQueueBatch);
 ingestRouter.post('/rum', apmLimiter, requireIngestionQuota, ingestRumBatch);
 ingestRouter.post('/logs', apmLimiter, ...ndjsonBody, requireIngestionQuota, ingestGlobalLogs);
 
