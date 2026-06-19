@@ -215,9 +215,20 @@ app.use(compression({
   },
 }));
 
-// Body parser — skip for telemetry import route (it uses a higher limit via its own router)
+// Body parser — skip for routes that mount their own higher-limit parser:
+//  - telemetry import (50mb)
+//  - APM/Task ingest (5mb): native-agent batches carry span-heavy payloads that
+//    routinely exceed 1mb; these paths attach their own parser below.
+//  - OTLP (10mb, prefix /api/otlp/*): the OTLP router mounts its own parser, but
+//    this global parser runs first and would cap bodies at 1mb otherwise. None
+//    of the OTLP routes depend on req.rawBody, so bypassing here is safe.
+const HIGHER_LIMIT_BODY_PATHS = new Set([
+  '/api/data/import/telemetry',
+  '/api/ingest/apm',
+  '/api/ingest/task',
+]);
 app.use((req, res, next) => {
-  if (req.path === '/api/data/import/telemetry') {
+  if (HIGHER_LIMIT_BODY_PATHS.has(req.path) || req.path.startsWith('/api/otlp/')) {
     return next();
   }
   express.json({
@@ -270,10 +281,13 @@ app.use('/api/mcp', mcpAgentRouter);
 // 1. Ingestion API
 // Defined FIRST so it doesn't get caught by the generic /api middleware
 const ingestRouter = express.Router();
+// Span-heavy native-agent batches (APM traces / Task runs) need headroom above
+// the global 1mb limit; these paths are excluded from the global parser above.
+const agentBatchBody = express.json({ limit: '5mb' });
 ingestRouter.post('/stats', agentIngestLimiter, authenticateAgent, requireIngestionQuota, ingestMetrics);
 ingestRouter.post('/web', webIngestLimiter, requireIngestionQuota, ingestWebMetrics);
-ingestRouter.post('/apm', apmLimiter, requireIngestionQuota, ingestApmBatch);
-ingestRouter.post('/task', apmLimiter, requireIngestionQuota, ingestTaskBatch);
+ingestRouter.post('/apm', agentBatchBody, apmLimiter, requireIngestionQuota, ingestApmBatch);
+ingestRouter.post('/task', agentBatchBody, apmLimiter, requireIngestionQuota, ingestTaskBatch);
 ingestRouter.post('/rum', apmLimiter, requireIngestionQuota, ingestRumBatch);
 ingestRouter.post('/logs', apmLimiter, ...ndjsonBody, requireIngestionQuota, ingestGlobalLogs);
 
