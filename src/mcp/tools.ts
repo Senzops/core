@@ -13,6 +13,9 @@ import { getWebStats } from '../controllers/web/webStats';
 import { listMonitors, getMonitorStats } from '../controllers/monitor';
 import { listDatabases } from '../controllers/database/main';
 import { getDatabaseStats } from '../controllers/database/stats';
+import { listQueueSources } from '../controllers/queue/main';
+import { getQueueStats, getQueueEntityDetail } from '../controllers/queue/stats';
+import { getQueueExecutions } from '../controllers/queue/correlation';
 import { listFirebaseServices } from '../controllers/firebase/main';
 import { getFirebaseStats } from '../controllers/firebase/stats';
 import { listTaskServices } from '../controllers/task/main';
@@ -288,6 +291,32 @@ const MCP_TOOLS = [
     description: "Get database throughput and latency metrics.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "1h" } }, required: ["id"] },
     execute: (args: any, uid: string) => simulateExpressCall(getDatabaseStats, uid, { id: args.id }, { range: args.range })
+  },
+
+  // --- Queue Monitoring Tools (BullMQ, RabbitMQ, Kafka, AWS SQS) ---
+  {
+    name: "queue_list",
+    description: "List monitored queue sources (BullMQ, RabbitMQ, Kafka, AWS SQS), their broker system, mode (agentless/collector), and status.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listQueueSources, uid)
+  },
+  {
+    name: "queue_get_stats",
+    description: "Get a queue source overview: total backlog, in-flight, dead-letter depth, consumer count, the per-queue table, and overall throughput/backlog history aggregated across all of the source's queues.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getQueueStats, uid, { id: args.id }, { range: args.range })
+  },
+  {
+    name: "queue_get_entity_detail",
+    description: "Get one queue's detail within a source: backlog, dead letters, throughput (processed/sec), oldest-message age, consumers, drain ETA, net rate, and time-series history. queueName is the exact queue/topic/consumer-group name from queue_get_stats.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, queueName: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id", "queueName"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getQueueEntityDetail, uid, { id: args.id, queueName: encodeURIComponent(args.queueName) }, { range: args.range })
+  },
+  {
+    name: "queue_get_executions",
+    description: "Get instrumented consumer executions correlated to a queue (from @senzops/apm-node): run count, failure rate, dead-letter count, average processing time, and recent runs. Explains WHY a queue's backlog is growing or draining.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, queue: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id", "queue"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getQueueExecutions, uid, { id: args.id }, { queue: args.queue, range: args.range })
   },
 
   // --- Alerts & Incident Tools ---

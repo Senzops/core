@@ -119,6 +119,8 @@ import { listMonitors, getMonitorStats } from '../controllers/monitor';
 import { listVps, getVpsStats } from '../controllers/vps';
 import { listDatabases } from '../controllers/database/main';
 import { getDatabaseStats } from '../controllers/database/stats';
+import { listQueueSources } from '../controllers/queue/main';
+import { getQueueStats } from '../controllers/queue/stats';
 import { Request, Response } from 'express';
 
 // Simulated Express call — same pattern as mcp/tools.ts
@@ -273,6 +275,18 @@ const INVESTIGATION_TOOLS: ToolDef[] = [
     description: 'Get database throughput, latency metrics, and connection stats.',
     parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' } }, required: ['id'] },
     execute: (args, uid) => simulateExpressCall(getDatabaseStats, uid, { id: args.id }, { range: args.range || '1h' }),
+  },
+  {
+    name: 'queue_list',
+    description: 'List monitored queue sources (BullMQ, RabbitMQ, Kafka, AWS SQS) and their status.',
+    parameters: { type: 'object', properties: {} },
+    execute: (args, uid) => simulateExpressCall(listQueueSources, uid),
+  },
+  {
+    name: 'queue_get_stats',
+    description: 'Get a queue source overview: total backlog, in-flight, dead-letter depth, consumer count, per-queue table, and throughput/backlog history. Use to check whether a backed-up or dead-lettering queue is causing an incident.',
+    parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' } }, required: ['id'] },
+    execute: (args, uid) => simulateExpressCall(getQueueStats, uid, { id: args.id }, { range: args.range || '1h' }),
   },
 ];
 
