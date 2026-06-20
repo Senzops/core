@@ -5,6 +5,7 @@ import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
 import { RumService, RumTrace, RumMetric } from '../../models/Rum';
 import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
 import { DatabaseService, DbMetric } from '../../models/Database';
+import { QueueSource, QueueMetric, QueueRollup } from '../../models/Queue';
 import { Website, WebEvent, WebMetric } from '../../models/Web';
 import { Vps, VpsRun } from '../../models/Vps';
 import { Monitor, MonitorRun } from '../../models/Monitor';
@@ -41,6 +42,8 @@ const TIMESTAMP_FIELD_MAP: Record<string, string> = {
   'task-metrics': 'timestamp',
   'task-signatures': 'lastRunAt',
   'db-metrics': 'timestamp',
+  'queue-metrics': 'timestamp',
+  'queue-rollups': 'timestamp',
   'web-events': 'createdAt',
   'web-metrics': 'timestamp',
   'vps-runs': 'createdAt',
@@ -61,6 +64,8 @@ const SERVICE_ID_FIELD_MAP: Record<string, string> = {
   'task-metrics': 'serviceId',
   'task-signatures': 'serviceId',
   'db-metrics': 'dbId',
+  'queue-metrics': 'sourceId',
+  'queue-rollups': 'sourceId',
   'web-events': 'webId',
   'web-metrics': 'webId',
   'vps-runs': 'vpsId',
@@ -82,6 +87,8 @@ function getModelForType(type: string): any {
     'task-metrics': TaskMetric,
     'task-signatures': TaskSignature,
     'db-metrics': DbMetric,
+    'queue-metrics': QueueMetric,
+    'queue-rollups': QueueRollup,
     'web-events': WebEvent,
     'web-metrics': WebMetric,
     'vps-runs': VpsRun,
@@ -153,7 +160,7 @@ export const importTelemetry = async (req: Request, res: Response, next: NextFun
     // Verify each target ID exists and belongs to this ownerId by checking all service models
     for (const targetId of targetServiceIds) {
       const serviceModels: mongoose.Model<any>[] = [
-        ApmService, RumService, TaskService, DatabaseService, Website, Vps, Monitor,
+        ApmService, RumService, TaskService, DatabaseService, QueueSource, Website, Vps, Monitor,
       ];
       let found = false;
 

@@ -4,6 +4,7 @@ import { ApmService, ApmTrace, ApmMetric } from '../../models/Apm';
 import { RumService, RumTrace, RumMetric } from '../../models/Rum';
 import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
 import { DatabaseService, DbMetric } from '../../models/Database';
+import { QueueSource, QueueMetric, QueueRollup } from '../../models/Queue';
 import { Website, WebEvent, WebMetric } from '../../models/Web';
 import { Vps, VpsRun } from '../../models/Vps';
 import { Monitor, MonitorRun } from '../../models/Monitor';
@@ -28,6 +29,7 @@ const VALID_TELEMETRY_TYPES = [
   'rum-traces', 'rum-metrics',
   'task-runs', 'task-metrics', 'task-signatures',
   'db-metrics',
+  'queue-metrics', 'queue-rollups',
   'web-events', 'web-metrics',
   'vps-runs',
   'monitor-runs',
@@ -105,6 +107,18 @@ function buildCollectionConfigs(): Record<TelemetryType, TelemetryCollectionConf
       serviceIdField: 'dbId',
       timestampField: 'timestamp',
       parentServiceModel: DatabaseService,
+    },
+    'queue-metrics': {
+      model: QueueMetric,
+      serviceIdField: 'sourceId',
+      timestampField: 'timestamp',
+      parentServiceModel: QueueSource,
+    },
+    'queue-rollups': {
+      model: QueueRollup,
+      serviceIdField: 'sourceId',
+      timestampField: 'timestamp',
+      parentServiceModel: QueueSource,
     },
     'web-events': {
       model: WebEvent,
