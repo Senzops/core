@@ -56,6 +56,11 @@ export interface TaskIngestPayload {
   serviceId: string;
 }
 
+export interface AiIngestPayload {
+  batchData: { aiTraces: any[]; aiGenerations: any[]; aiScores: any[]; errors: any[]; logs: any[] };
+  sourceId: string;
+}
+
 export interface LogIngestPayload {
   payloads: any[];
   ownerId: string;
@@ -124,6 +129,7 @@ function createQueue<T>(name: string, opts?: Partial<JobsOptions>): IngestionQue
 export const apmIngestQueue = createQueue<ApmIngestPayload>('ingest.apm');
 export const rumIngestQueue = createQueue<RumIngestPayload>('ingest.rum');
 export const taskIngestQueue = createQueue<TaskIngestPayload>('ingest.task');
+export const aiIngestQueue = createQueue<AiIngestPayload>('ingest.ai');
 export const logIngestQueue = createQueue<LogIngestPayload>('ingest.logs');
 export const webIngestQueue = createQueue<WebIngestPayload>('ingest.web');
 export const vpsIngestQueue = createQueue<VpsIngestPayload>('ingest.vps');
@@ -131,7 +137,7 @@ export const otlpTraceQueue = createQueue<OtlpTracePayload>('ingest.otlp-traces'
 export const otlpLogQueue = createQueue<OtlpLogPayload>('ingest.otlp-logs');
 
 const allQueues: Queue[] = [
-  apmIngestQueue, rumIngestQueue, taskIngestQueue, logIngestQueue,
+  apmIngestQueue, rumIngestQueue, taskIngestQueue, aiIngestQueue, logIngestQueue,
   webIngestQueue, vpsIngestQueue, otlpTraceQueue, otlpLogQueue,
 ];
 

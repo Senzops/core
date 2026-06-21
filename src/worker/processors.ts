@@ -5,6 +5,7 @@ import {
   type ApmIngestPayload,
   type RumIngestPayload,
   type TaskIngestPayload,
+  type AiIngestPayload,
   type LogIngestPayload,
   type WebIngestPayload,
   type VpsIngestPayload,
@@ -17,11 +18,13 @@ import { logger } from '../utils/logger';
 import { ApmService } from '../models/Apm';
 import { RumService } from '../models/Rum';
 import { TaskService } from '../models/Task';
+import { AiSource } from '../models/Ai';
 
 // Processors
 import { processBatchBackground } from '../controllers/apm/ingest';
 import { processRumBatchBackground } from '../controllers/rum/ingest';
 import { processTaskBatchBackground } from '../controllers/task/ingest';
+import { processAiBatchBackground } from '../controllers/ai/observability/ingest';
 import { processLogIngestion } from '../controllers/logs/index';
 import { processWebIngestion } from '../controllers/web/webIngest';
 import { processVpsIngestion } from '../controllers/vps';
@@ -72,6 +75,13 @@ export function startQueueWorkers(): void {
     await processTaskBatchBackground(job.data.batchData, service);
   }, 5, HEAVY_LOCK_MS));
 
+  // --- AI Monitoring Ingestion (heavy: cost + masking + metric bulk writes) ---
+  registerWorker(createWorker<AiIngestPayload>('ingest.ai', async (job) => {
+    const source = await AiSource.findById(job.data.sourceId).select('+apiKey').lean();
+    if (!source) throw new UnrecoverableError(`AI source ${job.data.sourceId} not found`);
+    await processAiBatchBackground(job.data.batchData, source);
+  }, 5, HEAVY_LOCK_MS));
+
   // --- Log Ingestion (light: single insertMany) ---
   registerWorker(createWorker<LogIngestPayload>('ingest.logs', async (job) => {
     await processLogIngestion(job.data.payloads, job.data.ownerId);
@@ -101,5 +111,5 @@ export function startQueueWorkers(): void {
     await updateLastSeen(context);
   }, 5));
 
-  logger.info('[Queue] All ingestion workers started (apm×5, rum×5, task×5, logs×10, web×5, vps×3, otlp-traces×5, otlp-logs×5)');
+  logger.info('[Queue] All ingestion workers started (apm×5, rum×5, task×5, ai×5, logs×10, web×5, vps×3, otlp-traces×5, otlp-logs×5)');
 }

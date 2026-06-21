@@ -16,6 +16,9 @@ import { getDatabaseStats } from '../controllers/database/stats';
 import { listQueueSources } from '../controllers/queue/main';
 import { getQueueStats, getQueueEntityDetail } from '../controllers/queue/stats';
 import { getQueueExecutions } from '../controllers/queue/correlation';
+import {
+  listAiSources, getAiStats, getAiTraces, getAiTraceDetail, getAiConsumers,
+} from '../controllers/ai/observability';
 import { listFirebaseServices } from '../controllers/firebase/main';
 import { getFirebaseStats } from '../controllers/firebase/stats';
 import { listTaskServices } from '../controllers/task/main';
@@ -390,6 +393,38 @@ const MCP_TOOLS = [
     description: "Execute the aggregation pipeline for a specific dashboard widget and return the computed data.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id"] },
     execute: (args: any, uid: string) => simulateExpressCall(getWidgetData, uid, { id: args.id }, { range: args.range })
+  },
+
+  // --- AI Monitoring (LLM Observability) Tools ---
+  {
+    name: "ai_list_sources",
+    description: "List all AI Monitoring sources (LLM observability projects) and their IDs, type (server/browser), and last-seen time.",
+    inputSchema: { type: "object", properties: {} },
+    execute: (args: any, uid: string) => simulateExpressCall(listAiSources, uid)
+  },
+  {
+    name: "ai_get_stats",
+    description: "Get an AI source overview for a time range: total cost (USD), LLM calls, token usage, error rate, latency percentiles (p50/p95/p99), cost/token/latency time series, and breakdowns by model, provider and operation.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getAiStats, uid, { id: args.id }, { range: args.range })
+  },
+  {
+    name: "ai_get_consumers",
+    description: "Get the top users and top sessions for an AI source by cost (also calls, tokens, traces). Useful for attributing LLM spend to end-users or conversations.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getAiConsumers, uid, { id: args.id }, { range: args.range })
+  },
+  {
+    name: "ai_get_traces",
+    description: "List recent AI traces (workflow groupings) for a source with status, generation count, cost, tokens and latency. Supports filtering by status ('ok'|'error') and sessionId.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" }, status: { type: "string" }, sessionId: { type: "string" }, limit: { type: "number", default: 50 } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getAiTraces, uid, { id: args.id }, { range: args.range, status: args.status, sessionId: args.sessionId, limit: args.limit })
+  },
+  {
+    name: "ai_get_trace_detail",
+    description: "Get one AI trace and its full generation waterfall (each LLM/tool/retrieval/embedding call with provider, model, tokens, cost, latency, finish reason and status).",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, traceId: { type: "string" } }, required: ["id", "traceId"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getAiTraceDetail, uid, { id: args.id, traceId: args.traceId })
   },
 
   // --- Dynamic Schema Explorer Tool ---

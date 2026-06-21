@@ -585,3 +585,121 @@ export const RumBatchSchema = z.object({
   errors: z.array(RumErrorItemSchema).optional().default([]),
   logs: z.array(LogPayloadSchema).default([])
 });
+
+// --- AI MONITORING (LLM OBSERVABILITY) SCHEMAS ---
+// The SDK pushes AI traces (workflow groupings) and their generations
+// (individual LLM/tool/retrieval calls). Cost is intentionally NOT accepted
+// from the client — it is recomputed server-side from the pricing table.
+// Content (input/output) is accepted but only persisted when the source opts
+// in, and is masked on ingest.
+
+export const AI_OBSERVATION_TYPES = ['generation', 'tool', 'retrieval', 'embedding', 'span'] as const;
+
+const AiGenerationItem = z.object({
+  generationId: z.string(),
+  parentGenerationId: z.string().optional().nullable(),
+  type: z.enum(AI_OBSERVATION_TYPES).default('generation'),
+  name: z.string().max(200).optional(),
+  provider: z.string().max(80).optional(),
+  operation: z.string().max(80).optional(),
+
+  requestModel: z.string().max(200).optional(),
+  responseModel: z.string().max(200).optional(),
+
+  tokensIn: z.number().nonnegative().optional().default(0),
+  tokensOut: z.number().nonnegative().optional().default(0),
+
+  startTime: z.number().min(0).optional().default(0),
+  latencyMs: z.number().nonnegative().optional().default(0),
+  timeToFirstTokenMs: z.number().nonnegative().optional(),
+  streaming: z.boolean().optional().default(false),
+
+  params: z.record(z.any()).optional(),
+  finishReason: z.string().max(80).optional(),
+
+  status: z.enum(['ok', 'error']).optional().default('ok'),
+  statusCode: z.number().optional(),
+  errorType: z.string().max(200).optional(),
+  errorMessage: z.string().max(2000).optional(),
+
+  // Optional captured content — persisted only when the source opts in.
+  input: z.any().optional(),
+  output: z.any().optional(),
+  toolCalls: z.array(z.any()).optional(),
+
+  metadata: z.record(z.any()).optional(),
+  timestamp: z.string().datetime(),
+});
+
+const AiTraceItem = z.object({
+  traceId: z.string(),
+  apmTraceId: z.string().optional().nullable(),
+  sessionId: z.string().max(200).optional(),
+  userId: z.string().max(200).optional(),
+  name: z.string().max(200).optional(),
+  tags: z.array(z.string().max(80)).max(50).optional().default([]),
+  status: z.enum(['ok', 'error']).optional().default('ok'),
+  latencyMs: z.number().nonnegative().optional().default(0),
+  metadata: z.record(z.any()).optional(),
+  timestamp: z.string().datetime(),
+});
+
+const AiScoreItem = z.object({
+  traceId: z.string(),
+  generationId: z.string().optional().nullable(),
+  name: z.string().min(1).max(120),
+  dataType: z.enum(['numeric', 'boolean', 'categorical']).optional().default('numeric'),
+  value: z.number().optional().default(0),
+  stringValue: z.string().max(500).optional(),
+  comment: z.string().max(2000).optional(),
+  authorId: z.string().max(200).optional(),
+  timestamp: z.string().datetime(),
+});
+
+export const AiBatchSchema = z.object({
+  aiTraces: z.array(AiTraceItem).optional().default([]),
+  aiGenerations: z.array(AiGenerationItem.extend({ traceId: z.string() })).optional().default([]),
+  aiScores: z.array(AiScoreItem).optional().default([]),
+  errors: z.array(ApmErrorItemSchema).optional().default([]),
+  logs: z.array(LogPayloadSchema).optional().default([]),
+});
+
+// Authenticated user-feedback / eval score (dashboard or external API).
+export const AiScoreSubmitSchema = z.object({
+  traceId: z.string().min(1),
+  generationId: z.string().optional(),
+  name: z.string().min(1).max(120),
+  dataType: z.enum(['numeric', 'boolean', 'categorical']).optional().default('numeric'),
+  value: z.number().optional().default(0),
+  stringValue: z.string().max(500).optional(),
+  comment: z.string().max(2000).optional(),
+});
+
+// --- AI Source management (dashboard CRUD) ---
+const AiModelPriceSchema = z.object({
+  input: z.number().nonnegative(),
+  output: z.number().nonnegative(),
+});
+
+const AiSourceSettingsSchema = z.object({
+  captureContent: z.boolean().optional(),
+  maskingRules: z.array(z.string().min(1).max(100)).max(200).optional(),
+  pricingOverrides: z.record(AiModelPriceSchema).optional(),
+  sampleRate: z.number().min(0).max(1).optional(),
+});
+
+export const RegisterAiSchema = z.object({
+  name: z.string().min(1).max(50),
+  type: z.enum(['server', 'browser']).default('server'),
+  settings: AiSourceSettingsSchema.optional(),
+  managementUrl: z.union([z.string().url(), z.literal('')]).optional(),
+});
+
+export const UpdateAiSchema = z.object({
+  name: z.string().min(1).max(50).optional(),
+  settings: AiSourceSettingsSchema.optional(),
+  managementUrl: z.union([z.string().url(), z.literal('')]).optional(),
+}).refine(
+  data => data.name !== undefined || data.settings !== undefined || data.managementUrl !== undefined,
+  { message: 'At least one field must be provided' }
+);

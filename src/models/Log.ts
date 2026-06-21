@@ -4,7 +4,7 @@ import { applyPlanBasedTtl } from '../utils/ttl';
 export interface ILogEvent extends Document {
   ownerId: string;
   serviceId?: mongoose.Types.ObjectId;
-  serviceModel?: 'ApmService' | 'RumService' | 'TaskService' | 'External';
+  serviceModel?: 'ApmService' | 'RumService' | 'TaskService' | 'AiSource' | 'External';
   traceId?: string;
   spanId?: string;
   // Canonical severity (normalized by src/utils/severity.ts).
@@ -23,7 +23,7 @@ export interface ILogEvent extends Document {
 const LogEventSchema = new Schema<ILogEvent>({
   ownerId: { type: String, required: true, index: true },
   serviceId: { type: Schema.Types.ObjectId, refPath: 'serviceModel', index: true },
-  serviceModel: { type: String, enum: ['ApmService', 'RumService', 'TaskService', 'External'], default: 'External' },
+  serviceModel: { type: String, enum: ['ApmService', 'RumService', 'TaskService', 'AiSource', 'External'], default: 'External' },
   traceId: { type: String, index: true },
   spanId: { type: String },
   // Canonical severity fields. Kept as plain strings/numbers (no enum) so a stray

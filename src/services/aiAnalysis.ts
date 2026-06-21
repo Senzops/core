@@ -121,6 +121,7 @@ import { listDatabases } from '../controllers/database/main';
 import { getDatabaseStats } from '../controllers/database/stats';
 import { listQueueSources } from '../controllers/queue/main';
 import { getQueueStats } from '../controllers/queue/stats';
+import { listAiSources, getAiStats, getAiTraces, getAiConsumers } from '../controllers/ai/observability';
 import { Request, Response } from 'express';
 
 // Simulated Express call — same pattern as mcp/tools.ts
@@ -287,6 +288,30 @@ const INVESTIGATION_TOOLS: ToolDef[] = [
     description: 'Get a queue source overview: total backlog, in-flight, dead-letter depth, consumer count, per-queue table, and throughput/backlog history. Use to check whether a backed-up or dead-lettering queue is causing an incident.',
     parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' } }, required: ['id'] },
     execute: (args, uid) => simulateExpressCall(getQueueStats, uid, { id: args.id }, { range: args.range || '1h' }),
+  },
+  {
+    name: 'ai_list_sources',
+    description: 'List all AI Monitoring sources (LLM observability projects) and their IDs.',
+    parameters: { type: 'object', properties: {} },
+    execute: (args, uid) => simulateExpressCall(listAiSources, uid),
+  },
+  {
+    name: 'ai_get_stats',
+    description: 'Get an AI source overview: total cost (USD), LLM calls, tokens, error rate, latency p50/p95/p99, and breakdowns by model, provider and operation. Use to check whether LLM cost spikes, error rates or latency are driving an incident.',
+    parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' } }, required: ['id'] },
+    execute: (args, uid) => simulateExpressCall(getAiStats, uid, { id: args.id }, { range: args.range || '1h' }),
+  },
+  {
+    name: 'ai_get_traces',
+    description: "List recent AI traces for a source with status, cost, tokens and latency. Filter by status ('error') to find failing LLM workflows.",
+    parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' }, status: { type: 'string' } }, required: ['id'] },
+    execute: (args, uid) => simulateExpressCall(getAiTraces, uid, { id: args.id }, { range: args.range || '1h', status: args.status, limit: 15 }),
+  },
+  {
+    name: 'ai_get_consumers',
+    description: 'Get the top users and sessions for an AI source by cost — useful to attribute an LLM cost spike to a specific user or conversation.',
+    parameters: { type: 'object', properties: { id: { type: 'string' }, range: { type: 'string' } }, required: ['id'] },
+    execute: (args, uid) => simulateExpressCall(getAiConsumers, uid, { id: args.id }, { range: args.range || '1h' }),
   },
 ];
 

@@ -108,7 +108,7 @@ const AlertConditionSchema = z.object({
   policyId: z.string(),
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional().default(''),
-  target: z.enum(['apm', 'rum', 'logs', 'task', 'vps', 'database', 'uptime', 'errors', 'runtime', 'web']),
+  target: z.enum(['apm', 'rum', 'logs', 'task', 'vps', 'database', 'uptime', 'errors', 'runtime', 'web', 'firebase', 'queue', 'ai']),
   query: z.any().default({}),
   threshold: z.object({
     operator: z.enum(['gt', 'lt', 'eq', 'gte', 'lte', 'neq']),
@@ -152,7 +152,7 @@ const ViewWidgetSchema = z.object({
   _exportId: ExportIdSchema.optional(),
   viewId: z.string(),
   name: z.string().min(1).max(100),
-  target: z.enum(['apm', 'rum', 'logs', 'task', 'vps', 'database', 'uptime', 'errors', 'runtime', 'web']),
+  target: z.enum(['apm', 'rum', 'logs', 'task', 'vps', 'database', 'uptime', 'errors', 'runtime', 'web', 'firebase', 'queue', 'ai']),
   query: z.any().default({}),
   visualization: z.enum(['area', 'line', 'bar', 'pie', 'billboard', 'table', 'gauge', 'radar', 'map', 'json']),
   config: z.object({

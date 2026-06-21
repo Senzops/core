@@ -11,6 +11,7 @@ import { Monitor, MonitorRun } from '../../models/Monitor';
 import { LogEvent } from '../../models/Log';
 import { ErrorGroup, ErrorEvent } from '../../models/Error';
 import { RuntimeMetric } from '../../models/RuntimeMetric';
+import { AiSource, AiTrace, AiGeneration, AiMetric, AiScore } from '../../models/Ai';
 import { Subscription } from '../../models/Subscription';
 import { getPlanConfig } from '../../config/pricing';
 import { logger } from '../../utils/logger';
@@ -36,6 +37,7 @@ const VALID_TELEMETRY_TYPES = [
   'logs',
   'error-groups', 'error-events',
   'runtime-metrics',
+  'ai-traces', 'ai-generations', 'ai-metrics', 'ai-scores',
 ] as const;
 
 type TelemetryType = typeof VALID_TELEMETRY_TYPES[number];
@@ -167,6 +169,30 @@ function buildCollectionConfigs(): Record<TelemetryType, TelemetryCollectionConf
       serviceIdField: 'serviceId',
       timestampField: 'timestamp',
       parentServiceModel: ApmService,
+    },
+    'ai-traces': {
+      model: AiTrace,
+      serviceIdField: 'sourceId',
+      timestampField: 'timestamp',
+      parentServiceModel: AiSource,
+    },
+    'ai-generations': {
+      model: AiGeneration,
+      serviceIdField: 'sourceId',
+      timestampField: 'timestamp',
+      parentServiceModel: AiSource,
+    },
+    'ai-metrics': {
+      model: AiMetric,
+      serviceIdField: 'sourceId',
+      timestampField: 'timestamp',
+      parentServiceModel: AiSource,
+    },
+    'ai-scores': {
+      model: AiScore,
+      serviceIdField: 'sourceId',
+      timestampField: 'timestamp',
+      parentServiceModel: AiSource,
     },
   };
 }

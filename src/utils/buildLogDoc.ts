@@ -17,7 +17,7 @@ const MAX_MESSAGE = 50_000;
 export interface ServiceLogContext {
   ownerId: any;
   serviceId?: any;
-  serviceModel: 'ApmService' | 'RumService' | 'TaskService';
+  serviceModel: 'ApmService' | 'RumService' | 'TaskService' | 'AiSource';
   /** Originating service name — stored as `source` for display + querying. */
   source?: string;
 }

@@ -38,6 +38,7 @@ import { MonitorRun, MonitorIncident, Monitor } from '../models/Monitor';
 import { ErrorGroup, ErrorEvent } from '../models/Error';
 import { WebEvent, WebMetric, Website } from '../models/Web';
 import { VpsRun, Vps } from '../models/Vps';
+import { AiTrace, AiGeneration, AiMetric, AiScore, AiSource } from '../models/Ai';
 
 export type OwnerFilter = Record<string, any> | null;
 
@@ -94,6 +95,12 @@ export const RETENTION_COLLECTIONS: RetentionCollection[] = [
   // --- Service-attributed (Database / Firebase) ---
   { label: 'DbMetric', model: DbMetric, anchorField: 'timestamp', ownerFilter: byParent(DatabaseService, 'dbId') },
   { label: 'FirebaseMetric', model: FirebaseMetric, anchorField: 'timestamp', ownerFilter: byParent(FirebaseService, 'serviceId') },
+
+  // --- Service-attributed (AI Monitoring) ---
+  { label: 'AiTrace', model: AiTrace, anchorField: 'createdAt', ownerFilter: byParent(AiSource, 'sourceId') },
+  { label: 'AiGeneration', model: AiGeneration, anchorField: 'createdAt', ownerFilter: byParent(AiSource, 'sourceId') },
+  { label: 'AiMetric', model: AiMetric, anchorField: 'timestamp', ownerFilter: byParent(AiSource, 'sourceId') },
+  { label: 'AiScore', model: AiScore, anchorField: 'createdAt', ownerFilter: byParent(AiSource, 'sourceId') },
 
   // --- Service-attributed (Web analytics) ---
   { label: 'WebEvent', model: WebEvent, anchorField: 'createdAt', ownerFilter: byParent(Website, 'webId') },

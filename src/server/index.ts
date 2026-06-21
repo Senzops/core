@@ -35,6 +35,20 @@ import { registerFirebase, listFirebaseServices, updateFirebase, deleteFirebase 
 import { getFirebaseStats } from '../controllers/firebase/stats';
 import { ingestTaskBatch } from '../controllers/task/ingest';
 import { ingestQueueBatch } from '../controllers/queue/ingest';
+import { ingestAiBatch } from '../controllers/ai/observability/ingest';
+import {
+  registerAiSource,
+  listAiSources,
+  getAiSource,
+  updateAiSource,
+  rotateAiSourceKey,
+  deleteAiSource,
+  getAiStats,
+  getAiTraces,
+  getAiTraceDetail,
+  getAiConsumers,
+  submitAiScore,
+} from '../controllers/ai/observability';
 import { deleteTaskService, listTaskServices, registerTaskService, updateTaskService } from '../controllers/task/main';
 import { getTaskEntityDetail, getTaskRunDetail, getTaskServiceDashboard } from '../controllers/task/stats';
 import { getErrorGroupDetails, getGlobalErrors, getTraceErrors, updateErrorStatus } from '../controllers/error';
@@ -230,6 +244,7 @@ const HIGHER_LIMIT_BODY_PATHS = new Set([
   '/api/data/import/telemetry',
   '/api/ingest/apm',
   '/api/ingest/task',
+  '/api/ingest/ai',
 ]);
 app.use((req, res, next) => {
   if (HIGHER_LIMIT_BODY_PATHS.has(req.path) || req.path.startsWith('/api/otlp/')) {
@@ -292,6 +307,7 @@ ingestRouter.post('/stats', agentIngestLimiter, authenticateAgent, requireIngest
 ingestRouter.post('/web', webIngestLimiter, requireIngestionQuota, ingestWebMetrics);
 ingestRouter.post('/apm', agentBatchBody, apmLimiter, requireIngestionQuota, ingestApmBatch);
 ingestRouter.post('/task', agentBatchBody, apmLimiter, requireIngestionQuota, ingestTaskBatch);
+ingestRouter.post('/ai', agentBatchBody, apmLimiter, requireIngestionQuota, ingestAiBatch);
 ingestRouter.post('/queue', agentBatchBody, apmLimiter, requireIngestionQuota, ingestQueueBatch);
 ingestRouter.post('/rum', apmLimiter, requireIngestionQuota, ingestRumBatch);
 ingestRouter.post('/logs', apmLimiter, ...ndjsonBody, requireIngestionQuota, ingestGlobalLogs);
@@ -354,6 +370,21 @@ apiRouter.delete('/queue/:id', deleteQueueSource);
 apiRouter.get('/queue/:id/stats', getQueueStats);
 apiRouter.get('/queue/:id/entity/:queueName', getQueueEntityDetail);
 apiRouter.get('/queue/:id/executions', getQueueExecutions);
+
+// --- AI Monitoring (LLM Observability) ---
+// Namespaced under /ai/observability/* so it never collides with the in-app
+// AI assistant routes mounted at /ai/conversations.
+apiRouter.post('/ai/observability/register', requireServiceQuota('AiSource', 'AI Monitoring'), registerAiSource);
+apiRouter.get('/ai/observability/list', listAiSources);
+apiRouter.get('/ai/observability/:id', getAiSource);
+apiRouter.put('/ai/observability/:id', updateAiSource);
+apiRouter.post('/ai/observability/:id/rotate-key', rotateAiSourceKey);
+apiRouter.delete('/ai/observability/:id', deleteAiSource);
+apiRouter.get('/ai/observability/:id/stats', getAiStats);
+apiRouter.get('/ai/observability/:id/consumers', getAiConsumers);
+apiRouter.get('/ai/observability/:id/traces', getAiTraces);
+apiRouter.get('/ai/observability/:id/trace/:traceId', getAiTraceDetail);
+apiRouter.post('/ai/observability/:id/score', apmLimiter, submitAiScore);
 
 // --- Firebase Monitoring ---
 apiRouter.post('/firebase/register', requireServiceQuota('FirebaseService', 'Firebase Project'), registerFirebase);

@@ -14,6 +14,7 @@ import { ErrorGroup } from '../models/Error';
 import { RuntimeMetric } from '../models/RuntimeMetric';
 import { WebEvent, Website } from '../models/Web';
 import { FirebaseMetric, FirebaseService } from '../models/Firebase';
+import { AiGeneration, AiSource } from '../models/Ai';
 
 // ============================================================================
 // ENTERPRISE TARGET MAPPING (Dynamic)
@@ -32,7 +33,8 @@ const COLLECTION_MAP: Record<string, { event: string; service: string | null }> 
   errors: { event: ErrorGroup.collection.name, service: null },
   runtime: { event: RuntimeMetric.collection.name, service: ApmService.collection.name },
   web: { event: WebEvent.collection.name, service: Website.collection.name },
-  firebase: { event: FirebaseMetric.collection.name, service: FirebaseService.collection.name }
+  firebase: { event: FirebaseMetric.collection.name, service: FirebaseService.collection.name },
+  ai: { event: AiGeneration.collection.name, service: AiSource.collection.name }
 };
 
 // ============================================================================

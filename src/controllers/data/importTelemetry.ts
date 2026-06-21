@@ -12,6 +12,7 @@ import { Monitor, MonitorRun } from '../../models/Monitor';
 import { LogEvent } from '../../models/Log';
 import { ErrorGroup, ErrorEvent } from '../../models/Error';
 import { RuntimeMetric } from '../../models/RuntimeMetric';
+import { AiTrace, AiGeneration, AiMetric, AiScore } from '../../models/Ai';
 import { Subscription } from '../../models/Subscription';
 import { getPlanConfig } from '../../config/pricing';
 import { logger } from '../../utils/logger';
@@ -52,6 +53,10 @@ const TIMESTAMP_FIELD_MAP: Record<string, string> = {
   'error-groups': 'lastSeen',
   'error-events': 'timestamp',
   'runtime-metrics': 'timestamp',
+  'ai-traces': 'timestamp',
+  'ai-generations': 'timestamp',
+  'ai-metrics': 'timestamp',
+  'ai-scores': 'timestamp',
 };
 
 // --- Service ID field per type ---
@@ -74,6 +79,10 @@ const SERVICE_ID_FIELD_MAP: Record<string, string> = {
   'error-groups': 'ownerId',
   'error-events': 'groupId',
   'runtime-metrics': 'serviceId',
+  'ai-traces': 'sourceId',
+  'ai-generations': 'sourceId',
+  'ai-metrics': 'sourceId',
+  'ai-scores': 'sourceId',
 };
 
 // --- Mongoose model per type ---
@@ -97,6 +106,10 @@ function getModelForType(type: string): any {
     'error-groups': ErrorGroup,
     'error-events': ErrorEvent,
     'runtime-metrics': RuntimeMetric,
+    'ai-traces': AiTrace,
+    'ai-generations': AiGeneration,
+    'ai-metrics': AiMetric,
+    'ai-scores': AiScore,
   };
   return MODEL_MAP[type] || null;
 }
@@ -106,6 +119,7 @@ const DEDUP_FIELD_MAP: Record<string, string> = {
   'apm-traces': 'traceId',
   'rum-traces': 'traceId',
   'task-runs': 'runId',
+  'ai-generations': 'generationId',
 };
 
 const ImportTelemetrySchema = z.object({

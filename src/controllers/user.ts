@@ -75,7 +75,7 @@ export const deleteAccount = async (req: Request, res: Response) => {
     // 2. Delete Control Plane Configurations
     // This stops all agents/SDKs from authenticating instantly because their API keys are purged.
     const configurationModels = [
-      'ApmService', 'RumService', 'TaskService', 'Vps', 'Website', 'Monitor',
+      'ApmService', 'RumService', 'TaskService', 'QueueSource', 'AiSource', 'Vps', 'Website', 'Monitor',
       'DatabaseService', 'FirebaseService', 'SavedView', 'ViewWidget', 'MonitorBoard', 'DashboardShare', 'LogApiKey', 'McpApiKey', 'McpUsage',
       'AlertDestination', 'AlertPolicy', 'AlertCondition', 'AlertIncident', 'AlertSilence',
       'MonitorIncident', 'ErrorGroup', 'Transaction',
