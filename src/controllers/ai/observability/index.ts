@@ -3,13 +3,13 @@ export {
   listAiSources,
   getAiSource,
   updateAiSource,
-  rotateAiSourceKey,
   deleteAiSource,
 } from './main';
 
 export {
   getAiStats,
   getAiTraces,
+  getAiGenerations,
   getAiTraceDetail,
   getAiConsumers,
   submitAiScore,

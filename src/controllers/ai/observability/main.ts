@@ -94,26 +94,6 @@ export const updateAiSource = async (req: Request, res: Response, next: NextFunc
   }
 };
 
-// --- Rotate the ingest API key ---
-export const rotateAiSourceKey = async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const ownerId = (req as any).ownerId;
-    const { id } = req.params;
-    const apiKey = `sz_ai_${crypto.randomBytes(24).toString('hex')}`;
-
-    const updated = await AiSource.findOneAndUpdate(
-      { _id: id, ownerId },
-      { $set: { apiKey } },
-      { new: true }
-    ).select('+apiKey');
-    if (!updated) return res.status(404).json({ error: 'AI source not found' });
-
-    res.json({ message: 'API key rotated', apiKey });
-  } catch (error) {
-    next(error);
-  }
-};
-
 // --- Delete an AI source and cascade-purge its telemetry ---
 export const deleteAiSource = async (req: Request, res: Response, next: NextFunction) => {
   try {

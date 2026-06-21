@@ -41,10 +41,10 @@ import {
   listAiSources,
   getAiSource,
   updateAiSource,
-  rotateAiSourceKey,
   deleteAiSource,
   getAiStats,
   getAiTraces,
+  getAiGenerations,
   getAiTraceDetail,
   getAiConsumers,
   submitAiScore,
@@ -378,11 +378,11 @@ apiRouter.post('/ai/observability/register', requireServiceQuota('AiSource', 'AI
 apiRouter.get('/ai/observability/list', listAiSources);
 apiRouter.get('/ai/observability/:id', getAiSource);
 apiRouter.put('/ai/observability/:id', updateAiSource);
-apiRouter.post('/ai/observability/:id/rotate-key', rotateAiSourceKey);
 apiRouter.delete('/ai/observability/:id', deleteAiSource);
 apiRouter.get('/ai/observability/:id/stats', getAiStats);
 apiRouter.get('/ai/observability/:id/consumers', getAiConsumers);
 apiRouter.get('/ai/observability/:id/traces', getAiTraces);
+apiRouter.get('/ai/observability/:id/generations', getAiGenerations);
 apiRouter.get('/ai/observability/:id/trace/:traceId', getAiTraceDetail);
 apiRouter.post('/ai/observability/:id/score', apmLimiter, submitAiScore);
 
