@@ -123,6 +123,7 @@ import { listQueueSources } from '../controllers/queue/main';
 import { getQueueStats } from '../controllers/queue/stats';
 import { listAiSources, getAiStats, getAiTraces, getAiConsumers } from '../controllers/ai/observability';
 import { Request, Response } from 'express';
+import { recordSelfGeneration } from './selfAiMonitor';
 
 // Simulated Express call — same pattern as mcp/tools.ts
 const simulateExpressCall = async (
@@ -407,6 +408,31 @@ export interface IncidentContext {
   query?: Record<string, unknown>;
 }
 
+// Record this analysis run into our own AI Monitoring pillar (dogfooding).
+// Fire-and-forget; never affects the analysis outcome. Skipped runs (no Gemini
+// key) and retryable failures are intentionally not recorded — only terminal
+// outcomes with real token usage.
+const recordAnalysisUsage = (ctx: IncidentContext, result: IAiAnalysis): void => {
+  if (result.status === 'skipped') return;
+  recordSelfGeneration({
+    traceName: 'incident-analysis',
+    operation: 'chat',
+    model: result.model,
+    tokensIn: result.tokensUsed.input,
+    tokensOut: result.tokensUsed.output,
+    latencyMs: result.durationMs,
+    status: result.status === 'completed' ? 'ok' : 'error',
+    errorMessage: result.error,
+    sessionId: ctx.incidentId,
+    metadata: {
+      incidentId: ctx.incidentId,
+      target: ctx.target,
+      severity: ctx.severity,
+      toolCalls: result.toolCallsUsed,
+    },
+  });
+};
+
 export const runIncidentAnalysis = async (ctx: IncidentContext): Promise<IAiAnalysis> => {
   const startTime = Date.now();
   let toolCallsUsed = 0;
@@ -555,7 +581,7 @@ Produce the structured analysis now.`,
     } catch {
       // Fallback: use the raw investigation text as summary
       logger.warn('[AI Analysis] Failed to parse structured output, using raw text');
-      return {
+      const fallbackResult: IAiAnalysis = {
         status: 'completed',
         summary: response.text?.substring(0, 500) || 'Analysis completed but structured output parsing failed.',
         findings: {
@@ -571,9 +597,11 @@ Produce the structured analysis now.`,
         analyzedAt: new Date(),
         durationMs: Date.now() - startTime,
       };
+      recordAnalysisUsage(ctx, fallbackResult);
+      return fallbackResult;
     }
 
-    return {
+    const result: IAiAnalysis = {
       status: 'completed',
       summary: parsed.summary || '',
       findings: {
@@ -589,6 +617,8 @@ Produce the structured analysis now.`,
       analyzedAt: new Date(),
       durationMs: Date.now() - startTime,
     };
+    recordAnalysisUsage(ctx, result);
+    return result;
   } catch (err: any) {
     const { retryable, statusCode, shortMessage } = classifyGeminiError(err);
 
@@ -599,7 +629,7 @@ Produce the structured analysis now.`,
 
     // Non-retryable error — return failed result immediately
     logger.error(`[AI Analysis] Non-retryable failure for incident ${ctx.incidentId}: ${shortMessage}`);
-    return {
+    const failedResult: IAiAnalysis = {
       status: 'failed',
       summary: '',
       findings: {
@@ -616,6 +646,8 @@ Produce the structured analysis now.`,
       durationMs: Date.now() - startTime,
       error: shortMessage,
     };
+    recordAnalysisUsage(ctx, failedResult);
+    return failedResult;
   }
 };
 
