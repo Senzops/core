@@ -677,6 +677,13 @@ publicShareRouter.get('/:token/queue/:id/stats', resolveShareContext, enforceSha
 // Firebase
 publicShareRouter.get('/:token/firebase/:id/stats', resolveShareContext, enforceShareScope('firebase'), applyShareTimeRange, cachePublicShare(), getFirebaseStats);
 
+// AI Monitoring
+publicShareRouter.get('/:token/ai/observability/:id/stats', resolveShareContext, enforceShareScope('ai'), applyShareTimeRange, cachePublicShare(), getAiStats);
+publicShareRouter.get('/:token/ai/observability/:id/traces', resolveShareContext, enforceShareScope('ai'), applyShareTimeRange, cachePublicShare(), getAiTraces);
+publicShareRouter.get('/:token/ai/observability/:id/generations', resolveShareContext, enforceShareScope('ai'), applyShareTimeRange, cachePublicShare(), getAiGenerations);
+publicShareRouter.get('/:token/ai/observability/:id/consumers', resolveShareContext, enforceShareScope('ai'), applyShareTimeRange, cachePublicShare(), getAiConsumers);
+publicShareRouter.get('/:token/ai/observability/:id/trace/:traceId', resolveShareContext, enforceShareScope('ai'), cachePublicShare(), getAiTraceDetail);
+
 // Background Tasks
 publicShareRouter.get('/:token/task/:id/dashboard', resolveShareContext, enforceShareScope('task'), applyShareTimeRange, cachePublicShare(), getTaskServiceDashboard);
 publicShareRouter.get('/:token/task/:id/entity/:taskName', resolveShareContext, enforceShareScope('task'), applyShareTimeRange, cachePublicShare(), getTaskEntityDetail);

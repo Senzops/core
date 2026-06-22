@@ -28,6 +28,7 @@ export const SHARE_SCOPE_TYPES = [
   'task',
   'web',
   'vps',
+  'ai',
   'savedview',
   'monitorboard',
 ] as const;

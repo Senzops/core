@@ -22,6 +22,7 @@ import { TaskService } from '../../models/Task';
 import { Website } from '../../models/Web';
 import { Vps } from '../../models/Vps';
 import { MonitorBoard } from '../../models/MonitorBoard';
+import { AiSource } from '../../models/Ai';
 
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 
@@ -37,6 +38,7 @@ const SCOPE_MODELS: Record<ShareScopeType, { model: mongoose.Model<any>; nameFie
   task: { model: TaskService, nameField: 'name' },
   web: { model: Website, nameField: 'name' },
   vps: { model: Vps, nameField: 'name' },
+  ai: { model: AiSource, nameField: 'name' },
   savedview: { model: SavedView, nameField: 'name' },
   monitorboard: { model: MonitorBoard, nameField: 'name' },
 };

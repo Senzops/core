@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { AiSource, AiTrace, AiGeneration, AiMetric, AiScore } from '../../../models/Ai';
 import { ErrorGroup, ErrorEvent } from '../../../models/Error';
 import { LogEvent } from '../../../models/Log';
+import { DashboardShare } from '../../../models/DashboardShare';
 import { RegisterAiSchema, UpdateAiSchema } from '../../../utils/validation';
 
 const DEFAULT_SETTINGS = {
@@ -111,6 +112,7 @@ export const deleteAiSource = async (req: Request, res: Response, next: NextFunc
       ErrorGroup.deleteMany({ serviceId: id, serviceModel: 'AiSource' }),
       ErrorEvent.deleteMany({ serviceId: id, serviceModel: 'AiSource' }),
       LogEvent.deleteMany({ serviceId: id, serviceModel: 'AiSource' }),
+      DashboardShare.deleteMany({ scopeType: 'ai', scopeId: id, ownerId }),
     ]);
 
     res.json({ message: 'AI source and all associated telemetry successfully purged.' });
