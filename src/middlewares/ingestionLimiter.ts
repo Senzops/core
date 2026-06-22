@@ -26,7 +26,7 @@ export const requireIngestionQuota = async (req: Request, res: Response, next: N
     // Fallback: If identity isn't attached to req yet, dynamically resolve it from the incoming request
     if (!ownerId) {
       // Extract potential keys from various ingestion methods
-      const serviceApiKey = req.headers['x-service-api-key'] as string; // APM, Task
+      const serviceApiKey = req.headers['x-service-api-key'] as string; // APM, Task, AI
       const logApiKey = req.headers['x-log-api-key'] as string;         // Logs
       const vpsApiKey = req.headers['x-api-key'] as string;             // VPS
       const queryApiKey = req.query.apiKey as string;                   // RUM, Logs (query param — legacy)
@@ -51,6 +51,7 @@ export const requireIngestionQuota = async (req: Request, res: Response, next: N
             mongoose.models.RumService?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
             mongoose.models.TaskService?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
             mongoose.models.QueueSource?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
+            mongoose.models.AiSource?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
             mongoose.models.Vps?.findOne({ apiKey: possibleApiKey }).select('ownerId').lean(),
             mongoose.models.LogApiKey?.findOne({
               $or: [{ keyHash: logKeyHash }, { key: possibleApiKey }],
