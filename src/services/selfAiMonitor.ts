@@ -38,9 +38,12 @@ export interface SelfGenerationInput {
 
 /**
  * Record a single first-class AI generation for an internal LLM call, via the
- * SDK. Synchronous + isolated — never throws into the caller.
+ * SDK, then flush. Incident analysis is low-frequency, so we deliver the batch
+ * immediately rather than waiting on the SDK's background interval — a single
+ * queued generation would otherwise never reach the batch-size flush trigger
+ * and could sit unsent. Isolated — never throws into the caller.
  */
-export function recordSelfGeneration(input: SelfGenerationInput): void {
+export async function recordSelfGeneration(input: SelfGenerationInput): Promise<void> {
   try {
     Senzor.ai.trace(
       { name: input.traceName, sessionId: input.sessionId, metadata: input.metadata },
@@ -59,6 +62,8 @@ export function recordSelfGeneration(input: SelfGenerationInput): void {
         });
       },
     );
+    // Deterministic delivery for this low-frequency, high-value event.
+    await Senzor.flush();
   } catch (err: any) {
     logger.warn(`[SelfAiMonitor] Failed to record generation: ${err?.message}`);
   }

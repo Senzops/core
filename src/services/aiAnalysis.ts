@@ -412,9 +412,9 @@ export interface IncidentContext {
 // Fire-and-forget; never affects the analysis outcome. Skipped runs (no Gemini
 // key) and retryable failures are intentionally not recorded — only terminal
 // outcomes with real token usage.
-const recordAnalysisUsage = (ctx: IncidentContext, result: IAiAnalysis): void => {
+const recordAnalysisUsage = async (ctx: IncidentContext, result: IAiAnalysis): Promise<void> => {
   if (result.status === 'skipped') return;
-  recordSelfGeneration({
+  await recordSelfGeneration({
     traceName: 'incident-analysis',
     operation: 'chat',
     model: result.model,
@@ -597,7 +597,7 @@ Produce the structured analysis now.`,
         analyzedAt: new Date(),
         durationMs: Date.now() - startTime,
       };
-      recordAnalysisUsage(ctx, fallbackResult);
+      await recordAnalysisUsage(ctx, fallbackResult);
       return fallbackResult;
     }
 
@@ -617,7 +617,7 @@ Produce the structured analysis now.`,
       analyzedAt: new Date(),
       durationMs: Date.now() - startTime,
     };
-    recordAnalysisUsage(ctx, result);
+    await recordAnalysisUsage(ctx, result);
     return result;
   } catch (err: any) {
     const { retryable, statusCode, shortMessage } = classifyGeminiError(err);
@@ -646,7 +646,7 @@ Produce the structured analysis now.`,
       durationMs: Date.now() - startTime,
       error: shortMessage,
     };
-    recordAnalysisUsage(ctx, failedResult);
+    await recordAnalysisUsage(ctx, failedResult);
     return failedResult;
   }
 };
