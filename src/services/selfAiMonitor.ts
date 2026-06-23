@@ -24,6 +24,8 @@ export interface SelfToolCall {
   latencyMs?: number;
   status?: 'ok' | 'error';
   errorMessage?: string;
+  /** Non-sensitive span attributes (e.g. argument field names — never values). */
+  metadata?: Record<string, any>;
 }
 
 export interface SelfGenerationInput {
@@ -87,6 +89,7 @@ export async function recordSelfGeneration(input: SelfGenerationInput): Promise<
               status: t.status || 'ok',
               errorType: t.errorMessage ? 'ToolError' : undefined,
               errorMessage: t.errorMessage,
+              metadata: t.metadata,
             });
           }
         });

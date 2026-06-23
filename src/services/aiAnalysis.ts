@@ -540,12 +540,31 @@ Begin investigation: check the current state of ${ctx.target.toUpperCase()} reso
           responseParts.push({
             functionResponse: { name: callName, response: responseData },
           });
-          toolSpans.push({ name: callName, latencyMs: Date.now() - toolStart, status: result.status >= 400 ? 'error' : 'ok', errorMessage: result.status >= 400 ? `status ${result.status}` : undefined });
+          // Span attributes: argument field NAMES (schema, not values) + the
+          // controller status + result shape — non-sensitive, makes the tool
+          // span verbose without capturing internal content.
+          toolSpans.push({
+            name: callName,
+            latencyMs: Date.now() - toolStart,
+            status: result.status >= 400 ? 'error' : 'ok',
+            errorMessage: result.status >= 400 ? `status ${result.status}` : undefined,
+            metadata: {
+              arguments: Object.keys(call.args || {}),
+              statusCode: result.status,
+              resultKind: Array.isArray(result.data) ? 'array' : typeof result.data,
+            },
+          });
         } catch (err: any) {
           responseParts.push({
             functionResponse: { name: callName, response: { error: err.message } },
           });
-          toolSpans.push({ name: callName, latencyMs: Date.now() - toolStart, status: 'error', errorMessage: err.message });
+          toolSpans.push({
+            name: callName,
+            latencyMs: Date.now() - toolStart,
+            status: 'error',
+            errorMessage: err.message,
+            metadata: { arguments: Object.keys(call.args || {}) },
+          });
           logger.warn(`[AI Analysis] Tool ${callName} failed: ${err.message}`);
         }
       }
