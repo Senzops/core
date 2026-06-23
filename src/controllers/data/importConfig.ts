@@ -13,6 +13,7 @@ import { AlertDestination, AlertPolicy, AlertCondition, AlertSilence } from '../
 import { SavedView, ViewWidget } from '../../models/View';
 import { LogApiKey } from '../../models/Log';
 import { McpApiKey } from '../../models/Mcp';
+import { hashApiKey } from '../../utils/hashApiKey';
 import { Subscription } from '../../models/Subscription';
 import { getPlanConfig } from '../../config/pricing';
 import { logger } from '../../utils/logger';
@@ -771,10 +772,13 @@ export const importConfig = async (req: Request, res: Response, next: NextFuncti
         }
       }
 
+      // Store only the hash + display prefix; the raw key is surfaced once in
+      // the import result below and is never recoverable thereafter.
       const created = await McpApiKey.create({
         ownerId,
         name: finalName,
-        key: newApiKey,
+        keyHash: hashApiKey(newApiKey),
+        prefix: newApiKey.slice(0, 14),
         status: 'active',
       });
 

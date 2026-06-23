@@ -19,6 +19,7 @@
 // ============================================================================
 
 import { invalidateRetention, getRetentionMs } from './retentionCache';
+import { invalidateMcpRateLimit } from '../middlewares/mcpRateLimit';
 import { RETENTION_COLLECTIONS } from './retentionRegistry';
 import { logger } from '../utils/logger';
 
@@ -31,8 +32,10 @@ export async function reconcileOwnerRetention(ownerId: string): Promise<void> {
   if (!ownerId) return;
 
   // Drop any cached (pre-change) window so subsequent writes use the new plan,
-  // then resolve the authoritative new window.
+  // then resolve the authoritative new window. Also evict the MCP rate-limit
+  // budget cache so the new plan's request budget applies immediately.
   invalidateRetention(ownerId);
+  invalidateMcpRateLimit(ownerId);
 
   let retentionMs: number;
   try {

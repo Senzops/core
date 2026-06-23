@@ -1,6 +1,5 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { Request, Response } from 'express';
 
 // --- ALL READ-ONLY CONTROLLERS ---
 import { listServices as listApmServices } from '../controllers/apm/main';
@@ -35,78 +34,9 @@ import { getStorageStats, getTransactions, getTransactionReceipt, getCurrentSubs
 import { getDynamicSchema } from '../controllers/schema';
 import { getDashboardCapabilities } from '../controllers/dashboard/capabilities';
 
-import { McpUsage } from "../models/Mcp";
-import { getRetentionMs } from "../services/retentionCache";
+import { simulateExpressCall, trackUsage, validateToolArgs } from "./registry";
 
-// --- 1. Mock Express Runtime (TypeScript Safe) ---
-// We use a closure (currentStatus) instead of 'this' to avoid TypeScript context binding errors.
-const simulateExpressCall = async (
-  controller: Function,
-  ownerId: string,
-  params: Record<string, any> = {},
-  query: Record<string, any> = {}
-): Promise<{ status: number; data: any }> => {
-  return new Promise((resolve, reject) => {
-    const req = {
-      ownerId,
-      user: { uid: ownerId },
-      params,
-      query,
-      body: {},
-      headers: {},
-      ip: '127.0.0.1'
-    } as unknown as Request;
-
-    let currentStatus = 200; // Closure variable replaces `this.statusCode`
-
-    const res = {
-      status: (code: number) => {
-        currentStatus = code;
-        return res;
-      },
-      json: (data: any) => {
-        resolve({ status: currentStatus, data });
-        return res;
-      },
-      send: (data: any) => {
-        resolve({ status: currentStatus, data });
-        return res;
-      }
-    } as unknown as Response;
-
-    const next = (err?: any) => {
-      if (err) reject(err);
-      else resolve({ status: 500, data: { error: 'Next() called without error' } });
-    };
-
-    try {
-      Promise.resolve(controller(req, res, next)).catch(reject);
-    } catch (error) {
-      reject(error);
-    }
-  });
-};
-
-// --- 2. Usage Tracking ---
-const trackUsage = (ownerId: string, toolName: string) => {
-  const bucketTime = new Date();
-  bucketTime.setMinutes(0, 0, 0);
-  // Fire-and-forget: resolve plan-based expiry (anchor: timestamp) then upsert.
-  getRetentionMs(ownerId)
-    .then((retentionMs) =>
-      McpUsage.updateOne(
-        { ownerId, timestamp: bucketTime },
-        {
-          $inc: { totalQueries: 1, [`toolCalls.${toolName}`]: 1 },
-          $set: { expiresAt: new Date(bucketTime.getTime() + retentionMs) },
-        },
-        { upsert: true }
-      )
-    )
-    .catch(() => { });
-};
-
-// --- 3. Complete Tool Definitions ---
+// --- Complete Tool Definitions ---
 const MCP_TOOLS = [
   // --- APM Tools ---
   {
@@ -489,7 +419,11 @@ export const registerSenzorTools = (server: Server, ownerId: string) => {
     if (!tool) throw new Error(`Tool not found: ${name}`);
 
     try {
-      const result = await tool.execute(args || {}, ownerId);
+      // Validate/coerce arguments against the tool's inputSchema before dispatch.
+      // (The low-level Server does not validate, so malformed input would
+      // otherwise reach the controllers unchecked.)
+      const validatedArgs = validateToolArgs(tool.inputSchema as any, args);
+      const result = await tool.execute(validatedArgs, ownerId);
 
       // Pass controller errors (400/404s) elegantly back to the LLM
       if (result.status >= 400) {
@@ -499,8 +433,14 @@ export const registerSenzorTools = (server: Server, ownerId: string) => {
         };
       }
 
+      // Always return a text representation (universal client support). When the
+      // payload is a JSON object, also attach `structuredContent` so capable
+      // clients get machine-parseable data without re-parsing the text. Arrays
+      // and primitives are omitted — structuredContent must be an object per spec.
+      const isPlainObject = result.data !== null && typeof result.data === 'object' && !Array.isArray(result.data);
       return {
-        content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }]
+        content: [{ type: "text", text: JSON.stringify(result.data, null, 2) }],
+        ...(isPlainObject ? { structuredContent: result.data } : {}),
       };
     } catch (error: any) {
       return {

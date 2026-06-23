@@ -1,11 +1,15 @@
 import { Request, Response, NextFunction, Router } from 'express';
 import crypto from 'crypto';
 import { McpApiKey, McpUsage } from '../../models/Mcp';
+import { hashApiKey } from '../../utils/hashApiKey';
+import { invalidateMcpKeyCache } from '../../middlewares/mcpAuth';
 
 export const getMcpKeys = async (req: Request, res: Response, next: NextFunction) => {
   try {
     const ownerId = (req as any).ownerId;
-    const keys = await McpApiKey.find({ ownerId }).select('-__v').sort({ createdAt: -1 }).lean();
+    // `key`/`keyHash` are never selected (key is select:false; keyHash excluded
+    // explicitly) — only the safe-to-display `prefix` is returned.
+    const keys = await McpApiKey.find({ ownerId }).select('-__v -keyHash').sort({ createdAt: -1 }).lean();
     res.json({ keys });
   } catch (error) { next(error); }
 };
@@ -17,9 +21,23 @@ export const createMcpKey = async (req: Request, res: Response, next: NextFuncti
     if (!name || typeof name !== 'string') return res.status(400).json({ error: 'A valid integration name is required' });
 
     const rawKey = `sz_mcp_${crypto.randomBytes(24).toString('hex')}`;
-    const newKey = await McpApiKey.create({ ownerId, name, key: rawKey, status: 'active' });
+    // Store only the hash + a display prefix; the raw key is returned once below
+    // and is never recoverable thereafter.
+    const newKey = await McpApiKey.create({
+      ownerId,
+      name,
+      keyHash: hashApiKey(rawKey),
+      prefix: rawKey.slice(0, 14),
+      status: 'active',
+    });
 
-    res.status(201).json({ _id: newKey._id, name: newKey.name, key: rawKey, createdAt: newKey.createdAt });
+    res.status(201).json({
+      _id: newKey._id,
+      name: newKey.name,
+      key: rawKey,
+      prefix: newKey.prefix,
+      createdAt: newKey.createdAt,
+    });
   } catch (error) { next(error); }
 };
 
@@ -27,8 +45,18 @@ export const revokeMcpKey = async (req: Request, res: Response, next: NextFuncti
   try {
     const ownerId = (req as any).ownerId;
     const { id } = req.params;
-    const key = await McpApiKey.findOneAndUpdate({ _id: id, ownerId }, { status: 'revoked' }, { new: true });
+    // Need keyHash (and any legacy plaintext) to evict the auth cache so the
+    // revocation takes effect immediately rather than after the cache TTL.
+    const key = await McpApiKey.findOneAndUpdate(
+      { _id: id, ownerId },
+      { status: 'revoked' },
+      { new: true },
+    ).select('+key');
     if (!key) return res.status(404).json({ error: 'Key not found' });
+
+    if (key.keyHash) invalidateMcpKeyCache(key.keyHash);
+    if (key.key) invalidateMcpKeyCache(hashApiKey(key.key));
+
     res.json({ success: true, message: 'Key successfully revoked' });
   } catch (error) { next(error); }
 };

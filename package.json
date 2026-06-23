@@ -8,6 +8,7 @@
     "backfill:logs": "ts-node-dev --transpile-only src/scripts/backfillLogSeverity.ts",
     "backfill:logkeys": "ts-node-dev --transpile-only src/scripts/backfillLogApiKeys.ts",
     "backfill:logsource": "ts-node-dev --transpile-only src/scripts/backfillLogSource.ts",
+    "backfill:mcpkeys": "ts-node-dev --transpile-only src/scripts/backfillMcpApiKeys.ts",
     "migrate:retention": "ts-node-dev --transpile-only src/scripts/migrateRetentionTTL.ts",
     "lint": "eslint src/**/*.ts",
     "start:server": "node --import ./dist/utils/otlp.js dist/server/index.js",

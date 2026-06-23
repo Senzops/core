@@ -14,6 +14,7 @@ export interface PlanConfig {
   retentionDays: number;
   aiAnalysis: boolean;
   aiAnalysisMonthlyQuota: number;  // 0 = disabled, -1 = unlimited
+  mcpRequestsPerMin: number;       // per-owner MCP request budget (per minute)
   paddlePriceIdMonthly: string | null;
   paddlePriceIdAnnual: string | null;
   dodoProductIdMonthly: string | null;
@@ -32,6 +33,7 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     retentionDays: 3,
     aiAnalysis: false,
     aiAnalysisMonthlyQuota: 0,
+    mcpRequestsPerMin: 30,
     paddlePriceIdMonthly: null,
     paddlePriceIdAnnual: null,
     dodoProductIdMonthly: null,
@@ -48,6 +50,7 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     retentionDays: 15,
     aiAnalysis: false,
     aiAnalysisMonthlyQuota: 0,
+    mcpRequestsPerMin: 120,
     paddlePriceIdMonthly: 'pri_01knfdyzk9gsjwfh4vq3hfg2q0',
     paddlePriceIdAnnual: 'pri_01knfe0d96abaf790xead78y0m',
     dodoProductIdMonthly: 'pdt_0NfOCqR7Jh4KxjWipmxdi',
@@ -64,6 +67,7 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     retentionDays: 30,
     aiAnalysis: true,
     aiAnalysisMonthlyQuota: 500,
+    mcpRequestsPerMin: 300,
     paddlePriceIdMonthly: 'pri_01knfe2b0s6yycykn1y4x2mrrk',
     paddlePriceIdAnnual: 'pri_01knfe3g8941dyr18vvy9tc2qy',
     dodoProductIdMonthly: 'pdt_0NfOCpyjpqRvf5QvCdVqn',
@@ -80,6 +84,7 @@ export const PLANS: Record<PlanId, PlanConfig> = {
     retentionDays: 90,
     aiAnalysis: true,
     aiAnalysisMonthlyQuota: -1,  // Unlimited
+    mcpRequestsPerMin: 1000,
     paddlePriceIdMonthly: null,
     paddlePriceIdAnnual: null,
     dodoProductIdMonthly: null,
