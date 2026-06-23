@@ -192,8 +192,12 @@ export const processAiBatchBackground = async (data: AiBatchData, source: any) =
       // Only sum model-call latency: a parent agent/tool span's duration
       // already spans its children, so summing structural spans double-counts.
       acc.latencyMs += gen.latencyMs || 0;
+      // Only a model-call (LLM/embedding) error fails the trace. A failed
+      // tool/MCP/structural span is normal agent behaviour the workflow can
+      // recover from and must NOT flip the whole trace to error — the explicit
+      // trace status (meta.status from the SDK) stays authoritative otherwise.
+      if (isError) acc.hasError = true;
     }
-    if (isError) acc.hasError = true;
     if (timestamp < acc.firstSeen) acc.firstSeen = timestamp;
     traceAcc.set(gen.traceId, acc);
 
