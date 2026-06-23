@@ -16,12 +16,16 @@ const aiKey = process.env.SENZOR_AI_API_KEY;
 // Optional override for self-hosted / non-prod (e.g. http://localhost:5000/api).
 // Defaults to the SDK's public ingest endpoint.
 const endpoint = process.env.SENZOR_INGEST_ENDPOINT;
+// Opt-in: send masked prompts / outputs / tool args for our OWN incident-analysis
+// to AI Monitoring (off by default — content never leaves the process unless set).
+// The AI source ALSO needs "Capture prompts & outputs" enabled (server-side gate).
+const captureContent = process.env.SENZOR_AI_CAPTURE_CONTENT === 'true';
 
 senzor.init({
   // Task/APM self-monitoring uses the task key; AI Monitoring (incident-analysis
   // LLM usage) is routed to its own source via the dedicated AI key.
   apiKey: taskKey || '',
-  ai: { apiKey: aiKey },
+  ai: { apiKey: aiKey, captureContent },
   ...(endpoint ? { endpoint } : {}),
 });
 

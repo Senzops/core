@@ -416,6 +416,7 @@ const recordAnalysisUsage = async (
   ctx: IncidentContext,
   result: IAiAnalysis,
   toolSpans: SelfToolCall[] = [],
+  promptInput?: string,
 ): Promise<void> => {
   if (result.status === 'skipped') return;
   await recordSelfGeneration({
@@ -430,6 +431,9 @@ const recordAnalysisUsage = async (
     errorMessage: result.error,
     sessionId: ctx.incidentId,
     toolCalls: toolSpans,
+    // Prompt + analysis output — gated by the SDK's captureContent flag.
+    input: promptInput,
+    output: result.summary || result.findings?.rootCause || undefined,
     metadata: {
       incidentId: ctx.incidentId,
       target: ctx.target,
@@ -548,6 +552,7 @@ Begin investigation: check the current state of ${ctx.target.toUpperCase()} reso
             latencyMs: Date.now() - toolStart,
             status: result.status >= 400 ? 'error' : 'ok',
             errorMessage: result.status >= 400 ? `status ${result.status}` : undefined,
+            args: call.args,
             metadata: {
               arguments: Object.keys(call.args || {}),
               statusCode: result.status,
@@ -563,6 +568,7 @@ Begin investigation: check the current state of ${ctx.target.toUpperCase()} reso
             latencyMs: Date.now() - toolStart,
             status: 'error',
             errorMessage: err.message,
+            args: call.args,
             metadata: { arguments: Object.keys(call.args || {}) },
           });
           logger.warn(`[AI Analysis] Tool ${callName} failed: ${err.message}`);
@@ -627,7 +633,7 @@ Produce the structured analysis now.`,
         analyzedAt: new Date(),
         durationMs: Date.now() - startTime,
       };
-      await recordAnalysisUsage(ctx, fallbackResult, toolSpans);
+      await recordAnalysisUsage(ctx, fallbackResult, toolSpans, userPrompt);
       return fallbackResult;
     }
 
@@ -647,7 +653,7 @@ Produce the structured analysis now.`,
       analyzedAt: new Date(),
       durationMs: Date.now() - startTime,
     };
-    await recordAnalysisUsage(ctx, result, toolSpans);
+    await recordAnalysisUsage(ctx, result, toolSpans, userPrompt);
     return result;
   } catch (err: any) {
     const { retryable, statusCode, shortMessage } = classifyGeminiError(err);
@@ -676,7 +682,7 @@ Produce the structured analysis now.`,
       durationMs: Date.now() - startTime,
       error: shortMessage,
     };
-    await recordAnalysisUsage(ctx, failedResult, toolSpans);
+    await recordAnalysisUsage(ctx, failedResult, toolSpans, userPrompt);
     return failedResult;
   }
 };

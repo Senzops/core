@@ -26,6 +26,8 @@ export interface SelfToolCall {
   errorMessage?: string;
   /** Non-sensitive span attributes (e.g. argument field names — never values). */
   metadata?: Record<string, any>;
+  /** Tool argument values — only transmitted when the SDK opts into content capture. */
+  args?: any;
 }
 
 export interface SelfGenerationInput {
@@ -48,6 +50,10 @@ export interface SelfGenerationInput {
   agentName?: string;
   /** Tool calls made during the run — recorded as nested `tool` spans under the agent. */
   toolCalls?: SelfToolCall[];
+  /** Prompt sent to the model — only transmitted when the SDK opts into content capture. */
+  input?: any;
+  /** Model output — only transmitted when the SDK opts into content capture. */
+  output?: any;
 }
 
 /**
@@ -78,13 +84,17 @@ export async function recordSelfGeneration(input: SelfGenerationInput): Promise<
             errorType: input.errorType,
             errorMessage: input.errorMessage,
             metadata: input.metadata,
+            // Content (gated by the SDK's captureContent flag + masked server-side).
+            input: input.input,
+            output: input.output,
           });
           // Nested tool spans (auto-parented under the agent scope).
           for (const t of input.toolCalls || []) {
             Senzor.ai.generation({
               type: 'tool',
               name: t.name,
-              tool: { name: t.name },
+              // args are content — only sent when captureContent is on; masked server-side.
+              tool: { name: t.name, args: t.args },
               latencyMs: t.latencyMs,
               status: t.status || 'ok',
               errorType: t.errorMessage ? 'ToolError' : undefined,
