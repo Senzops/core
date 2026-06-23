@@ -204,7 +204,13 @@ export const getAiStats = async (req: Request, res: Response, next: NextFunction
         },
       ]);
       graph = fillTimeGaps(graphRows, resolved, GRAPH_DEFAULTS, 'time');
-      models = foldDimension(buckets, 'models');
+      // Models are read from raw generations (not the metric buckets): bucket
+      // dimension Map keys are dot-sanitized (e.g. `gemini-2.5-flash` →
+      // `gemini-2_5-flash`) because Mongo Map keys can't contain dots, which
+      // would make the displayed key fail to match the drill-down filter on
+      // responseModel/requestModel. Provider/operation names never contain
+      // dots, so their fast in-memory fold from buckets stays exact.
+      models = await rawDimension(match, { $ifNull: ['$responseModel', '$requestModel'] });
       providers = foldDimension(buckets, 'providers');
       operations = foldDimension(buckets, 'operations');
     }
