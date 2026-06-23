@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { AiSource, AiTrace, AiGeneration, AiMetric, AiScore } from '../../../models/Ai';
+import { AiSource, AiTrace, AiGeneration, AiMetric, AiScore, AI_MODEL_OBSERVATION_TYPES } from '../../../models/Ai';
 import { ErrorGroup, ErrorEvent, generateErrorFingerprint } from '../../../models/Error';
 import { LogEvent } from '../../../models/Log';
 import { buildServiceLogDoc } from '../../../utils/buildLogDoc';
@@ -127,6 +127,10 @@ export const processAiBatchBackground = async (data: AiBatchData, source: any) =
     const operation = gen.operation || 'chat';
     const model = gen.responseModel || gen.requestModel || 'unknown';
     const isError = gen.status === 'error';
+    // Structural spans (agent/tool/mcp/handoff/...) are stored for the trace
+    // tree but excluded from cost/call metrics so they never pollute the
+    // model/provider breakdowns or inflate the "calls" counters.
+    const isModelCall = AI_MODEL_OBSERVATION_TYPES.has(gen.type || 'generation');
 
     generationDocs.push({
       sourceId: source._id,
@@ -157,11 +161,25 @@ export const processAiBatchBackground = async (data: AiBatchData, source: any) =
       input: maskAiContent(gen.input, { captureContent, maskingRules }),
       output: maskAiContent(gen.output, { captureContent, maskingRules }),
       toolCalls: maskAiContent(gen.toolCalls, { captureContent, maskingRules }),
+      // Structural enrichment. Identity (agent.name, tool.name, mcp.server, ...)
+      // is always kept so failures stay attributable even with content OFF;
+      // tool args/result are content and are masked under the capture policy.
+      agent: gen.agent,
+      tool: gen.tool ? {
+        name: gen.tool.name,
+        args: maskAiContent(gen.tool.args, { captureContent, maskingRules }),
+        result: maskAiContent(gen.tool.result, { captureContent, maskingRules }),
+      } : undefined,
+      mcp: gen.mcp,
+      handoff: gen.handoff,
+      reasoningTokens: gen.reasoningTokens,
+      depth: gen.depth,
       metadata: gen.metadata,
       timestamp,
     });
 
-    // Per-trace rollup.
+    // Per-trace rollup. Cost/tokens are summed across all observations
+    // (structural spans contribute 0); generationCount counts model calls only.
     const acc = traceAcc.get(gen.traceId) ?? {
       totalCostUsd: 0, totalTokensIn: 0, totalTokensOut: 0,
       generationCount: 0, latencyMs: 0, hasError: false, firstSeen: timestamp,
@@ -169,13 +187,18 @@ export const processAiBatchBackground = async (data: AiBatchData, source: any) =
     acc.totalCostUsd += costUsd;
     acc.totalTokensIn += tokensIn;
     acc.totalTokensOut += tokensOut;
-    acc.generationCount += 1;
-    acc.latencyMs += gen.latencyMs || 0;
+    if (isModelCall) {
+      acc.generationCount += 1;
+      // Only sum model-call latency: a parent agent/tool span's duration
+      // already spans its children, so summing structural spans double-counts.
+      acc.latencyMs += gen.latencyMs || 0;
+    }
     if (isError) acc.hasError = true;
     if (timestamp < acc.firstSeen) acc.firstSeen = timestamp;
     traceAcc.set(gen.traceId, acc);
 
-    // Metric bucket (1-minute resolution).
+    // Metric bucket (1-minute resolution) — model calls only.
+    if (!isModelCall) continue;
     const bucketTime = new Date(timestamp);
     bucketTime.setSeconds(0, 0);
     const bucketKey = bucketTime.toISOString();

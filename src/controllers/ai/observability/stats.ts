@@ -361,6 +361,103 @@ export const getAiConsumers = async (req: Request, res: Response, next: NextFunc
   }
 };
 
+// --- Tool & MCP reliability (read-only debugging aggregate) ---
+// Aggregates structural tool/mcp observations by name/server over the window so
+// teams can monitor "which tool / MCP server fails or is slow". Purely
+// observational — no execution, no mutation.
+export const getAiReliability = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const source = await ownedSource(req);
+    if (!source) return res.status(404).json({ error: 'AI source not found' });
+
+    const ownerId = (req as any).ownerId;
+    const maxRetention = await getEffectiveRetention('ai', ownerId);
+    const resolved = resolveTimeRange(req.query as any, maxRetention);
+    const baseMatch = { sourceId: source._id, timestamp: { $gte: resolved.startDate, $lte: resolved.endDate } };
+
+    const pipeline = (type: 'tool' | 'mcp', keyExpr: any) => [
+      { $match: { ...baseMatch, type } },
+      {
+        $group: {
+          _id: keyExpr,
+          calls: { $sum: 1 },
+          errors: { $sum: { $cond: [{ $eq: ['$status', 'error'] }, 1, 0] } },
+          durationSum: { $sum: '$latencyMs' },
+          maxLatencyMs: { $max: '$latencyMs' },
+        },
+      },
+      { $sort: { errors: -1 as const, calls: -1 as const } },
+      { $limit: 50 },
+    ];
+
+    const [tools, mcp] = await Promise.all([
+      AiGeneration.aggregate(pipeline('tool', { $ifNull: ['$tool.name', '$name'] })),
+      AiGeneration.aggregate(pipeline('mcp', { $ifNull: ['$mcp.server', '$name'] })),
+    ]);
+
+    const shape = (rows: any[]) =>
+      rows
+        .filter((r) => r._id != null && r._id !== '')
+        .map((r) => ({
+          key: r._id,
+          calls: r.calls,
+          errors: r.errors,
+          errorRate: r.calls ? r.errors / r.calls : 0,
+          avgLatencyMs: r.calls ? r.durationSum / r.calls : 0,
+          maxLatencyMs: r.maxLatencyMs || 0,
+        }));
+
+    res.json({ tools: shape(tools), mcp: shape(mcp) });
+  } catch (error) {
+    if (error instanceof TimeRangeError) return res.status(400).json({ error: error.message });
+    next(error);
+  }
+};
+
+// Compute per-observation subtree rollups (cost + tokens) over the trace tree
+// so structural spans (agent/tool/mcp) can display the rolled-up cost of all
+// their descendant model calls. Cycle-guarded; mutates each doc in place.
+const attachSubtreeRollups = (generations: any[]): void => {
+  if (!generations?.length) return;
+
+  const childrenOf = new Map<string, any[]>();
+  for (const g of generations) {
+    const p = g.parentGenerationId;
+    if (!p) continue;
+    const arr = childrenOf.get(p);
+    if (arr) arr.push(g);
+    else childrenOf.set(p, [g]);
+  }
+
+  const visiting = new Set<string>();
+  const memo = new Map<string, { cost: number; tokens: number }>();
+
+  const rollup = (g: any): { cost: number; tokens: number } => {
+    const id = g.generationId;
+    const cached = memo.get(id);
+    if (cached) return cached;
+    if (visiting.has(id)) return { cost: g.costUsd || 0, tokens: g.totalTokens || 0 }; // cycle guard
+    visiting.add(id);
+
+    let cost = g.costUsd || 0;
+    let tokens = g.totalTokens || 0;
+    for (const child of childrenOf.get(id) || []) {
+      const r = rollup(child);
+      cost += r.cost;
+      tokens += r.tokens;
+    }
+
+    visiting.delete(id);
+    const result = { cost, tokens };
+    memo.set(id, result);
+    g.subtreeCostUsd = cost;
+    g.subtreeTokens = tokens;
+    return result;
+  };
+
+  for (const g of generations) rollup(g);
+};
+
 // --- Trace detail with its generation waterfall ---
 export const getAiTraceDetail = async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -375,6 +472,8 @@ export const getAiTraceDetail = async (req: Request, res: Response, next: NextFu
       AiGeneration.find({ sourceId: source._id, traceId }).sort({ startTime: 1, timestamp: 1 }).lean(),
       AiScore.find({ sourceId: source._id, traceId }).sort({ timestamp: -1 }).lean(),
     ]);
+
+    attachSubtreeRollups(generations);
 
     res.json({ trace, generations, scores });
   } catch (error) {

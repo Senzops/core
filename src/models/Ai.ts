@@ -45,9 +45,41 @@ export type AiProvider =
   | 'custom'
   | string;
 
-/** The kind of observation recorded. */
-export type AiObservationType = 'generation' | 'tool' | 'retrieval' | 'embedding' | 'span';
-export const AI_OBSERVATION_TYPES: AiObservationType[] = ['generation', 'tool', 'retrieval', 'embedding', 'span'];
+/**
+ * The kind of observation recorded. The taxonomy spans two families:
+ *   - Model calls   — 'generation', 'embedding': cost/token-bearing LLM work.
+ *                     These are the only types that feed AiMetric (the cost/call
+ *                     trend charts and model/provider breakdowns).
+ *   - Structural    — 'agent', 'tool', 'mcp', 'retrieval', 'chain', 'handoff',
+ *                     'reasoning', 'guardrail', 'span': nodes in the agent/work-
+ *                     flow tree. They carry latency/status (and, for tools/MCP,
+ *                     masked args/results) but no model cost of their own; their
+ *                     cost is the rolled-up cost of their descendant model calls.
+ */
+export type AiObservationType =
+  | 'generation'
+  | 'embedding'
+  | 'agent'
+  | 'tool'
+  | 'mcp'
+  | 'retrieval'
+  | 'chain'
+  | 'handoff'
+  | 'reasoning'
+  | 'guardrail'
+  | 'span';
+export const AI_OBSERVATION_TYPES: AiObservationType[] = [
+  'generation', 'embedding', 'agent', 'tool', 'mcp',
+  'retrieval', 'chain', 'handoff', 'reasoning', 'guardrail', 'span',
+];
+
+/**
+ * Observation types that represent an actual model call (cost/token-bearing).
+ * Only these contribute to AiMetric buckets and a trace's `generationCount`,
+ * so structural agent/tool/mcp spans never pollute the cost/call analytics or
+ * the model/provider breakdowns.
+ */
+export const AI_MODEL_OBSERVATION_TYPES = new Set<AiObservationType>(['generation', 'embedding']);
 
 export type AiStatus = 'ok' | 'error';
 
@@ -228,6 +260,24 @@ export interface IAiGeneration extends Document {
   output?: IAiContentMessage[] | any;
   toolCalls?: any[];
 
+  // --- Structural span enrichment (agent-observability) --------------------
+  // Identity fields (name/role/server/...) are always kept — they are how you
+  // answer "which tool / which MCP server / which agent". Payload fields
+  // (tool.args/result) are content and are gated+masked like input/output.
+
+  /** Set when type='agent'. The agent node in a (multi-)agent workflow. */
+  agent?: { name: string; role?: string; step?: number };
+  /** Set when type='tool'. Tool name is always kept; args/result are masked content. */
+  tool?: { name: string; args?: any; result?: any };
+  /** Set when type='mcp'. Identifies which MCP server/transport/method/tool was called. */
+  mcp?: { server: string; transport?: string; method?: string; toolName?: string; resourceUri?: string };
+  /** Set when type='handoff'. A control transfer between agents (multi-agent). */
+  handoff?: { from?: string; to: string; reason?: string };
+  /** Reasoning/thinking tokens (e.g. extended thinking, o-series reasoning). */
+  reasoningTokens?: number;
+  /** Denormalised tree depth (0 = trace root child) for cheap waterfall indenting. */
+  depth?: number;
+
   metadata?: Record<string, any>;
 
   timestamp: Date;
@@ -272,6 +322,14 @@ const AiGenerationSchema = new Schema<IAiGeneration>({
   output: { type: Schema.Types.Mixed },
   toolCalls: { type: [Schema.Types.Mixed] },
 
+  // Structural span enrichment (all optional / absent on plain LLM generations).
+  agent: { type: Schema.Types.Mixed },
+  tool: { type: Schema.Types.Mixed },
+  mcp: { type: Schema.Types.Mixed },
+  handoff: { type: Schema.Types.Mixed },
+  reasoningTokens: { type: Number },
+  depth: { type: Number },
+
   metadata: { type: Schema.Types.Mixed },
 
   timestamp: { type: Date, default: Date.now },
@@ -279,6 +337,8 @@ const AiGenerationSchema = new Schema<IAiGeneration>({
 
 // Waterfall: all observations of a trace, ordered.
 AiGenerationSchema.index({ sourceId: 1, traceId: 1, startTime: 1 });
+// Tree assembly: resolve a span's children quickly (agent/tool/mcp nesting).
+AiGenerationSchema.index({ sourceId: 1, traceId: 1, parentGenerationId: 1 });
 // Generations table + global feeds.
 AiGenerationSchema.index({ sourceId: 1, timestamp: -1 });
 // Filtered analytics (by model / provider / outcome).

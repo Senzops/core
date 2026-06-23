@@ -123,7 +123,7 @@ import { listQueueSources } from '../controllers/queue/main';
 import { getQueueStats } from '../controllers/queue/stats';
 import { listAiSources, getAiStats, getAiTraces, getAiConsumers } from '../controllers/ai/observability';
 import { Request, Response } from 'express';
-import { recordSelfGeneration } from './selfAiMonitor';
+import { recordSelfGeneration, SelfToolCall } from './selfAiMonitor';
 
 // Simulated Express call — same pattern as mcp/tools.ts
 const simulateExpressCall = async (
@@ -412,10 +412,15 @@ export interface IncidentContext {
 // Fire-and-forget; never affects the analysis outcome. Skipped runs (no Gemini
 // key) and retryable failures are intentionally not recorded — only terminal
 // outcomes with real token usage.
-const recordAnalysisUsage = async (ctx: IncidentContext, result: IAiAnalysis): Promise<void> => {
+const recordAnalysisUsage = async (
+  ctx: IncidentContext,
+  result: IAiAnalysis,
+  toolSpans: SelfToolCall[] = [],
+): Promise<void> => {
   if (result.status === 'skipped') return;
   await recordSelfGeneration({
     traceName: 'incident-analysis',
+    agentName: 'incident-analyst',
     operation: 'chat',
     model: result.model,
     tokensIn: result.tokensUsed.input,
@@ -424,6 +429,7 @@ const recordAnalysisUsage = async (ctx: IncidentContext, result: IAiAnalysis): P
     status: result.status === 'completed' ? 'ok' : 'error',
     errorMessage: result.error,
     sessionId: ctx.incidentId,
+    toolCalls: toolSpans,
     metadata: {
       incidentId: ctx.incidentId,
       target: ctx.target,
@@ -437,6 +443,8 @@ export const runIncidentAnalysis = async (ctx: IncidentContext): Promise<IAiAnal
   const startTime = Date.now();
   let toolCallsUsed = 0;
   let tokensUsed = { input: 0, output: 0 };
+  // Per-tool telemetry for the AI-monitoring agent trace (dogfooding).
+  const toolSpans: SelfToolCall[] = [];
 
   // Guard: no API key configured
   if (!process.env.GEMINI_API_KEY) {
@@ -510,6 +518,7 @@ Begin investigation: check the current state of ${ctx.target.toUpperCase()} reso
           continue;
         }
 
+        const toolStart = Date.now();
         try {
           const result = await tool.execute(call.args || {}, ctx.ownerId);
           // Gemini's FunctionResponse.response is a google.protobuf.Struct,
@@ -531,10 +540,12 @@ Begin investigation: check the current state of ${ctx.target.toUpperCase()} reso
           responseParts.push({
             functionResponse: { name: callName, response: responseData },
           });
+          toolSpans.push({ name: callName, latencyMs: Date.now() - toolStart, status: result.status >= 400 ? 'error' : 'ok', errorMessage: result.status >= 400 ? `status ${result.status}` : undefined });
         } catch (err: any) {
           responseParts.push({
             functionResponse: { name: callName, response: { error: err.message } },
           });
+          toolSpans.push({ name: callName, latencyMs: Date.now() - toolStart, status: 'error', errorMessage: err.message });
           logger.warn(`[AI Analysis] Tool ${callName} failed: ${err.message}`);
         }
       }
@@ -597,7 +608,7 @@ Produce the structured analysis now.`,
         analyzedAt: new Date(),
         durationMs: Date.now() - startTime,
       };
-      await recordAnalysisUsage(ctx, fallbackResult);
+      await recordAnalysisUsage(ctx, fallbackResult, toolSpans);
       return fallbackResult;
     }
 
@@ -617,7 +628,7 @@ Produce the structured analysis now.`,
       analyzedAt: new Date(),
       durationMs: Date.now() - startTime,
     };
-    await recordAnalysisUsage(ctx, result);
+    await recordAnalysisUsage(ctx, result, toolSpans);
     return result;
   } catch (err: any) {
     const { retryable, statusCode, shortMessage } = classifyGeminiError(err);
@@ -646,7 +657,7 @@ Produce the structured analysis now.`,
       durationMs: Date.now() - startTime,
       error: shortMessage,
     };
-    await recordAnalysisUsage(ctx, failedResult);
+    await recordAnalysisUsage(ctx, failedResult, toolSpans);
     return failedResult;
   }
 };

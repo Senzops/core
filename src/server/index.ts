@@ -47,6 +47,7 @@ import {
   getAiGenerations,
   getAiTraceDetail,
   getAiConsumers,
+  getAiReliability,
   submitAiScore,
 } from '../controllers/ai/observability';
 import { deleteTaskService, listTaskServices, registerTaskService, updateTaskService } from '../controllers/task/main';
@@ -381,6 +382,7 @@ apiRouter.put('/ai/observability/:id', updateAiSource);
 apiRouter.delete('/ai/observability/:id', deleteAiSource);
 apiRouter.get('/ai/observability/:id/stats', getAiStats);
 apiRouter.get('/ai/observability/:id/consumers', getAiConsumers);
+apiRouter.get('/ai/observability/:id/reliability', getAiReliability);
 apiRouter.get('/ai/observability/:id/traces', getAiTraces);
 apiRouter.get('/ai/observability/:id/generations', getAiGenerations);
 apiRouter.get('/ai/observability/:id/trace/:traceId', getAiTraceDetail);
@@ -682,6 +684,7 @@ publicShareRouter.get('/:token/ai/observability/:id/stats', resolveShareContext,
 publicShareRouter.get('/:token/ai/observability/:id/traces', resolveShareContext, enforceShareScope('ai'), applyShareTimeRange, cachePublicShare(), getAiTraces);
 publicShareRouter.get('/:token/ai/observability/:id/generations', resolveShareContext, enforceShareScope('ai'), applyShareTimeRange, cachePublicShare(), getAiGenerations);
 publicShareRouter.get('/:token/ai/observability/:id/consumers', resolveShareContext, enforceShareScope('ai'), applyShareTimeRange, cachePublicShare(), getAiConsumers);
+publicShareRouter.get('/:token/ai/observability/:id/reliability', resolveShareContext, enforceShareScope('ai'), applyShareTimeRange, cachePublicShare(), getAiReliability);
 publicShareRouter.get('/:token/ai/observability/:id/trace/:traceId', resolveShareContext, enforceShareScope('ai'), cachePublicShare(), getAiTraceDetail);
 
 // Background Tasks

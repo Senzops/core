@@ -12,6 +12,7 @@ export {
   getAiGenerations,
   getAiTraceDetail,
   getAiConsumers,
+  getAiReliability,
   submitAiScore,
 } from './stats';
 

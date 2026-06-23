@@ -593,7 +593,10 @@ export const RumBatchSchema = z.object({
 // Content (input/output) is accepted but only persisted when the source opts
 // in, and is masked on ingest.
 
-export const AI_OBSERVATION_TYPES = ['generation', 'tool', 'retrieval', 'embedding', 'span'] as const;
+export const AI_OBSERVATION_TYPES = [
+  'generation', 'embedding', 'agent', 'tool', 'mcp',
+  'retrieval', 'chain', 'handoff', 'reasoning', 'guardrail', 'span',
+] as const;
 
 const AiGenerationItem = z.object({
   generationId: z.string(),
@@ -626,6 +629,33 @@ const AiGenerationItem = z.object({
   input: z.any().optional(),
   output: z.any().optional(),
   toolCalls: z.array(z.any()).optional(),
+
+  // Structural span enrichment (agent-observability). Identity fields are kept
+  // regardless of content capture; tool args/result are masked on ingest.
+  agent: z.object({
+    name: z.string().max(200),
+    role: z.string().max(120).optional(),
+    step: z.number().optional(),
+  }).optional(),
+  tool: z.object({
+    name: z.string().max(200),
+    args: z.any().optional(),
+    result: z.any().optional(),
+  }).optional(),
+  mcp: z.object({
+    server: z.string().max(200),
+    transport: z.string().max(40).optional(),
+    method: z.string().max(120).optional(),
+    toolName: z.string().max(200).optional(),
+    resourceUri: z.string().max(500).optional(),
+  }).optional(),
+  handoff: z.object({
+    from: z.string().max(200).optional(),
+    to: z.string().max(200),
+    reason: z.string().max(500).optional(),
+  }).optional(),
+  reasoningTokens: z.number().nonnegative().optional(),
+  depth: z.number().min(0).optional(),
 
   metadata: z.record(z.any()).optional(),
   timestamp: z.string().datetime(),
