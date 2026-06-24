@@ -36,7 +36,7 @@ import { LogEvent } from '../models/Log';
 import { McpUsage } from '../models/Mcp';
 import { MonitorRun, MonitorIncident, Monitor } from '../models/Monitor';
 import { ErrorGroup, ErrorEvent } from '../models/Error';
-import { WebEvent, WebMetric, Website } from '../models/Web';
+import { WebEvent, WebEventData, WebMetric, Website } from '../models/Web';
 import { VpsRun, Vps } from '../models/Vps';
 import { AiTrace, AiGeneration, AiMetric, AiScore, AiSource } from '../models/Ai';
 
@@ -104,6 +104,7 @@ export const RETENTION_COLLECTIONS: RetentionCollection[] = [
 
   // --- Service-attributed (Web analytics) ---
   { label: 'WebEvent', model: WebEvent, anchorField: 'createdAt', ownerFilter: byParent(Website, 'webId') },
+  { label: 'WebEventData', model: WebEventData, anchorField: 'createdAt', ownerFilter: byParent(Website, 'webId') },
   { label: 'WebMetric', model: WebMetric, anchorField: 'timestamp', ownerFilter: byParent(Website, 'webId') },
 
   // --- Service-attributed (VPS / Monitors) ---

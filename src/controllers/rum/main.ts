@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import { RumService, RumTrace, RumMetric } from '../../models/Rum';
 import { ErrorGroup, ErrorEvent } from '../../models/Error';
+import { SourceMap } from '../../models/SourceMap';
 import { DashboardShare } from '../../models/DashboardShare';
 
 // --- Register New RUM Service ---
@@ -65,13 +66,21 @@ export const updateRumService = async (req: Request, res: Response, next: NextFu
   try {
     const ownerId = (req as any).ownerId;
     const { id } = req.params;
-    const { name, domains } = req.body;
+    const { name, domains, samplingRate } = req.body;
 
-    if (!name && !domains) {
-      return res.status(400).json({ error: 'At least one field (name or domains) must be provided.' });
+    if (!name && !domains && samplingRate === undefined) {
+      return res.status(400).json({ error: 'At least one field (name, domains or samplingRate) must be provided.' });
     }
 
     const updateFields: Record<string, any> = {};
+
+    if (samplingRate !== undefined) {
+      const rate = Number(samplingRate);
+      if (!Number.isFinite(rate) || rate < 0 || rate > 1) {
+        return res.status(400).json({ error: 'samplingRate must be a number between 0 and 1.' });
+      }
+      updateFields.samplingRate = rate;
+    }
     if (name) {
       if (name.length > 50) return res.status(400).json({ error: 'Name must be at most 50 characters' });
       updateFields.name = name;
@@ -118,6 +127,7 @@ export const deleteService = async (req: Request, res: Response, next: NextFunct
     await Promise.all([
       traceDelete,
       metricDelete,
+      SourceMap.deleteMany({ serviceId: id }),
       errorGroupDelete,
       errorEventDelete,
       DashboardShare.deleteMany({ scopeType: 'rum', scopeId: id, ownerId }),

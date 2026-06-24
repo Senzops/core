@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
-import { Website, WebEvent, WebMetric } from '../../models/Web';
+import { Website, WebEvent, WebEventData, WebMetric, WebAnnotation, WebApiKey } from '../../models/Web';
+import { Funnel } from '../../models/Funnel';
 import { DashboardShare } from '../../models/DashboardShare';
 import { User } from '../../models/User';
 import { RegisterWebsiteSchema, UpdateWebsiteSchema } from '../../utils/validation';
@@ -75,7 +76,11 @@ export const deleteWebsite = async (req: Request, res: Response, next: NextFunct
     // Cascade delete all analytics data for this site
     await Promise.all([
       WebEvent.deleteMany({ webId: id }),
+      WebEventData.deleteMany({ webId: id }),
       WebMetric.deleteMany({ webId: id }),
+      Funnel.deleteMany({ webId: id }),
+      WebAnnotation.deleteMany({ webId: id }),
+      WebApiKey.deleteMany({ webId: id }),
       DashboardShare.deleteMany({ scopeType: 'web', scopeId: id, ownerId }),
     ]);
 

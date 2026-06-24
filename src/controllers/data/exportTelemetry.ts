@@ -5,7 +5,7 @@ import { RumService, RumTrace, RumMetric } from '../../models/Rum';
 import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
 import { DatabaseService, DbMetric } from '../../models/Database';
 import { QueueSource, QueueMetric, QueueRollup } from '../../models/Queue';
-import { Website, WebEvent, WebMetric } from '../../models/Web';
+import { Website, WebEvent, WebEventData, WebMetric } from '../../models/Web';
 import { Vps, VpsRun } from '../../models/Vps';
 import { Monitor, MonitorRun } from '../../models/Monitor';
 import { LogEvent } from '../../models/Log';
@@ -31,7 +31,7 @@ const VALID_TELEMETRY_TYPES = [
   'task-runs', 'task-metrics', 'task-signatures',
   'db-metrics',
   'queue-metrics', 'queue-rollups',
-  'web-events', 'web-metrics',
+  'web-events', 'web-event-data', 'web-metrics',
   'vps-runs',
   'monitor-runs',
   'logs',
@@ -124,6 +124,12 @@ function buildCollectionConfigs(): Record<TelemetryType, TelemetryCollectionConf
     },
     'web-events': {
       model: WebEvent,
+      serviceIdField: 'webId',
+      timestampField: 'createdAt',
+      parentServiceModel: Website,
+    },
+    'web-event-data': {
+      model: WebEventData,
       serviceIdField: 'webId',
       timestampField: 'createdAt',
       parentServiceModel: Website,

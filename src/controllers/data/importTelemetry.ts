@@ -6,7 +6,7 @@ import { RumService, RumTrace, RumMetric } from '../../models/Rum';
 import { TaskService, TaskRun, TaskMetric, TaskSignature } from '../../models/Task';
 import { DatabaseService, DbMetric } from '../../models/Database';
 import { QueueSource, QueueMetric, QueueRollup } from '../../models/Queue';
-import { Website, WebEvent, WebMetric } from '../../models/Web';
+import { Website, WebEvent, WebEventData, WebMetric } from '../../models/Web';
 import { Vps, VpsRun } from '../../models/Vps';
 import { Monitor, MonitorRun } from '../../models/Monitor';
 import { LogEvent } from '../../models/Log';
@@ -46,6 +46,7 @@ const TIMESTAMP_FIELD_MAP: Record<string, string> = {
   'queue-metrics': 'timestamp',
   'queue-rollups': 'timestamp',
   'web-events': 'createdAt',
+  'web-event-data': 'createdAt',
   'web-metrics': 'timestamp',
   'vps-runs': 'createdAt',
   'monitor-runs': 'createdAt',
@@ -72,6 +73,7 @@ const SERVICE_ID_FIELD_MAP: Record<string, string> = {
   'queue-metrics': 'sourceId',
   'queue-rollups': 'sourceId',
   'web-events': 'webId',
+  'web-event-data': 'webId',
   'web-metrics': 'webId',
   'vps-runs': 'vpsId',
   'monitor-runs': 'monitorId',
@@ -99,6 +101,7 @@ function getModelForType(type: string): any {
     'queue-metrics': QueueMetric,
     'queue-rollups': QueueRollup,
     'web-events': WebEvent,
+    'web-event-data': WebEventData,
     'web-metrics': WebMetric,
     'vps-runs': VpsRun,
     'monitor-runs': MonitorRun,

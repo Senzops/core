@@ -72,11 +72,15 @@ export interface WebIngestPayload {
     visitorId: string;
     sessionId: string;
     type: string;
+    eventName?: string;
+    props?: Record<string, string | number | boolean | null>;
     url: string;
     path: string;
     title?: string;
     referrer?: string;
     width?: number;
+    height?: number;
+    language?: string;
     duration?: number;
   };
   ownerId: string;

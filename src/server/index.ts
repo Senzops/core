@@ -16,6 +16,14 @@ import { EnvUtils } from '../utils/envUtils';
 import { ingestWebMetrics } from '../controllers/web/webIngest';
 import { deleteWebsite, listWebsites, registerWebsite, updateWebsite } from '../controllers/web/main';
 import { getWebStats } from '../controllers/web/webStats';
+import { getWebEvents } from '../controllers/web/webEvents';
+import { createFunnel, listFunnels, updateFunnel, deleteFunnel, analyzeFunnel } from '../controllers/web/funnels';
+import { getWebRealtime } from '../controllers/web/webRealtime';
+import { listAnnotations, createAnnotation, updateAnnotation, deleteAnnotation } from '../controllers/web/annotations';
+import { getWebRetention, getWebPaths } from '../controllers/web/insights';
+import { createWebApiKey, listWebApiKeys, revokeWebApiKey } from '../controllers/web/apiKeys';
+import { apiOverview, apiTimeseries, apiBreakdown, apiEvents } from '../controllers/web/queryApi';
+import { webApiKeyAuth } from '../middlewares/webApiAuth';
 import { deleteMonitor, getMonitorStats, listMonitors, registerMonitor, updateMonitor } from '../controllers/monitor';
 import { listBoards, createBoard, getBoardById, updateBoard, deleteBoard, getBoardSummary } from '../controllers/monitorBoard';
 import { getRandomStatus } from '../controllers/demo';
@@ -61,6 +69,8 @@ import {
   updateRumService
 } from '../controllers/rum/main';
 import { getRumDashboard, getRumTraceDetail } from '../controllers/rum/stats';
+import { getRumSessions, getRumSessionDetail } from '../controllers/rum/sessions';
+import { uploadSourceMap, listSourceMaps, deleteSourceMap, symbolicateRumStack } from '../controllers/rum/sourcemaps';
 import { ingestGlobalLogs, getDashboardLogs, getTraceLogs, getLogApiKey, getLogById, listLogKeys, createLogKey, revokeLogKey, getLogFacets, getLogContext, exportLogs, getIngestStats } from '../controllers/logs';
 import { ndjsonBody } from '../middlewares/ndjsonBody';
 import {
@@ -246,6 +256,7 @@ const HIGHER_LIMIT_BODY_PATHS = new Set([
   '/api/ingest/apm',
   '/api/ingest/task',
   '/api/ingest/ai',
+  '/api/ingest/rum/sourcemap',
 ]);
 app.use((req, res, next) => {
   if (HIGHER_LIMIT_BODY_PATHS.has(req.path) || req.path.startsWith('/api/otlp/')) {
@@ -292,6 +303,14 @@ const apmLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Public Web Analytics query API — key-authenticated, read-only programmatic access.
+const webApiLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // AI AGENT ROUTES
 // Explicitly isolated and mounted FIRST to bypass standard user JWT logic.
 app.use('/api/mcp', mcpAgentRouter);
@@ -311,6 +330,8 @@ ingestRouter.post('/task', agentBatchBody, apmLimiter, requireIngestionQuota, in
 ingestRouter.post('/ai', agentBatchBody, apmLimiter, requireIngestionQuota, ingestAiBatch);
 ingestRouter.post('/queue', agentBatchBody, apmLimiter, requireIngestionQuota, ingestQueueBatch);
 ingestRouter.post('/rum', apmLimiter, requireIngestionQuota, ingestRumBatch);
+// Source map upload — its own 20mb body parser (excluded from the global 1mb parser).
+ingestRouter.post('/rum/sourcemap', express.json({ limit: '20mb' }), apmLimiter, uploadSourceMap);
 ingestRouter.post('/logs', apmLimiter, ...ndjsonBody, requireIngestionQuota, ingestGlobalLogs);
 
 // 2. VPS API (Frontend User)
@@ -329,6 +350,22 @@ apiRouter.get('/web/list', listWebsites);
 apiRouter.put('/web/:id', updateWebsite);
 apiRouter.delete('/web/:id', deleteWebsite);
 apiRouter.get('/web/:id/stats', getWebStats);
+apiRouter.get('/web/:id/events', getWebEvents);
+apiRouter.get('/web/:id/realtime', getWebRealtime);
+apiRouter.get('/web/:id/retention', getWebRetention);
+apiRouter.get('/web/:id/paths', getWebPaths);
+apiRouter.post('/web/:id/keys', createWebApiKey);
+apiRouter.get('/web/:id/keys', listWebApiKeys);
+apiRouter.delete('/web/:id/keys/:keyId', revokeWebApiKey);
+apiRouter.post('/web/:id/funnels', createFunnel);
+apiRouter.get('/web/:id/funnels', listFunnels);
+apiRouter.put('/web/:id/funnels/:funnelId', updateFunnel);
+apiRouter.delete('/web/:id/funnels/:funnelId', deleteFunnel);
+apiRouter.get('/web/:id/funnels/:funnelId/analyze', analyzeFunnel);
+apiRouter.get('/web/:id/annotations', listAnnotations);
+apiRouter.post('/web/:id/annotations', createAnnotation);
+apiRouter.put('/web/:id/annotations/:annotationId', updateAnnotation);
+apiRouter.delete('/web/:id/annotations/:annotationId', deleteAnnotation);
 
 // 4. Uptime Monitor API
 apiRouter.post('/uptime/register', requireServiceQuota('Monitor', 'Uptime Monitor'), registerMonitor);
@@ -421,6 +458,11 @@ apiRouter.get('/rum/list', listRumServices);
 apiRouter.put('/rum/:id', updateRumService);
 apiRouter.delete('/rum/:id', deleteRumService);
 apiRouter.get('/rum/:id/dashboard', getRumDashboard);
+apiRouter.get('/rum/:id/sessions', getRumSessions);
+apiRouter.get('/rum/:id/sessions/:sessionId', getRumSessionDetail);
+apiRouter.get('/rum/:id/sourcemaps', listSourceMaps);
+apiRouter.delete('/rum/:id/sourcemaps/:mapId', deleteSourceMap);
+apiRouter.post('/rum/:id/symbolicate', symbolicateRumStack);
 apiRouter.get('/rum/:id/trace/:traceId', getRumTraceDetail);
 
 
@@ -660,6 +702,8 @@ publicShareRouter.get('/:token/apm/:id/trace/:traceId/errors', resolveShareConte
 
 // RUM
 publicShareRouter.get('/:token/rum/:id/dashboard', resolveShareContext, enforceShareScope('rum'), applyShareTimeRange, cachePublicShare(), getRumDashboard);
+publicShareRouter.get('/:token/rum/:id/sessions', resolveShareContext, enforceShareScope('rum'), applyShareTimeRange, cachePublicShare(), getRumSessions);
+publicShareRouter.get('/:token/rum/:id/sessions/:sessionId', resolveShareContext, enforceShareScope('rum'), cachePublicShare(), getRumSessionDetail);
 publicShareRouter.get('/:token/rum/:id/trace/:traceId', resolveShareContext, enforceShareScope('rum'), cachePublicShare(), getRumTraceDetail);
 
 // Uptime
@@ -694,6 +738,13 @@ publicShareRouter.get('/:token/task/:id/run/:runId', resolveShareContext, enforc
 
 // Web Analytics
 publicShareRouter.get('/:token/web/:id/stats', resolveShareContext, enforceShareScope('web'), applyShareTimeRange, cachePublicShare(), getWebStats);
+publicShareRouter.get('/:token/web/:id/events', resolveShareContext, enforceShareScope('web'), applyShareTimeRange, cachePublicShare(), getWebEvents);
+publicShareRouter.get('/:token/web/:id/realtime', resolveShareContext, enforceShareScope('web'), cachePublicShare(5), getWebRealtime);
+publicShareRouter.get('/:token/web/:id/funnels', resolveShareContext, enforceShareScope('web'), cachePublicShare(), listFunnels);
+publicShareRouter.get('/:token/web/:id/funnels/:funnelId/analyze', resolveShareContext, enforceShareScope('web'), applyShareTimeRange, cachePublicShare(), analyzeFunnel);
+publicShareRouter.get('/:token/web/:id/annotations', resolveShareContext, enforceShareScope('web'), applyShareTimeRange, cachePublicShare(), listAnnotations);
+publicShareRouter.get('/:token/web/:id/retention', resolveShareContext, enforceShareScope('web'), applyShareTimeRange, cachePublicShare(), getWebRetention);
+publicShareRouter.get('/:token/web/:id/paths', resolveShareContext, enforceShareScope('web'), applyShareTimeRange, cachePublicShare(), getWebPaths);
 
 // Servers (VPS)
 publicShareRouter.get('/:token/vps/:id/stats', resolveShareContext, enforceShareScope('vps'), applyShareTimeRange, cachePublicShare(), getVpsStats);
@@ -706,6 +757,17 @@ publicShareRouter.get('/:token/views/:id', resolveShareContext, enforceShareScop
 publicShareRouter.get('/:token/views/widgets/:widgetId/data', resolveShareContext, enforceShareScope('savedview'), applyShareTimeRange, cachePublicShare(), getSharedWidgetData);
 
 app.use('/api/public/shares', publicShareRouter);
+
+// Public Web Analytics Query API (API-key auth, not user JWT). MUST be mounted
+// before any `/api`-level router that applies `authenticateUser` (dataImportRouter
+// and apiRouter both do, via router-level middleware that runs even when no route
+// matches) — otherwise a Bearer API key is rejected as an invalid Firebase token.
+const webQueryRouter = express.Router();
+webQueryRouter.get('/overview', apiOverview);
+webQueryRouter.get('/timeseries', apiTimeseries);
+webQueryRouter.get('/breakdown', apiBreakdown);
+webQueryRouter.get('/events', apiEvents);
+app.use('/api/v1/web', webApiLimiter, webApiKeyAuth, webQueryRouter);
 
 // Telemetry Import Router (separate from apiRouter for higher body limit)
 // Mounted before the apiRouter so it's matched first. Uses its own body parser

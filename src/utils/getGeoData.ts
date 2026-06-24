@@ -27,6 +27,7 @@ import { isPrivateOrLoopback } from './getClientIp';
 
 export interface GeoData {
   country: string; // ISO 3166-1 alpha-2 (e.g. "SG") or "Unknown"
+  region: string;  // Subdivision / state code (e.g. "CA", "MH") or "Unknown"
   city: string;    // English city name (e.g. "Singapore") or "Unknown"
 }
 
@@ -43,13 +44,14 @@ export interface GeoData {
  */
 export const getGeoData = (ip: string | null): GeoData => {
   if (!ip || isPrivateOrLoopback(ip)) {
-    return { country: 'Unknown', city: 'Unknown' };
+    return { country: 'Unknown', region: 'Unknown', city: 'Unknown' };
   }
 
   const geo = geoip.lookup(ip);
 
   return {
     country: geo?.country || 'Unknown',
+    region: geo?.region || 'Unknown',
     city: geo?.city || 'Unknown',
   };
 };

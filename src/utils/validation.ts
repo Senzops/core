@@ -139,18 +139,98 @@ export const DashboardTimeRangeSchema = z.object({
 );
 
 // --- Web Ingestion Schema ---
+
+// Custom-event properties. Schema-less but bounded: a capped number of keys,
+// each a scalar (string/number/boolean) with a length-limited string form.
+// Keeps WebEventData cardinality and per-event payload size under control.
+export const MAX_EVENT_PROPS = 50;
+const WebEventPropsSchema = z
+  .record(
+    z.string().max(64),
+    z.union([z.string().max(512), z.number(), z.boolean(), z.null()])
+  )
+  .refine((obj) => Object.keys(obj).length <= MAX_EVENT_PROPS, {
+    message: `At most ${MAX_EVENT_PROPS} event properties are allowed`,
+  });
+
 export const WebIngestSchema = z.object({
   webId: z.string().min(1).max(50),
   visitorId: z.string().min(1).max(100),
   sessionId: z.string().min(1).max(100),
-  type: z.enum(['pageview', 'ping']),
+  type: z.enum(['pageview', 'ping', 'event']),
+  eventName: z.string().min(1).max(64).optional(),
+  props: WebEventPropsSchema.optional(),
   url: z.string().max(2048).optional().default(''),
   path: z.string().max(512).optional().default('/'),
   title: z.string().max(512).optional().default('Unknown'),
   referrer: z.string().max(2048).optional().default('Direct'),
   width: z.number().int().min(0).max(10000).optional(),
+  height: z.number().int().min(0).max(10000).optional(),
+  language: z.string().max(35).optional(),
   duration: z.number().int().min(0).max(86400).optional(),
   timezone: z.string().max(100).optional(),
+}).refine((d) => d.type !== 'event' || (typeof d.eventName === 'string' && d.eventName.length > 0), {
+  message: "eventName is required when type is 'event'",
+  path: ['eventName'],
+});
+
+// Query schema for the custom-events explorer (top events + property drill-down).
+export const WebEventsQuerySchema = z.object({
+  range: z.enum(['30m', '1h', '3h', '6h', '12h', '24h', '3d', '7d']).optional(),
+  start: z.string().datetime().optional(),
+  end: z.string().datetime().optional(),
+  event: z.string().max(64).optional(),
+}).refine(
+  (d) => d.range || (d.start && d.end) || (!d.range && !d.start && !d.end),
+  { message: "Provide 'range' or both 'start' and 'end'" }
+);
+
+// --- Funnels (conversion paths) ---
+export const MAX_FUNNEL_STEPS = 10;
+
+const FunnelStepSchema = z.object({
+  type: z.enum(['page', 'event']),
+  value: z.string().min(1).max(200),
+  match: z.enum(['exact', 'contains', 'startsWith']).optional().default('exact'),
+  label: z.string().max(80).optional(),
+});
+
+export const CreateFunnelSchema = z.object({
+  name: z.string().min(1).max(80),
+  steps: z.array(FunnelStepSchema).min(1).max(MAX_FUNNEL_STEPS),
+});
+
+export const UpdateFunnelSchema = z.object({
+  name: z.string().min(1).max(80).optional(),
+  steps: z.array(FunnelStepSchema).min(1).max(MAX_FUNNEL_STEPS).optional(),
+}).refine((d) => d.name !== undefined || d.steps !== undefined, {
+  message: 'At least one field (name or steps) must be provided',
+});
+
+export const FunnelAnalyzeQuerySchema = z.object({
+  range: z.enum(['30m', '1h', '3h', '6h', '12h', '24h', '3d', '7d']).optional(),
+  start: z.string().datetime().optional(),
+  end: z.string().datetime().optional(),
+}).refine(
+  (d) => d.range || (d.start && d.end) || (!d.range && !d.start && !d.end),
+  { message: "Provide 'range' or both 'start' and 'end'" }
+);
+
+// --- Annotations (timeline notes) ---
+const HEX_COLOR = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+export const CreateAnnotationSchema = z.object({
+  date: z.string().datetime(),
+  text: z.string().min(1).max(200),
+  color: z.string().regex(HEX_COLOR, 'Color must be a hex value').optional(),
+});
+
+export const UpdateAnnotationSchema = z.object({
+  date: z.string().datetime().optional(),
+  text: z.string().min(1).max(200).optional(),
+  color: z.string().regex(HEX_COLOR, 'Color must be a hex value').optional(),
+}).refine((d) => d.date !== undefined || d.text !== undefined || d.color !== undefined, {
+  message: 'At least one field must be provided',
 });
 
 // --- Uptime Schemas ---

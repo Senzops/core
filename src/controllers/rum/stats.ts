@@ -6,7 +6,7 @@ import { resolveTimeRange, fillTimeGaps, getEffectiveRetention, buildTimeRangeMe
 
 const RUM_TREND_DEFAULTS = {
   pageViews: 0, sessions: 0,
-  lcpAvg: 0, inpAvg: 0, clsAvg: 0,
+  lcpAvg: 0, inpAvg: 0, clsAvg: 0, fcpAvg: 0, ttfbAvg: 0,
   rageClicks: 0, deadClicks: 0, errors: 0,
 };
 
@@ -49,6 +49,8 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
             lcpSum: { $sum: "$vitals.lcp" }, lcpCount: { $sum: { $cond: [{ $ifNull: ["$vitals.lcp", false] }, 1, 0] } },
             inpSum: { $sum: "$vitals.inp" }, inpCount: { $sum: { $cond: [{ $ifNull: ["$vitals.inp", false] }, 1, 0] } },
             clsSum: { $sum: "$vitals.cls" }, clsCount: { $sum: { $cond: [{ $ifNull: ["$vitals.cls", false] }, 1, 0] } },
+            fcpSum: { $sum: "$vitals.fcp" }, fcpCount: { $sum: { $cond: [{ $ifNull: ["$vitals.fcp", false] }, 1, 0] } },
+            ttfbSum: { $sum: "$timings.ttfb" }, ttfbCount: { $sum: { $cond: [{ $ifNull: ["$timings.ttfb", false] }, 1, 0] } },
             rageClicks: { $sum: "$frustration.rageClicks" },
             deadClicks: { $sum: "$frustration.deadClicks" },
             errors: { $sum: "$frustration.errorCount" }
@@ -60,7 +62,9 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
             _id: 1, pageViews: 1, sessions: { $size: "$sessions" }, rageClicks: 1, deadClicks: 1, errors: 1,
             lcpAvg: { $cond: [{ $gt: ["$lcpCount", 0] }, { $divide: ["$lcpSum", "$lcpCount"] }, 0] },
             inpAvg: { $cond: [{ $gt: ["$inpCount", 0] }, { $divide: ["$inpSum", "$inpCount"] }, 0] },
-            clsAvg: { $cond: [{ $gt: ["$clsCount", 0] }, { $divide: ["$clsSum", "$clsCount"] }, 0] }
+            clsAvg: { $cond: [{ $gt: ["$clsCount", 0] }, { $divide: ["$clsSum", "$clsCount"] }, 0] },
+            fcpAvg: { $cond: [{ $gt: ["$fcpCount", 0] }, { $divide: ["$fcpSum", "$fcpCount"] }, 0] },
+            ttfbAvg: { $cond: [{ $gt: ["$ttfbCount", 0] }, { $divide: ["$ttfbSum", "$ttfbCount"] }, 0] }
           }
         }
       ]);
@@ -94,6 +98,8 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
             lcpSum: { $sum: "$vitalsSum.lcp" }, lcpCount: { $sum: "$vitalsCount.lcp" },
             inpSum: { $sum: "$vitalsSum.inp" }, inpCount: { $sum: "$vitalsCount.inp" },
             clsSum: { $sum: "$vitalsSum.cls" }, clsCount: { $sum: "$vitalsCount.cls" },
+            fcpSum: { $sum: "$vitalsSum.fcp" }, fcpCount: { $sum: "$vitalsCount.fcp" },
+            ttfbSum: { $sum: "$timingsSum.ttfb" }, ttfbCount: { $sum: "$timingsCount.ttfb" },
             rageClicks: { $sum: "$frustrationTotal.rageClicks" }, deadClicks: { $sum: "$frustrationTotal.deadClicks" }, errors: { $sum: "$frustrationTotal.errors" }
           }
         },
@@ -103,7 +109,9 @@ export const getRumDashboard = async (req: Request, res: Response, next: NextFun
             _id: 1, pageViews: 1, sessions: 1, rageClicks: 1, deadClicks: 1, errors: 1,
             lcpAvg: { $cond: [{ $gt: ["$lcpCount", 0] }, { $divide: ["$lcpSum", "$lcpCount"] }, 0] },
             inpAvg: { $cond: [{ $gt: ["$inpCount", 0] }, { $divide: ["$inpSum", "$inpCount"] }, 0] },
-            clsAvg: { $cond: [{ $gt: ["$clsCount", 0] }, { $divide: ["$clsSum", "$clsCount"] }, 0] }
+            clsAvg: { $cond: [{ $gt: ["$clsCount", 0] }, { $divide: ["$clsSum", "$clsCount"] }, 0] },
+            fcpAvg: { $cond: [{ $gt: ["$fcpCount", 0] }, { $divide: ["$fcpSum", "$fcpCount"] }, 0] },
+            ttfbAvg: { $cond: [{ $gt: ["$ttfbCount", 0] }, { $divide: ["$ttfbSum", "$ttfbCount"] }, 0] }
           }
         }
       ]);

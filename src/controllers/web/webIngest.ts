@@ -1,11 +1,12 @@
 import { Request, Response } from "express";
 import { UAParser } from "ua-parser-js";
 import mongoose from "mongoose";
-import { WebEvent, WebMetric, Website } from "../../models/Web";
+import { WebEvent, WebEventData, WebMetric, Website, type IWebEventData } from "../../models/Web";
 import { logger } from "../../utils/logger";
 import { getClientIp } from "../../utils/getClientIp";
 import { getGeoData } from "../../utils/getGeoData";
 import { getChannel } from "../../utils/categorizeReferrers";
+import { parseUtm } from "../../utils/parseUtm";
 import { WebIngestSchema } from "../../utils/validation";
 import { webIngestQueue, enqueue, type WebIngestPayload } from '../../lib/queue';
 import { getRetentionMs } from '../../services/retentionCache';
@@ -42,11 +43,15 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
       visitorId,
       sessionId,
       type,
+      eventName,
+      props,
       url,
       path,
       title,
       referrer,
       width,
+      height,
+      language,
       duration,
     } = parsed.data;
 
@@ -73,7 +78,7 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
     // -------------------------------------------------------------------------
     const clientIp = getClientIp(req) || 'Unknown';
     const jobData: WebIngestPayload = {
-      eventData: { webId, visitorId, sessionId, type, url, path, title, referrer, width, duration },
+      eventData: { webId, visitorId, sessionId, type, eventName, props, url, path, title, referrer, width, height, language, duration },
       ownerId: site.ownerId,
       clientIp,
       userAgent: uaString as string,
@@ -90,16 +95,73 @@ export const ingestWebMetrics = async (req: Request, res: Response) => {
 };
 
 // ---------------------------------------------------------------------------
+// Metric map-increment helper
+// ---------------------------------------------------------------------------
+// Pushes an aggregation-pipeline stage that increments WebMetric.<prefix>.<key>
+// by 1. `$setField` is used (rather than a dotted `$inc`) so high-cardinality,
+// arbitrary keys (paths, UTM values, event names) — which may contain dots — are
+// stored as literal map fields without violating MongoDB field-name rules.
+const pushMapInc = (pipeline: any[], prefix: string, key: string) => {
+  const safeKey = key.replace(/\$/g, "");
+
+  pipeline.push({
+    $set: {
+      [prefix]: {
+        $setField: {
+          field: safeKey,
+          input: { $ifNull: [`$${prefix}`, {}] },
+          value: {
+            $add: [
+              { $ifNull: [{ $getField: { field: safeKey, input: `$${prefix}` } }, 0] },
+              1
+            ]
+          }
+        }
+      }
+    }
+  });
+};
+
+// Builds one typed WebEventData document per custom-event property.
+const buildEventDataDocs = (
+  webId: string,
+  eventId: any,
+  eventName: string,
+  props: Record<string, string | number | boolean | null>,
+  timestamp: Date,
+  retentionMs: number
+): Partial<IWebEventData>[] => {
+  const docs: Partial<IWebEventData>[] = [];
+  const expiresAt = new Date(timestamp.getTime() + retentionMs);
+
+  for (const [key, value] of Object.entries(props)) {
+    if (value === null || value === undefined) continue;
+
+    const base = { webId: webId as any, eventId, eventName, key, createdAt: timestamp, expiresAt };
+
+    if (typeof value === "number" && Number.isFinite(value)) {
+      docs.push({ ...base, dataType: "number", numberValue: value });
+    } else if (typeof value === "boolean") {
+      docs.push({ ...base, dataType: "boolean", boolValue: value });
+    } else if (typeof value === "string") {
+      docs.push({ ...base, dataType: "string", stringValue: value.slice(0, 512) });
+    }
+  }
+
+  return docs;
+};
+
+// ---------------------------------------------------------------------------
 // Background Web Processor (called by queue worker or in-process fallback)
 // ---------------------------------------------------------------------------
 export const processWebIngestion = async (job: WebIngestPayload): Promise<void> => {
   const { eventData, ownerId, clientIp, userAgent } = job;
-  const { webId, visitorId, sessionId, type, url, path, title, referrer, width, duration } = eventData;
+  const { webId, visitorId, sessionId, type, eventName, props, url, path, title, referrer, width, height, language, duration } = eventData;
 
   // Resolve the owner's plan-based retention window once for this event.
   const retentionMs = await getRetentionMs(ownerId);
 
-  const { country, city } = getGeoData(clientIp);
+  const { country, region, city } = getGeoData(clientIp);
 
   const parser = new UAParser(userAgent);
   const browser = parser.getBrowser().name || "Unknown";
@@ -107,9 +169,15 @@ export const processWebIngestion = async (job: WebIngestPayload): Promise<void> 
   let device: string = parser.getDevice().type || "Desktop";
   if (device === "Desktop" && width && width < 768) device = "Mobile";
 
+  const lang = (language || "Unknown").slice(0, 35);
+  const screen = width && height ? `${width}x${height}` : "Unknown";
+
   const channelInfo = getChannel(referrer, url);
   const channel = channelInfo.channel;
   const timestamp = new Date();
+
+  const bucketTime = new Date(timestamp);
+  bucketTime.setSeconds(0, 0);
 
   if (type === "ping") {
     await WebEvent.findOneAndUpdate(
@@ -117,9 +185,6 @@ export const processWebIngestion = async (job: WebIngestPayload): Promise<void> 
       { $inc: { duration: duration || 0 } },
       { sort: { createdAt: -1 } }
     );
-
-    const bucketTime = new Date(timestamp);
-    bucketTime.setSeconds(0, 0);
 
     await WebMetric.updateOne(
       { webId, timestamp: bucketTime },
@@ -132,6 +197,64 @@ export const processWebIngestion = async (job: WebIngestPayload): Promise<void> 
     return;
   }
 
+  const utm = parseUtm(url);
+
+  // -------------------------------------------------------------------------
+  // Custom event — counted independently of pageviews. Does NOT touch `views`
+  // or the pageview dimension maps so view-based metrics stay clean.
+  // -------------------------------------------------------------------------
+  if (type === "event") {
+    if (!eventName) return; // defensive — validation guarantees this
+
+    const eventDoc = await WebEvent.create({
+      webId,
+      visitorId,
+      sessionId,
+      type: "event",
+      eventName,
+      url,
+      path,
+      title: title || "Unknown",
+      referrer: referrer || "Direct",
+      channel,
+      utm: utm || undefined,
+      duration: 0,
+      browser,
+      os,
+      device,
+      country,
+      region,
+      city,
+      language: lang,
+      screen,
+      createdAt: timestamp,
+      expiresAt: new Date(timestamp.getTime() + retentionMs),
+    });
+
+    if (props && Object.keys(props).length > 0) {
+      const dataDocs = buildEventDataDocs(webId, eventDoc._id, eventName, props, timestamp, retentionMs);
+      if (dataDocs.length > 0) {
+        await WebEventData.insertMany(dataDocs, { ordered: false }).catch((err) =>
+          logger.error("Web Event Data Insert Error", err)
+        );
+      }
+    }
+
+    const pipeline: any[] = [
+      { $set: { expiresAt: new Date(bucketTime.getTime() + retentionMs) } }
+    ];
+    pushMapInc(pipeline, "events", eventName);
+    if (utm?.source) pushMapInc(pipeline, "utmSources", utm.source);
+    if (utm?.medium) pushMapInc(pipeline, "utmMediums", utm.medium);
+    if (utm?.campaign) pushMapInc(pipeline, "utmCampaigns", utm.campaign);
+
+    await WebMetric.updateOne({ webId, timestamp: bucketTime }, pipeline, { upsert: true });
+    return;
+  }
+
+  // -------------------------------------------------------------------------
+  // Pageview
+  // -------------------------------------------------------------------------
   await WebEvent.create({
     webId,
     visitorId,
@@ -142,18 +265,19 @@ export const processWebIngestion = async (job: WebIngestPayload): Promise<void> 
     title: title || "Unknown",
     referrer: referrer || "Direct",
     channel,
+    utm: utm || undefined,
     duration: 0,
     browser,
     os,
     device,
     country,
+    region,
     city,
+    language: lang,
+    screen,
     createdAt: timestamp,
     expiresAt: new Date(timestamp.getTime() + retentionMs),
   });
-
-  const bucketTime = new Date(timestamp);
-  bucketTime.setSeconds(0, 0);
 
   const pipeline: any[] = [
     {
@@ -164,35 +288,22 @@ export const processWebIngestion = async (job: WebIngestPayload): Promise<void> 
     }
   ];
 
-  const addMapToPipeline = (prefix: string, key: string) => {
-    const safeKey = key.replace(/\$/g, "");
+  pushMapInc(pipeline, "paths", path);
+  pushMapInc(pipeline, "referrers", referrer || "Direct");
+  pushMapInc(pipeline, "channels", channel);
+  pushMapInc(pipeline, "countries", country);
+  pushMapInc(pipeline, "regions", region);
+  pushMapInc(pipeline, "cities", city);
+  pushMapInc(pipeline, "browsers", browser);
+  pushMapInc(pipeline, "os", os);
+  pushMapInc(pipeline, "devices", device);
+  pushMapInc(pipeline, "languages", lang);
+  pushMapInc(pipeline, "screens", screen);
 
-    pipeline.push({
-      $set: {
-        [prefix]: {
-          $setField: {
-            field: safeKey,
-            input: { $ifNull: [`$${prefix}`, {}] },
-            value: {
-              $add: [
-                { $ifNull: [{ $getField: { field: safeKey, input: `$${prefix}` } }, 0] },
-                1
-              ]
-            }
-          }
-        }
-      }
-    });
-  };
-
-  addMapToPipeline("paths", path);
-  addMapToPipeline("referrers", referrer || "Direct");
-  addMapToPipeline("channels", channel);
-  addMapToPipeline("countries", country);
-  addMapToPipeline("cities", city);
-  addMapToPipeline("browsers", browser);
-  addMapToPipeline("os", os);
-  addMapToPipeline("devices", device);
+  // Campaign attribution — only when the landing URL carried UTM params.
+  if (utm?.source) pushMapInc(pipeline, "utmSources", utm.source);
+  if (utm?.medium) pushMapInc(pipeline, "utmMediums", utm.medium);
+  if (utm?.campaign) pushMapInc(pipeline, "utmCampaigns", utm.campaign);
 
   await WebMetric.updateOne(
     { webId, timestamp: bucketTime },
