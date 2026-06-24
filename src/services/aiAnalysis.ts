@@ -123,7 +123,7 @@ import { listQueueSources } from '../controllers/queue/main';
 import { getQueueStats } from '../controllers/queue/stats';
 import { listAiSources, getAiStats, getAiTraces, getAiConsumers } from '../controllers/ai/observability';
 import { Request, Response } from 'express';
-import { recordSelfGeneration, SelfToolCall } from './selfAiMonitor';
+import Senzor from '@senzops/apm-node';
 
 // Simulated Express call — same pattern as mcp/tools.ts
 const simulateExpressCall = async (
@@ -409,46 +409,17 @@ export interface IncidentContext {
 }
 
 // Record this analysis run into our own AI Monitoring pillar (dogfooding).
-// Fire-and-forget; never affects the analysis outcome. Skipped runs (no Gemini
-// key) and retryable failures are intentionally not recorded — only terminal
-// outcomes with real token usage.
-const recordAnalysisUsage = async (
-  ctx: IncidentContext,
-  result: IAiAnalysis,
-  toolSpans: SelfToolCall[] = [],
-  promptInput?: string,
-): Promise<void> => {
-  if (result.status === 'skipped') return;
-  await recordSelfGeneration({
-    traceName: 'incident-analysis',
-    agentName: 'incident-analyst',
-    operation: 'chat',
-    model: result.model,
-    tokensIn: result.tokensUsed.input,
-    tokensOut: result.tokensUsed.output,
-    latencyMs: result.durationMs,
-    status: result.status === 'completed' ? 'ok' : 'error',
-    errorMessage: result.error,
-    sessionId: ctx.incidentId,
-    toolCalls: toolSpans,
-    // Prompt + analysis output — gated by the SDK's captureContent flag.
-    input: promptInput,
-    output: result.summary || result.findings?.rootCause || undefined,
-    metadata: {
-      incidentId: ctx.incidentId,
-      target: ctx.target,
-      severity: ctx.severity,
-      toolCalls: result.toolCallsUsed,
-    },
-  });
-};
+// AI-monitoring of this analysis is automatic: the worker wraps the run in
+// `Senzor.ai.trace(...)` ([lib/aiQueue.ts]) and the `@google/genai` SDK is
+// auto-instrumented, so every `chat.sendMessage` / `models.generateContent`
+// turn is recorded as a nested generation (tokens / latency / cost / reasoning,
+// + opt-in prompt/output). Tool calls below are wrapped with `Senzor.ai.tool`.
+// No manual recording layer is needed.
 
 export const runIncidentAnalysis = async (ctx: IncidentContext): Promise<IAiAnalysis> => {
   const startTime = Date.now();
   let toolCallsUsed = 0;
   let tokensUsed = { input: 0, output: 0 };
-  // Per-tool telemetry for the AI-monitoring agent trace (dogfooding).
-  const toolSpans: SelfToolCall[] = [];
 
   // Guard: no API key configured
   if (!process.env.GEMINI_API_KEY) {
@@ -522,9 +493,14 @@ Begin investigation: check the current state of ${ctx.target.toUpperCase()} reso
           continue;
         }
 
-        const toolStart = Date.now();
         try {
-          const result = await tool.execute(call.args || {}, ctx.ownerId);
+          // Auto-records a `tool` span (timing / status / args, content-gated)
+          // nested under the active incident-analysis trace. A controller
+          // result with status >= 400 marks the span errored without throwing.
+          const result = await Senzor.ai.tool(
+            { name: callName, args: call.args, resultIsError: (r: any) => r?.status >= 400 },
+            () => tool.execute(call.args || {}, ctx.ownerId),
+          );
           // Gemini's FunctionResponse.response is a google.protobuf.Struct,
           // which MUST be a JSON object — never an array or primitive.
           // Many controllers return raw arrays (e.g. res.json(services)),
@@ -544,32 +520,9 @@ Begin investigation: check the current state of ${ctx.target.toUpperCase()} reso
           responseParts.push({
             functionResponse: { name: callName, response: responseData },
           });
-          // Span attributes: argument field NAMES (schema, not values) + the
-          // controller status + result shape — non-sensitive, makes the tool
-          // span verbose without capturing internal content.
-          toolSpans.push({
-            name: callName,
-            latencyMs: Date.now() - toolStart,
-            status: result.status >= 400 ? 'error' : 'ok',
-            errorMessage: result.status >= 400 ? `status ${result.status}` : undefined,
-            args: call.args,
-            metadata: {
-              arguments: Object.keys(call.args || {}),
-              statusCode: result.status,
-              resultKind: Array.isArray(result.data) ? 'array' : typeof result.data,
-            },
-          });
         } catch (err: any) {
           responseParts.push({
             functionResponse: { name: callName, response: { error: err.message } },
-          });
-          toolSpans.push({
-            name: callName,
-            latencyMs: Date.now() - toolStart,
-            status: 'error',
-            errorMessage: err.message,
-            args: call.args,
-            metadata: { arguments: Object.keys(call.args || {}) },
           });
           logger.warn(`[AI Analysis] Tool ${callName} failed: ${err.message}`);
         }
@@ -633,7 +586,6 @@ Produce the structured analysis now.`,
         analyzedAt: new Date(),
         durationMs: Date.now() - startTime,
       };
-      await recordAnalysisUsage(ctx, fallbackResult, toolSpans, userPrompt);
       return fallbackResult;
     }
 
@@ -653,7 +605,6 @@ Produce the structured analysis now.`,
       analyzedAt: new Date(),
       durationMs: Date.now() - startTime,
     };
-    await recordAnalysisUsage(ctx, result, toolSpans, userPrompt);
     return result;
   } catch (err: any) {
     const { retryable, statusCode, shortMessage } = classifyGeminiError(err);
@@ -682,7 +633,6 @@ Produce the structured analysis now.`,
       durationMs: Date.now() - startTime,
       error: shortMessage,
     };
-    await recordAnalysisUsage(ctx, failedResult, toolSpans, userPrompt);
     return failedResult;
   }
 };

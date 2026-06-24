@@ -1,3 +1,4 @@
+import Senzor from '@senzops/apm-node';
 import { Queue, Worker } from 'bullmq';
 import { redisConnection, registerWorker } from './queue';
 import { AlertIncident, AlertPolicy } from '../models/Alert';
@@ -169,7 +170,23 @@ async function executeAnalysis(payload: AiAnalysisPayload): Promise<void> {
     query: payload.query,
   };
 
-  const result = await runIncidentAnalysis(ctx);
+  // Group the whole agent run into one AI-Monitoring trace. The auto-instrumented
+  // @google/genai calls inside runIncidentAnalysis (and the Senzor.ai.tool spans)
+  // nest under it via async-context propagation. Flush immediately afterwards —
+  // incident analysis is low-frequency, so we don't wait on the batch interval.
+  let result: Awaited<ReturnType<typeof runIncidentAnalysis>>;
+  try {
+    result = await Senzor.ai.trace(
+      {
+        name: 'incident-analysis',
+        sessionId: ctx.incidentId,
+        metadata: { incidentId: ctx.incidentId, target: ctx.target, severity: ctx.severity },
+      },
+      () => runIncidentAnalysis(ctx),
+    );
+  } finally {
+    await Senzor.flush().catch(() => { /* delivery is best-effort */ });
+  }
 
   // 4. Save result
   await AlertIncident.findByIdAndUpdate(incidentId, { aiAnalysis: result });
