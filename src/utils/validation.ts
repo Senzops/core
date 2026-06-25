@@ -645,6 +645,7 @@ const RumTraceItem = z.object({
 
   connectionType: z.string().optional(), // '4g', 'wifi', etc.
   deviceMemory: z.number().optional(),
+  userAgent: z.string().max(1024).optional(), // parsed into browser/os/device server-side
 
   spans: z.array(RumSpanSchema).optional().default([]),
   duration: z.number().nonnegative(),

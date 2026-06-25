@@ -3,7 +3,7 @@ import mongoose from 'mongoose';
 import { RumService, RumTrace } from '../../models/Rum';
 import { resolveTimeRange, getEffectiveRetention, buildTimeRangeMeta, TimeRangeError } from '../../utils/timeRange';
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE = 12;
 
 // --- Session list — RUM traces grouped into visitor sessions ---
 export const getRumSessions = async (req: Request, res: Response, next: NextFunction) => {
@@ -32,8 +32,9 @@ export const getRumSessions = async (req: Request, res: Response, next: NextFunc
     const serviceIdObj = new mongoose.Types.ObjectId(id);
 
     // Sort by time first so $first / $last capture entry & exit paths correctly.
-    // Fetch PAGE_SIZE + 1 to derive hasMore without a separate count.
-    const sessions = await RumTrace.aggregate([
+    // Sessionize once, then page + count in a single pass via $facet so the
+    // client can render an exact "Page X of Y" without a second round-trip.
+    const agg = await RumTrace.aggregate([
       {
         $match: {
           serviceId: serviceIdObj,
@@ -61,17 +62,24 @@ export const getRumSessions = async (req: Request, res: Response, next: NextFunc
         },
       },
       { $addFields: { durationMs: { $subtract: ['$end', '$start'] } } },
-      { $sort: { end: -1 } },
-      { $skip: page * PAGE_SIZE },
-      { $limit: PAGE_SIZE + 1 },
+      {
+        $facet: {
+          sessions: [{ $sort: { end: -1 } }, { $skip: page * PAGE_SIZE }, { $limit: PAGE_SIZE }],
+          total: [{ $count: 'count' }],
+        },
+      },
     ], { allowDiskUse: true });
 
-    const hasMore = sessions.length > PAGE_SIZE;
+    const sessions = agg[0]?.sessions || [];
+    const total = agg[0]?.total?.[0]?.count || 0;
+
     res.json({
       timeRange: meta,
       page,
-      hasMore,
-      sessions: sessions.slice(0, PAGE_SIZE),
+      pageSize: PAGE_SIZE,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / PAGE_SIZE)),
+      sessions,
     });
   } catch (error) {
     next(error);
