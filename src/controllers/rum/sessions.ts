@@ -34,12 +34,15 @@ export const getRumSessions = async (req: Request, res: Response, next: NextFunc
     // Sort by time first so $first / $last capture entry & exit paths correctly.
     // Sessionize once, then page + count in a single pass via $facet so the
     // client can render an exact "Page X of Y" without a second round-trip.
+    // Include ALL trace types (span_updates carry the largest `duration`, i.e.
+    // the real time on page). The session's real end is max(timestamp+duration),
+    // since every trace of one page-load shares the same start `timestamp`.
+    // pageViews counts only actual page views; sessions with none are dropped.
     const agg = await RumTrace.aggregate([
       {
         $match: {
           serviceId: serviceIdObj,
           timestamp: { $gte: tr.startDate, $lte: tr.endDate },
-          traceType: { $in: ['initial_load', 'route_change'] },
         },
       },
       { $sort: { timestamp: 1 } },
@@ -47,8 +50,8 @@ export const getRumSessions = async (req: Request, res: Response, next: NextFunc
         $group: {
           _id: '$sessionId',
           start: { $min: '$timestamp' },
-          end: { $max: '$timestamp' },
-          pageViews: { $sum: 1 },
+          end: { $max: { $add: ['$timestamp', { $ifNull: ['$duration', 0] }] } },
+          pageViews: { $sum: { $cond: [{ $in: ['$traceType', ['initial_load', 'route_change']] }, 1, 0] } },
           errors: { $sum: '$frustration.errorCount' },
           rageClicks: { $sum: '$frustration.rageClicks' },
           deadClicks: { $sum: '$frustration.deadClicks' },
@@ -61,6 +64,7 @@ export const getRumSessions = async (req: Request, res: Response, next: NextFunc
           lcpAvg: { $avg: '$vitals.lcp' },
         },
       },
+      { $match: { pageViews: { $gt: 0 } } },
       { $addFields: { durationMs: { $subtract: ['$end', '$start'] } } },
       {
         $facet: {
@@ -96,30 +100,39 @@ export const getRumSessionDetail = async (req: Request, res: Response, next: Nex
     const service = await RumService.findOne({ _id: id, ownerId }).select('_id').lean();
     if (!service) return res.status(404).json({ error: 'RUM Service not found' });
 
-    const traces = await RumTrace.find({ serviceId: id, sessionId })
+    const allTraces = await RumTrace.find({ serviceId: id, sessionId })
       .select('-spans')
       .sort({ timestamp: 1 })
-      .limit(500)
+      .limit(1000)
       .lean();
 
-    if (traces.length === 0) return res.status(404).json({ error: 'Session not found' });
+    if (allTraces.length === 0) return res.status(404).json({ error: 'Session not found' });
 
-    const first = traces[0];
-    const last = traces[traces.length - 1];
+    // Timing spans ALL traces (span_updates carry the real time-on-page via
+    // `duration`); the timeline shows only actual page views, not continuation
+    // flushes. Kept identical to the sessions list so the two never drift.
+    const start = new Date(allTraces[0].timestamp).getTime();
+    const end = allTraces.reduce(
+      (mx, t) => Math.max(mx, new Date(t.timestamp).getTime() + (t.duration || 0)),
+      start
+    );
+    const pageViewTraces = allTraces.filter((t) => t.traceType === 'initial_load' || t.traceType === 'route_change');
+    const last = allTraces[allTraces.length - 1];
+
     const summary = {
       sessionId,
-      start: first.timestamp,
-      end: last.timestamp,
-      durationMs: new Date(last.timestamp).getTime() - new Date(first.timestamp).getTime(),
-      pageViews: traces.length,
+      start: allTraces[0].timestamp,
+      end: new Date(end),
+      durationMs: end - start,
+      pageViews: pageViewTraces.length,
       device: last.device,
       browser: last.browser,
       os: last.os,
       country: last.country,
-      errors: traces.reduce((s, t) => s + (t.frustration?.errorCount || 0), 0),
+      errors: allTraces.reduce((s, t) => s + (t.frustration?.errorCount || 0), 0),
     };
 
-    res.json({ summary, traces });
+    res.json({ summary, traces: pageViewTraces });
   } catch (error) {
     next(error);
   }
