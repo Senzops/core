@@ -310,6 +310,19 @@ const otpVerifyLimiter = rateLimit({
   keyGenerator: authRateKey,
 });
 
+// Live database operations are the only read in the product that opens a
+// connection to the CUSTOMER'S database on every call. The panel polls at 5s
+// while a user watches it (12/min); this leaves generous headroom for that and
+// still stops a stuck client from turning Senzor into a load generator against
+// the instance it is meant to be observing.
+const dbLiveOpsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: authRateKey,
+});
+
 const webhookLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max: 300,
@@ -441,7 +454,7 @@ apiRouter.get('/database/:id/insights', requirePlan('pro'), getDatabaseInsights)
 apiRouter.get('/database/:id/insights/:digestHash', requirePlan('pro'), getDatabaseQueryShape);
 apiRouter.get('/database/:id/indexes', requirePlan('pro'), getDatabaseIndexes);
 // Live operations are never persisted and never shared publicly.
-apiRouter.get('/database/:id/operations', getDatabaseOperations);
+apiRouter.get('/database/:id/operations', dbLiveOpsLimiter, getDatabaseOperations);
 
 // --- Queue Monitoring (BullMQ/Redis, agentless pull-plane) ---
 apiRouter.post('/queue/register', requireServiceQuota('QueueSource', 'Queue'), registerQueueSource);
@@ -766,6 +779,7 @@ publicShareRouter.get('/:token/database/:id/stats', resolveShareContext, enforce
 // describes the schema and access patterns behind a public status page.
 publicShareRouter.get('/:token/database/:id/insights', resolveShareContext, enforceShareScope('database'), applyShareTimeRange, cachePublicShare(), getDatabaseInsights);
 publicShareRouter.get('/:token/database/:id/indexes', resolveShareContext, enforceShareScope('database'), applyShareTimeRange, cachePublicShare(), getDatabaseIndexes);
+publicShareRouter.get('/:token/database/:id/insights/:digestHash', resolveShareContext, enforceShareScope('database'), applyShareTimeRange, cachePublicShare(), getDatabaseQueryShape);
 
 // Queue
 publicShareRouter.get('/:token/queue/:id/stats', resolveShareContext, enforceShareScope('queue'), applyShareTimeRange, cachePublicShare(), getQueueStats);

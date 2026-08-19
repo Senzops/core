@@ -10,6 +10,7 @@
     "backfill:logsource": "ts-node-dev --transpile-only src/scripts/backfillLogSource.ts",
     "backfill:mcpkeys": "ts-node-dev --transpile-only src/scripts/backfillMcpApiKeys.ts",
     "migrate:retention": "ts-node-dev --transpile-only src/scripts/migrateRetentionTTL.ts",
+    "migrate:dbmetrics": "ts-node-dev --transpile-only src/scripts/migrateDbMetricSemantics.ts",
     "lint": "eslint src/**/*.ts",
     "start:server": "node --import ./dist/utils/otlp.js dist/server/index.js",
     "start:worker": "node dist/worker/index.js",
@@ -17,7 +18,8 @@
     "dev:server": "ts-node-dev --respawn --transpile-only src/server/index.ts",
     "dev:worker": "ts-node-dev --respawn --transpile-only src/worker/index.ts",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:worker\" --names \"API,WORKER\" --prefix-colors \"yellow,blue\"",
-    "start": "concurrently \"npm run start:server\" \"npm run start:worker\" --names \"API,WORKER\""
+    "start": "concurrently \"npm run start:server\" \"npm run start:worker\" --names \"API,WORKER\"",
+    "migrate:dbmetrics:apply": "ts-node-dev --transpile-only src/scripts/migrateDbMetricSemantics.ts --apply"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1072.0",
