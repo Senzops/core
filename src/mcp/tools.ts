@@ -12,6 +12,9 @@ import { getWebStats } from '../controllers/web/webStats';
 import { listMonitors, getMonitorStats } from '../controllers/monitor';
 import { listDatabases } from '../controllers/database/main';
 import { getDatabaseStats } from '../controllers/database/stats';
+import { getDatabaseInsights, getDatabaseIndexes, getDatabaseOperations } from '../controllers/database/insights';
+import { ownerMeetsPlan } from '../middlewares/planGate';
+import type { PlanId } from '../config/pricing';
 import { listQueueSources } from '../controllers/queue/main';
 import { getQueueStats, getQueueEntityDetail } from '../controllers/queue/stats';
 import { getQueueExecutions } from '../controllers/queue/correlation';
@@ -34,10 +37,26 @@ import { getStorageStats, getTransactions, getTransactionReceipt, getCurrentSubs
 import { getDynamicSchema } from '../controllers/schema';
 import { getDashboardCapabilities } from '../controllers/dashboard/capabilities';
 
-import { simulateExpressCall, trackUsage, validateToolArgs } from "./registry";
+import { simulateExpressCall, trackUsage, validateToolArgs, type JsonSchema } from "./registry";
 
 // --- Complete Tool Definitions ---
-const MCP_TOOLS = [
+/**
+ * A tool exposed over MCP.
+ *
+ *  matters because MCP dispatches straight to the controllers,
+ * bypassing the route middleware that gates the HTTP surface. Without it a
+ * paid capability would be reachable over MCP by any plan — the tool
+ * definition has to carry the gate that the router carries elsewhere.
+ */
+interface McpToolDefinition {
+  name: string;
+  description: string;
+  inputSchema: JsonSchema | Record<string, any>;
+  minimumPlan?: PlanId;
+  execute: (args: any, uid: string) => Promise<{ status: number; data: any }>;
+}
+
+const MCP_TOOLS: McpToolDefinition[] = [
   // --- APM Tools ---
   {
     name: "apm_list_services",
@@ -221,9 +240,29 @@ const MCP_TOOLS = [
   },
   {
     name: "database_get_stats",
-    description: "Get database throughput and latency metrics.",
+    description: "Get database metrics, health score, and prioritized advisories. Includes engine-specific detail (WiredTiger cache and concurrency tickets for MongoDB; checkpoints, dead tuples and transaction-ID headroom for PostgreSQL; InnoDB history list and lock contention for MySQL; memory breakdown and persistence status for Redis), plus which statistics the monitoring credentials can actually read.",
     inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "1h" } }, required: ["id"] },
     execute: (args: any, uid: string) => simulateExpressCall(getDatabaseStats, uid, { id: args.id }, { range: args.range })
+  },
+  {
+    name: "database_query_insights",
+    minimumPlan: "pro",
+    description: "Get the most expensive query shapes and slow operations for a database over a time range. Query text is normalized and stripped of literal values. Sort by totalTime, meanTime, maxTime, executions, or examined (rows examined per row returned). Requires the Pro plan or higher.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "1h" }, sort: { type: "string", enum: ["totalTime", "meanTime", "maxTime", "executions", "examined"], default: "totalTime" }, search: { type: "string" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getDatabaseInsights, uid, { id: args.id }, { range: args.range, sort: args.sort, search: args.search })
+  },
+  {
+    name: "database_index_advisor",
+    minimumPlan: "pro",
+    description: "Get the index census and recommendations for a database: unused, redundant and duplicate indexes with the space they occupy, plus missing-index candidates derived from queries that scan far more rows than they return. Recommendations are advisory only — Senzor never modifies the database. Requires the Pro plan or higher.",
+    inputSchema: { type: "object", properties: { id: { type: "string" }, range: { type: "string", default: "24h" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getDatabaseIndexes, uid, { id: args.id }, { range: args.range })
+  },
+  {
+    name: "database_current_operations",
+    description: "Read the operations executing on a database right now, longest-running first. Live and unstored; statement text is normalized. Read-only — this cannot terminate an operation.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+    execute: (args: any, uid: string) => simulateExpressCall(getDatabaseOperations, uid, { id: args.id })
   },
 
   // --- Queue Monitoring Tools (BullMQ, RabbitMQ, Kafka, AWS SQS) ---
@@ -417,6 +456,17 @@ export const registerSenzorTools = (server: Server, ownerId: string) => {
 
     const tool = MCP_TOOLS.find(t => t.name === name);
     if (!tool) throw new Error(`Tool not found: ${name}`);
+
+    // Enforce the plan gate the HTTP router applies to the same controllers.
+    if (tool.minimumPlan && !(await ownerMeetsPlan(ownerId, tool.minimumPlan))) {
+      return {
+        content: [{
+          type: "text",
+          text: `This tool requires the ${tool.minimumPlan} plan or higher. Ask the account owner to upgrade at https://senzor.dev/pricing.`,
+        }],
+        isError: true,
+      };
+    }
 
     try {
       // Validate/coerce arguments against the tool's inputSchema before dispatch.

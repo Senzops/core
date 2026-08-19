@@ -2,7 +2,7 @@ import './senzor-init';
 import mongoose from 'mongoose';
 import { startUptimeWorker } from './uptime';
 import { logger } from '../utils/logger';
-import { startDatabaseWorker } from './database';
+import { startDatabaseWorker, startDatabaseInsightsWorker, startDatabaseIndexWorker } from './database';
 import { startQueueWorker } from './queue';
 import { startWatchdogWorker } from './watchdog';
 import { startDemoWorker } from './demo';
@@ -41,6 +41,8 @@ const initWorker = async () => {
     // 2. Start Logic
     startUptimeWorker();
     startDatabaseWorker();
+    startDatabaseInsightsWorker();
+    startDatabaseIndexWorker();
     startQueueWorker();
     startWatchdogWorker();
     startDemoWorker(); // Demo worker

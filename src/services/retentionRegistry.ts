@@ -30,6 +30,7 @@ import { RumTrace, RumMetric, RumService } from '../models/Rum';
 import { RuntimeMetric } from '../models/RuntimeMetric';
 import { TaskRun, TaskMetric, TaskService } from '../models/Task';
 import { DbMetric, DatabaseService } from '../models/Database';
+import { DbQueryStat, DbSlowOp } from '../models/DbQueryInsight';
 import { QueueMetric, QueueRollup, QueueSource } from '../models/Queue';
 import { FirebaseMetric, FirebaseService } from '../models/Firebase';
 import { LogEvent } from '../models/Log';
@@ -94,6 +95,8 @@ export const RETENTION_COLLECTIONS: RetentionCollection[] = [
 
   // --- Service-attributed (Database / Firebase) ---
   { label: 'DbMetric', model: DbMetric, anchorField: 'timestamp', ownerFilter: byParent(DatabaseService, 'dbId') },
+  { label: 'DbQueryStat', model: DbQueryStat, anchorField: 'timestamp', ownerFilter: byParent(DatabaseService, 'dbId') },
+  { label: 'DbSlowOp', model: DbSlowOp, anchorField: 'timestamp', ownerFilter: byParent(DatabaseService, 'dbId') },
   { label: 'FirebaseMetric', model: FirebaseMetric, anchorField: 'timestamp', ownerFilter: byParent(FirebaseService, 'serviceId') },
 
   // --- Service-attributed (AI Monitoring) ---

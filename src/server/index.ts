@@ -36,6 +36,7 @@ import { getRuntimeStats } from '../controllers/apm/runtimeStats';
 import { getInvocations, getTraceDetail } from '../controllers/apm/traces';
 import { registerDatabase, listDatabases, deleteDatabase, updateDatabase } from '../controllers/database/main';
 import { getDatabaseStats } from '../controllers/database/stats';
+import { getDatabaseInsights, getDatabaseQueryShape, getDatabaseIndexes, getDatabaseOperations } from '../controllers/database/insights';
 import { registerQueueSource, listQueueSources, updateQueueSource, deleteQueueSource } from '../controllers/queue/main';
 import { getQueueStats, getQueueEntityDetail } from '../controllers/queue/stats';
 import { getQueueExecutions, getDiscoveredQueues } from '../controllers/queue/correlation';
@@ -433,6 +434,14 @@ apiRouter.get('/database/list', listDatabases);
 apiRouter.put('/database/:id', updateDatabase);
 apiRouter.delete('/database/:id', deleteDatabase);
 apiRouter.get('/database/:id/stats', getDatabaseStats);
+// Query Insights is a paid capability: collection is already gated in the
+// worker, and this keeps a downgraded account from reading what was gathered
+// while it was entitled.
+apiRouter.get('/database/:id/insights', requirePlan('pro'), getDatabaseInsights);
+apiRouter.get('/database/:id/insights/:digestHash', requirePlan('pro'), getDatabaseQueryShape);
+apiRouter.get('/database/:id/indexes', requirePlan('pro'), getDatabaseIndexes);
+// Live operations are never persisted and never shared publicly.
+apiRouter.get('/database/:id/operations', getDatabaseOperations);
 
 // --- Queue Monitoring (BullMQ/Redis, agentless pull-plane) ---
 apiRouter.post('/queue/register', requireServiceQuota('QueueSource', 'Queue'), registerQueueSource);
@@ -753,6 +762,10 @@ publicShareRouter.get('/:token/monitor-board/:id/summary', resolveShareContext, 
 
 // Database
 publicShareRouter.get('/:token/database/:id/stats', resolveShareContext, enforceShareScope('database'), applyShareTimeRange, cachePublicShare(), getDatabaseStats);
+// Query text is stripped for share viewers by the controller — a shape still
+// describes the schema and access patterns behind a public status page.
+publicShareRouter.get('/:token/database/:id/insights', resolveShareContext, enforceShareScope('database'), applyShareTimeRange, cachePublicShare(), getDatabaseInsights);
+publicShareRouter.get('/:token/database/:id/indexes', resolveShareContext, enforceShareScope('database'), applyShareTimeRange, cachePublicShare(), getDatabaseIndexes);
 
 // Queue
 publicShareRouter.get('/:token/queue/:id/stats', resolveShareContext, enforceShareScope('queue'), applyShareTimeRange, cachePublicShare(), getQueueStats);
