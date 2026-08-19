@@ -137,7 +137,8 @@ import { requireIngestionQuota } from '../middlewares/ingestionLimiter';
 import { requireServiceQuota, requireOrgCreationQuota } from '../middlewares/serviceLimiter';
 import { cancelSubscription, changePlan, getActivePlans, getCurrentSubscription, getStorageStats, getTransactionReceipt, getTransactions, handlePaddleWebhook, handleDodoWebhook, createCheckoutSession } from '../controllers/billing';
 import { deleteAccount, syncUser } from '../controllers/user';
-import { sendOtp, verifyOtp, revokeSessions } from '../controllers/auth/otp';
+import { sendOtp, verifyOtp, revokeSessions, getOtpStatus, getAuthSession } from '../controllers/auth/otp';
+import { requireOtpVerified } from '../middlewares/otpGate';
 import { getDynamicSchema } from '../controllers/schema';
 import { getDashboardCapabilities } from '../controllers/dashboard/capabilities';
 import { shutdownQueues } from '../lib/queue';
@@ -279,6 +280,35 @@ const apiLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// Credential endpoints get their own budgets, keyed per account where a user
+// context exists so a shared egress IP cannot starve other tenants. The
+// account-level caps in controllers/auth/otp.ts remain the real ceiling;
+// these are the cheap outer wall in front of them.
+const authRateKey = (req: any): string => {
+  // authenticateUser runs before these limiters, so uid is the normal key.
+  if (req.user?.uid) return `uid:${req.user.uid}`;
+  // Defensive fallback only. IPv6 clients are routinely handed an entire /64,
+  // so keying on the full address would let a single host rotate past the cap.
+  const ip: string = req.ip || 'unknown';
+  return ip.includes(':') ? `ip6:${ip.split(':').slice(0, 4).join(':')}` : `ip:${ip}`;
+};
+
+const otpSendLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: authRateKey,
+});
+
+const otpVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: authRateKey,
+});
+
 const webhookLimiter = rateLimit({
   windowMs: 1 * 60 * 1000,
   max: 300,
@@ -337,6 +367,11 @@ ingestRouter.post('/logs', apmLimiter, ...ndjsonBody, requireIngestionQuota, ing
 // 2. VPS API (Frontend User)
 const apiRouter = express.Router();
 apiRouter.use(authenticateUser);
+// Second factor is enforced here, before workspace resolution, so an unverified
+// caller cannot even enumerate organization membership. /user/sync is the sole
+// exemption: the JIT identity upsert has to land before verification, otherwise
+// a brand-new user has no document (and no subscription) to verify against.
+apiRouter.use(requireOtpVerified({ exempt: ['/user/sync'] }));
 apiRouter.use(resolveWorkspace);
 apiRouter.post('/vps/register', apiLimiter, requireServiceQuota('Vps', 'Server'), registerVps);
 apiRouter.get('/vps/list', listVps);
@@ -595,7 +630,7 @@ billingRouter.post('/paddle-webhook', webhookLimiter, handlePaddleWebhook);
 billingRouter.post('/dodo-webhook', webhookLimiter, handleDodoWebhook);
 
 // Protected Billing Routes (Requires User Auth + Workspace Context)
-billingRouter.get('/subscription', authenticateUser, resolveWorkspace, getCurrentSubscription);
+billingRouter.get('/subscription', authenticateUser, requireOtpVerified(), resolveWorkspace, getCurrentSubscription);
 
 // ============================================================================
 // DATA IMPORT / EXPORT API
@@ -668,8 +703,10 @@ app.use('/api/otlp', otlpRouter);
 // Auth OTP Routes (Require Firebase Auth, NOT workspace context)
 const authRouter = express.Router();
 authRouter.use(authenticateUser);
-authRouter.post('/otp/send', apiLimiter, sendOtp);
-authRouter.post('/otp/verify', apiLimiter, verifyOtp);
+authRouter.get('/otp/status', apiLimiter, getOtpStatus);
+authRouter.post('/otp/send', otpSendLimiter, sendOtp);
+authRouter.post('/otp/verify', otpVerifyLimiter, verifyOtp);
+authRouter.get('/session', apiLimiter, getAuthSession);
 authRouter.post('/revoke-sessions', apiLimiter, revokeSessions);
 app.use('/api/auth', authRouter);
 
@@ -775,6 +812,7 @@ app.use('/api/v1/web', webApiLimiter, webApiKeyAuth, webQueryRouter);
 const dataImportRouter = express.Router();
 dataImportRouter.use(express.json({ limit: '50mb' }));
 dataImportRouter.use(authenticateUser);
+dataImportRouter.use(requireOtpVerified());
 dataImportRouter.use(resolveWorkspace);
 dataImportRouter.post('/data/import/telemetry', dataImportLimiter, importTelemetry);
 app.use('/api', dataImportRouter);
