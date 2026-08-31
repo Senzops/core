@@ -19,7 +19,8 @@
     "dev:worker": "ts-node-dev --respawn --transpile-only src/worker/index.ts",
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:worker\" --names \"API,WORKER\" --prefix-colors \"yellow,blue\"",
     "start": "concurrently \"npm run start:server\" \"npm run start:worker\" --names \"API,WORKER\"",
-    "migrate:dbmetrics:apply": "ts-node-dev --transpile-only src/scripts/migrateDbMetricSemantics.ts --apply"
+    "migrate:dbmetrics:apply": "ts-node-dev --transpile-only src/scripts/migrateDbMetricSemantics.ts --apply",
+    "test:db": "ts-node-dev --transpile-only src/tests/dbMonitoring.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1072.0",

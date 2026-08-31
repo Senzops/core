@@ -105,9 +105,101 @@ const readTickets = (status: any): { read?: number; write?: number } => {
   return {};
 };
 
-const probeCapabilities = async (client: MongoClient): Promise<Capabilities> => {
+// ---------------------------------------------------------------------------
+// Connection scope.
+//
+// `client.db()` returns the database named in the connection string — and
+// silently falls back to `test` when the string names none, which is the
+// normal shape for a cluster-level monitoring URI
+// (mongodb+srv://user:pass@cluster/?retryWrites=true). Every read routed
+// through it then reports on an empty database: zero storage, zero
+// collections, zero indexes, and a capability probe that "succeeds".
+//
+// Resolving the scope explicitly keeps both shapes correct: a URI that names
+// a database is measured on exactly that database, and one that does not is
+// measured across the cluster it points at.
+// ---------------------------------------------------------------------------
+
+const SYSTEM_DATABASES = new Set(['admin', 'local', 'config']);
+
+/** Concurrent dbStats commands when a scope spans several databases. */
+const STORAGE_BATCH = 5;
+
+/** Bounds the per-database command fan-out on a cluster-scoped connection. */
+const MAX_SCOPE_DATABASES = 25;
+
+/**
+ * The database named in a MongoDB connection string, or null when it targets
+ * the cluster. Parsed rather than read back off the driver, because the driver
+ * resolves an absent name to `test` and so cannot distinguish "no database"
+ * from "a database actually called test".
+ *
+ * Credentials are required to be percent-encoded, so the first slash after the
+ * host section always begins the path.
+ */
+export const databaseFromUri = (uri: string): string | null => {
+  try {
+    const withoutQuery = uri.split('?')[0];
+    const afterScheme = withoutQuery.replace(/^mongodb(\+srv)?:\/\//i, '');
+    const slash = afterScheme.indexOf('/');
+    if (slash === -1) return null;
+    const name = decodeURIComponent(afterScheme.slice(slash + 1)).trim();
+    return name.length > 0 ? name : null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The databases this connection should be measured over. One entry for a
+ * URI that names a database; every non-system database on the cluster
+ * otherwise, capped so a large fleet cannot turn one poll into hundreds of
+ * commands against the instance being observed.
+ */
+/**
+ * Cluster-scoped resolutions are memoised briefly: storage, the census, the
+ * capability probe and the index census each need the scope, and on a cycle
+ * where several coincide they would otherwise issue listDatabases once apiece.
+ * Only successful lookups are cached, so a transient privilege error cannot
+ * stick; the window is short enough that a newly created database is picked up
+ * within a few polls.
+ */
+const SCOPE_CACHE_TTL_MS = 5 * 60 * 1000;
+const scopeCache = new Map<string, { names: string[]; expiresAt: number }>();
+
+const resolveScope = async (client: MongoClient, uri: string): Promise<string[]> => {
+  const named = databaseFromUri(uri);
+  if (named) return [named]; // no I/O — nothing worth caching
+
+  const cached = scopeCache.get(uri);
+  if (cached && cached.expiresAt > Date.now()) return cached.names;
+
+  try {
+    const result: any = await client.db('admin').command({ listDatabases: 1, nameOnly: true });
+    const names = (result.databases || [])
+      .map((d: any) => String(d.name))
+      .filter((name: string) => !SYSTEM_DATABASES.has(name))
+      .slice(0, MAX_SCOPE_DATABASES);
+
+    scopeCache.set(uri, { names, expiresAt: Date.now() + SCOPE_CACHE_TTL_MS });
+    return names;
+  } catch {
+    // Without listDatabases privileges the best available answer is whatever
+    // the driver defaults to. Deliberately not cached — the next cycle should
+    // retry rather than inherit a degraded answer.
+    return [client.db().databaseName];
+  }
+};
+
+/** Whether entries need a `db.collection` prefix to stay unambiguous. */
+const isClusterScope = (scope: string[]) => scope.length > 1;
+
+const probeCapabilities = async (client: MongoClient, uri: string): Promise<Capabilities> => {
   const admin = client.db('admin');
-  const target = client.db();
+  // Probe the database the instance is actually measured on; probing an
+  // empty `test` would report every capability as available.
+  const [primary] = await resolveScope(client, uri);
+  const target = client.db(primary);
   const caps: Capabilities = { serverStats: capable() };
 
   const check = async (
@@ -195,24 +287,51 @@ const probeCapabilities = async (client: MongoClient): Promise<Capabilities> => 
 };
 
 /**
- * Real storage figures. The previous implementation reported
- * `listDatabases.totalSize` for BOTH dataSize and storageSize and hardcoded
- * indexSize to zero, so the storage chart drew two identical lines and a flat
- * line at zero. dbStats reports all three separately, for the database the
- * connection string actually points at.
+ * Real storage figures, measured over the resolved scope.
+ *
+ * The original implementation reported `listDatabases.totalSize` for BOTH
+ * dataSize and storageSize and hardcoded indexSize to zero, so the chart drew
+ * two identical lines and a flat zero. dbStats separates all three — but read
+ * through the driver default it measures an empty `test` database whenever the
+ * connection string names none, which reports zero for a cluster that is
+ * plainly not empty. Summing dbStats across the scope keeps the separation
+ * without narrowing what is measured.
  */
-const readStorage = async (client: MongoClient) => {
+const readStorage = async (client: MongoClient, uri: string) => {
+  const totals = { dataSize: 0, indexSize: 0, storageSize: 0, objects: 0 };
+
   try {
-    const stats: any = await client.db().command({ dbStats: 1 });
-    return {
-      dataSize: toMb(stats.dataSize),
-      indexSize: toMb(stats.indexSize),
-      storageSize: toMb(stats.storageSize),
-      objects: safeNum(stats.objects),
-    };
+    const scope = await resolveScope(client, uri);
+
+    // dbStats is a round-trip each, measured at roughly 150-200ms against a
+    // hosted cluster. Run sequentially, a 25-database scope would spend four
+    // seconds of every polling cycle here; batched, it costs well under one
+    // while never putting more than STORAGE_BATCH commands in flight against
+    // the instance being observed. A URI that names a database is a single
+    // call and takes neither path.
+    for (let i = 0; i < scope.length; i += STORAGE_BATCH) {
+      const batch = scope.slice(i, i + STORAGE_BATCH).map(async (name) => {
+        try {
+          return await client.db(name).command({ dbStats: 1 });
+        } catch {
+          // One unreadable database must not zero the whole figure.
+          return null;
+        }
+      });
+
+      for (const stats of await Promise.all(batch)) {
+        if (!stats) continue;
+        totals.dataSize += toMb((stats as any).dataSize);
+        totals.indexSize += toMb((stats as any).indexSize);
+        totals.storageSize += toMb((stats as any).storageSize);
+        totals.objects += safeNum((stats as any).objects);
+      }
+    }
   } catch {
-    return { dataSize: 0, indexSize: 0, storageSize: 0, objects: 0 };
+    // Fall through with zeros — the capability probe explains why.
   }
+
+  return totals;
 };
 
 /** Seconds of history the oplog retains — a replica's recovery budget. */
@@ -228,51 +347,67 @@ const readOplogWindow = async (client: MongoClient): Promise<number | undefined>
   }
 };
 
-/** Worst replication lag across secondaries, in milliseconds. */
-const readReplicationLag = async (client: MongoClient): Promise<number | undefined> => {
-  try {
-    const status: any = await client.db('admin').command({ replSetGetStatus: 1 });
-    const members: any[] = status.members || [];
-    const primary = members.find((m) => m.stateStr === 'PRIMARY');
-    if (!primary?.optimeDate) return undefined;
-    const secondaries = members.filter((m) => m.stateStr === 'SECONDARY' && m.optimeDate);
-    if (secondaries.length === 0) return 0;
-    const primaryMs = new Date(primary.optimeDate).getTime();
-    return Math.max(
-      0,
-      ...secondaries.map((m) => primaryMs - new Date(m.optimeDate).getTime())
-    );
-  } catch {
-    return undefined;
-  }
+/**
+ * Worst replication lag across secondaries, derived from the topology
+ * snapshot rather than read separately.
+ *
+ * Both come from the same replSetGetStatus response, and issuing it twice per
+ * poll doubled the administrative command load on every monitored replica set
+ * for a number the snapshot already carries.
+ */
+const lagFromTopology = (topology?: TopologySnapshot): number | undefined => {
+  if (!topology || topology.kind === 'standalone') return undefined;
+  const lags = topology.members
+    .filter((m) => m.role === 'SECONDARY' && typeof m.lagMs === 'number')
+    .map((m) => m.lagMs as number);
+  if (lags.length === 0) return topology.members.length > 0 ? 0 : undefined;
+  return Math.max(0, ...lags);
 };
 
-const runCensus = async (client: MongoClient): Promise<CollectionStat[] | undefined> => {
+const runCensus = async (client: MongoClient, uri: string): Promise<CollectionStat[] | undefined> => {
   try {
-    const target = client.db();
-    const all = await target.listCollections({}, { nameOnly: true }).toArray();
-    const subset = all.slice(0, CENSUS_COLLECTION_CAP);
+    const scope = await resolveScope(client, uri);
+    const qualify = isClusterScope(scope);
     const results: CollectionStat[] = [];
 
-    // Batched so a database with thousands of collections cannot open thousands
-    // of concurrent commands against the instance we are supposed to be
-    // observing unobtrusively.
-    for (let i = 0; i < subset.length; i += CENSUS_BATCH) {
-      const batch = subset.slice(i, i + CENSUS_BATCH).map(async (c: any) => {
-        try {
-          const stats: any = await target.command({ collStats: c.name, scale: 1048576 });
-          return {
-            name: c.name,
-            count: safeNum(stats.count),
-            size: safeNum(stats.size),
-            storageSize: safeNum(stats.storageSize),
-            indexSize: safeNum(stats.totalIndexSize),
-          };
-        } catch {
-          return null;
-        }
-      });
-      results.push(...(await Promise.all(batch)).filter(Boolean) as CollectionStat[]);
+    for (const dbName of scope) {
+      // Remaining budget, so one enormous database cannot crowd out the rest
+      // of the cluster.
+      if (results.length >= CENSUS_COLLECTION_CAP) break;
+
+      const target = client.db(dbName);
+      let names: string[];
+      try {
+        const all = await target.listCollections({}, { nameOnly: true }).toArray();
+        names = all.map((c: any) => String(c.name));
+      } catch {
+        continue; // not readable with these privileges — skip, do not fail
+      }
+
+      const subset = names.slice(0, CENSUS_COLLECTION_CAP - results.length);
+
+      // Batched so a database with thousands of collections cannot open
+      // thousands of concurrent commands against the instance we are supposed
+      // to be observing unobtrusively.
+      for (let i = 0; i < subset.length; i += CENSUS_BATCH) {
+        const batch = subset.slice(i, i + CENSUS_BATCH).map(async (name) => {
+          try {
+            const stats: any = await target.command({ collStats: name, scale: 1048576 });
+            return {
+              // Qualified only when the scope spans databases, so a
+              // single-database connection keeps the names users know.
+              name: qualify ? `${dbName}.${name}` : name,
+              count: safeNum(stats.count),
+              size: safeNum(stats.size),
+              storageSize: safeNum(stats.storageSize),
+              indexSize: safeNum(stats.totalIndexSize),
+            };
+          } catch {
+            return null;
+          }
+        });
+        results.push(...((await Promise.all(batch)).filter(Boolean) as CollectionStat[]));
+      }
     }
 
     return results.sort((a, b) => b.storageSize - a.storageSize).slice(0, CENSUS_KEEP);
@@ -290,7 +425,7 @@ export const mongoAdapter: DbAdapter = {
     try {
       await client.connect();
       await client.db('admin').command({ serverStatus: 1 });
-      return await probeCapabilities(client);
+      return await probeCapabilities(client, uri);
     } finally {
       await client.close(true).catch(() => {});
     }
@@ -302,7 +437,7 @@ export const mongoAdapter: DbAdapter = {
 
     const [status, storage] = await Promise.all([
       admin.command({ serverStatus: 1 }),
-      readStorage(client),
+      readStorage(client, uri),
     ]);
 
     const now = Date.now();
@@ -340,10 +475,11 @@ export const mongoAdapter: DbAdapter = {
     const cacheMax = safeNum(cache?.['maximum bytes configured']);
     const tickets = readTickets(status);
 
-    const [oplogWindowSeconds, replicationLagMs] = await Promise.all([
+    const [oplogWindowSeconds, topology] = await Promise.all([
       readOplogWindow(client),
-      readReplicationLag(client),
+      readTopology(client),
     ]);
+    const replicationLagMs = lagFromTopology(topology);
 
     setPrevious(dbId, counters, previous?.lastCensusAt ?? now);
 
@@ -412,9 +548,9 @@ export const mongoAdapter: DbAdapter = {
           replicationLagMs,
         },
       },
-      topology: await readTopology(client),
-      ...(censusDue ? { collections: await runCensus(client) } : {}),
-      ...(probeDue ? { capabilities: await probeCapabilities(client) } : {}),
+      topology,
+      ...(censusDue ? { collections: await runCensus(client, uri) } : {}),
+      ...(probeDue ? { capabilities: await probeCapabilities(client, uri) } : {}),
     };
   },
 
@@ -518,17 +654,32 @@ const readQueryStats = async (
  */
 const readProfileEntries = async (
   client: MongoClient,
+  uri: string,
   since: Date,
   slowMsThreshold: number,
   maxDigests: number
 ): Promise<InsightSample> => {
-  const entries = await client
-    .db()
-    .collection('system.profile')
-    .find({ ts: { $gt: since } })
-    .sort({ ts: -1 })
-    .limit(PROFILE_SCAN_LIMIT)
-    .toArray();
+  // The profiler is per-database, and system.profile only exists where it has
+  // been enabled. Reading through the driver default would look at `test` on a
+  // cluster-scoped connection and always come back empty.
+  const scope = await resolveScope(client, uri);
+  const entries: any[] = [];
+
+  for (const dbName of scope) {
+    if (entries.length >= PROFILE_SCAN_LIMIT) break;
+    try {
+      const rows = await client
+        .db(dbName)
+        .collection('system.profile')
+        .find({ ts: { $gt: since } })
+        .sort({ ts: -1 })
+        .limit(PROFILE_SCAN_LIMIT - entries.length)
+        .toArray();
+      entries.push(...rows);
+    } catch {
+      // Profiling not enabled on this database, or not readable — skip it.
+    }
+  }
 
   if (entries.length === 0) return { queryStats: [], slowOps: [] };
 
@@ -617,7 +768,7 @@ export const collectMongoInsights = async (
   const since = baseline ? new Date(baseline.at) : new Date(Date.now() - 5 * 60 * 1000);
 
   try {
-    const sample = await readProfileEntries(client, since, slowMsThreshold, maxDigests);
+    const sample = await readProfileEntries(client, uri, since, slowMsThreshold, maxDigests);
     // The profile path aggregates events directly, so the baseline serves only
     // as a watermark. An empty digest map keeps `at` moving forward.
     setInsightBaseline(dbId, new Map());
@@ -647,21 +798,34 @@ export const collectMongoIndexes = async (
   { dbId, uri }: InsightContext
 ): Promise<IndexCensus> => {
   const client = await connect(dbId, uri);
-  const target = client.db();
 
-  const [status, allCollections] = await Promise.all([
+  const [status, scope] = await Promise.all([
     client.db('admin').command({ serverStatus: 1 }).catch(() => ({ uptime: 0 })),
-    target.listCollections({}, { nameOnly: true }).toArray(),
+    resolveScope(client, uri),
   ]);
 
-  // Largest collections first — an unused index on a big collection is the one
-  // that actually costs something.
-  const names = allCollections.map((c: any) => c.name).slice(0, INDEX_CENSUS_COLLECTIONS);
+  // (database, collection) pairs across the scope, bounded overall so a
+  // cluster-scoped connection cannot fan out without limit.
+  const targets: { dbName: string; name: string }[] = [];
+  for (const dbName of scope) {
+    if (targets.length >= INDEX_CENSUS_COLLECTIONS) break;
+    try {
+      const collections = await client.db(dbName).listCollections({}, { nameOnly: true }).toArray();
+      for (const c of collections) {
+        if (targets.length >= INDEX_CENSUS_COLLECTIONS) break;
+        targets.push({ dbName, name: String((c as any).name) });
+      }
+    } catch {
+      // Not readable with these privileges — skip this database.
+    }
+  }
+
   const indexes: IndexSample[] = [];
 
-  for (let i = 0; i < names.length; i += INDEX_CENSUS_BATCH) {
-    const batch = names.slice(i, i + INDEX_CENSUS_BATCH).map(async (name: string) => {
+  for (let i = 0; i < targets.length; i += INDEX_CENSUS_BATCH) {
+    const batch = targets.slice(i, i + INDEX_CENSUS_BATCH).map(async ({ dbName, name }) => {
       try {
+        const target = client.db(dbName);
         const collection = target.collection(name);
         const [definitions, usage, stats] = await Promise.all([
           collection.listIndexes().toArray(),
@@ -677,7 +841,7 @@ export const collectMongoIndexes = async (
         return (definitions as any[]).map((def) => {
           const keys = Object.keys(def.key || {});
           return {
-            namespace: `${target.databaseName}.${name}`,
+            namespace: `${dbName}.${name}`,
             name: String(def.name),
             definition: JSON.stringify(def.key || {}),
             keys,
