@@ -363,12 +363,20 @@ export const postgresAdapter: DbAdapter = {
         network: { bytesIn: 0, bytesOut: 0, numRequests: rate('tupFetched') + writeRate },
         ops: { insert: 0, query: 0, update: 0, delete: 0, command: 0 },
         scans: { collectionScans: rate('seqScans'), indexScans: rate('idxScans') },
-        storage: {
-          dataSize: toMb(sizeRes.rows[0]?.db_size),
-          indexSize: toMb(sizeRes.rows[0]?.total_index_size),
-          storageSize: toMb(sizeRes.rows[0]?.db_size),
-          objects: safeNum(scans.live_tuples),
-        },
+        // pg_database_size is the total on-disk size and ALREADY includes
+        // indexes, so dataSize is the remainder rather than a repeat of the
+        // total — otherwise indexes are counted twice and dataSize + indexSize
+        // overstates the database. See the contract on IDbMetricFields.storage.
+        storage: (() => {
+          const totalOnDisk = toMb(sizeRes.rows[0]?.db_size);
+          const indexOnDisk = Math.min(toMb(sizeRes.rows[0]?.total_index_size), totalOnDisk);
+          return {
+            dataSize: Math.max(0, totalOnDisk - indexOnDisk),
+            indexSize: indexOnDisk,
+            storageSize: totalOnDisk,
+            objects: safeNum(scans.live_tuples),
+          };
+        })(),
         locks: {
           activeReaders: safeNum(locksRes.rows[0]?.granted),
           activeWriters: 0,

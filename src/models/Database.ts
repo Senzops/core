@@ -135,7 +135,22 @@ export interface IDbMetricFields {
    * current period.
    */
   scans: { collectionScans: number; indexScans: number };
-  /** Megabytes. */
+  /**
+   * Megabytes ON DISK, and the same contract for every engine:
+   *
+   *   storageSize = total disk footprint, INCLUDING indexes  (the headline)
+   *   indexSize   = the index component of that footprint
+   *   dataSize    = the non-index component  (dataSize + indexSize = storageSize)
+   *
+   * Stated explicitly because the engines do not agree by default:
+   * MongoDB's dbStats.dataSize is the UNCOMPRESSED logical size (4x+ larger
+   * than disk under WiredTiger compression), while pg_database_size already
+   * includes indexes. Reporting either verbatim produces a "storage used"
+   * that cannot be reconciled with the host's actual disk usage.
+   *
+   * MongoDB's logical size is still worth having — it is carried separately
+   * as mongo.logicalDataSizeMb with its compression ratio.
+   */
   storage: { dataSize: number; indexSize: number; storageSize: number; objects: number };
   locks?: { activeReaders: number; activeWriters: number; queuedReaders: number; queuedWriters: number };
 
@@ -205,6 +220,14 @@ export interface IDbMetricFields {
     /** Seconds of history the oplog holds — the replica recovery budget. */
     oplogWindowSeconds?: number;
     replicationLagMs?: number;
+    /** Uncompressed logical size of the documents, before WiredTiger compression. */
+    logicalDataSizeMb?: number;
+    /** logical / on-disk. ~1 means uncompressed; 4+ is typical with snappy or zstd. */
+    compressionRatio?: number;
+    /** Filesystem the storage engine lives on — the real capacity ceiling. */
+    diskUsedMb?: number;
+    diskTotalMb?: number;
+    diskUsedPercent?: number;
   };
 
   /** PostgreSQL-only detail. */
@@ -332,6 +355,11 @@ const DbMetricSchema = new Schema<IDbMetric>({
     scanAndOrderRate: { type: Number },
     oplogWindowSeconds: { type: Number },
     replicationLagMs: { type: Number },
+    logicalDataSizeMb: { type: Number },
+    compressionRatio: { type: Number },
+    diskUsedMb: { type: Number },
+    diskTotalMb: { type: Number },
+    diskUsedPercent: { type: Number },
   },
 
   pg: {

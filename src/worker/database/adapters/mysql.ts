@@ -329,8 +329,9 @@ export const mysqlAdapter: DbAdapter = {
 
       const [sizeRows] = await conn
         .query(
-          `SELECT COALESCE(SUM(DATA_LENGTH + INDEX_LENGTH), 0) AS total,
+          `SELECT COALESCE(SUM(DATA_LENGTH), 0) AS total_data,
                   COALESCE(SUM(INDEX_LENGTH), 0) AS total_idx,
+                  COALESCE(SUM(DATA_LENGTH + INDEX_LENGTH), 0) AS total,
                   COALESCE(SUM(TABLE_ROWS), 0) AS total_rows
            FROM information_schema.TABLES
            WHERE TABLE_SCHEMA NOT IN (${EXCLUDED_SCHEMAS})`
@@ -375,8 +376,11 @@ export const mysqlAdapter: DbAdapter = {
           },
           ops: { insert: 0, query: 0, update: 0, delete: 0, command: 0 },
           scans: { collectionScans: rate('selectScan'), indexScans: rate('selectRange') },
+          // DATA_LENGTH and INDEX_LENGTH are disjoint; their sum is the disk
+          // footprint. Reporting the sum as dataSize as well repeated the index
+          // bytes. See the contract on IDbMetricFields.storage.
           storage: {
-            dataSize: toMb(sizes.total),
+            dataSize: toMb(sizes.total_data),
             indexSize: toMb(sizes.total_idx),
             storageSize: toMb(sizes.total),
             objects: safeNum(sizes.total_rows),

@@ -107,6 +107,11 @@ const SERIES: Record<string, [Agg, string]> = {
   mongoScanAndOrder: ['avg', '$mongo.scanAndOrderRate'],
   mongoOplogWindow: ['max', '$mongo.oplogWindowSeconds'],
   mongoReplicationLag: ['max', '$mongo.replicationLagMs'],
+  mongoLogicalDataSize: ['avg', '$mongo.logicalDataSizeMb'],
+  mongoCompressionRatio: ['avg', '$mongo.compressionRatio'],
+  mongoDiskUsed: ['max', '$mongo.diskUsedMb'],
+  mongoDiskTotal: ['max', '$mongo.diskTotalMb'],
+  mongoDiskUsedPercent: ['max', '$mongo.diskUsedPercent'],
 
   // --- PostgreSQL ---
   pgCheckpointsTimed: ['avg', '$pg.checkpointsTimedRate'],

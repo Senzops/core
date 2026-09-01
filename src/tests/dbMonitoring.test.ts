@@ -14,7 +14,7 @@
 // resolves to `test` when the connection string names no database — reporting
 // 0 bytes for clusters that were plainly not empty.
 // ============================================================================
-import { databaseFromUri } from '../worker/database/adapters/mongo';
+import { databaseFromUri, summariseStorage } from '../worker/database/adapters/mongo';
 import {
   redactMongoCommand,
   redactRedisCommand,
@@ -226,6 +226,61 @@ section('Health advisor');
     type: 'mongodb', status: 'error', errorMessage: 'connection refused', latest: {} as any,
   });
   check('a failed poll is reported', errored.advisories.some((a) => a.id === 'connection-failed'));
+}
+
+// ---------------------------------------------------------------------------
+section('Storage contract — disk, not logical');
+// ---------------------------------------------------------------------------
+{
+  // Real dbStats output from the production cluster whose storage was
+  // misreported: 1331 GB logical against 326 GB on disk (WiredTiger, 4.44x).
+  // The database appeared larger than the volume holding it.
+  const GB = 1024 ** 3;
+  const real = summariseStorage([{
+    dataSize: 1331.02 * GB,
+    storageSize: 299.67 * GB,
+    indexSize: 26.51 * GB,
+    objects: 236_000_000,
+    fsUsedSize: 384.61 * GB,
+    fsTotalSize: 1006.75 * GB,
+  }]);
+
+  const asGb = (mb: number) => mb / 1024;
+  const near = (a: number, b: number, tol = 0.05) => Math.abs(a - b) <= tol;
+
+  check('storageSize is the DISK footprint, not the logical size',
+    near(asGb(real.storage.storageSize), 326.18), `${asGb(real.storage.storageSize).toFixed(2)} GB`);
+  check('storageSize reconciles with the host filesystem',
+    real.storage.storageSize < (real.diskUsedMb ?? 0), 'must not exceed disk in use');
+  check('the logical size is kept, separately',
+    near(asGb(real.logicalDataSizeMb), 1331.02, 0.5), `${asGb(real.logicalDataSizeMb).toFixed(2)} GB`);
+  check('logical is NOT reported as storage',
+    real.storage.storageSize < real.logicalDataSizeMb / 3);
+  check('compression ratio is derived',
+    near(real.compressionRatio ?? 0, 4.44, 0.02), String(real.compressionRatio));
+  check('the contract is additive: data + index === storage',
+    near(real.storage.dataSize + real.storage.indexSize, real.storage.storageSize, 0.001));
+  check('filesystem usage is derived',
+    near(real.diskUsedPercent ?? 0, 38.2, 0.2), String(real.diskUsedPercent));
+}
+{
+  // Filesystem figures are per-host: several databases on one volume must not
+  // multiply the disk, while the data figures do accumulate.
+  const GB = 1024 ** 3;
+  const doc = { dataSize: 2 * GB, storageSize: 1 * GB, indexSize: 0.5 * GB, objects: 10, fsUsedSize: 50 * GB, fsTotalSize: 100 * GB };
+  const multi = summariseStorage([doc, doc, doc]);
+  eq('disk in use is not multiplied', Math.round((multi.diskUsedMb ?? 0) / 1024), 50);
+  eq('disk total is not multiplied', Math.round((multi.diskTotalMb ?? 0) / 1024), 100);
+  eq('storage accumulates across databases', Math.round(multi.storage.storageSize / 1024), 5);
+  eq('objects accumulate', multi.storage.objects, 30);
+}
+{
+  const empty = summariseStorage([]);
+  eq('no readable databases yields zero, not NaN', empty.storage.storageSize, 0);
+  eq('and no compression ratio is invented', empty.compressionRatio, undefined);
+  eq('and no filesystem figure is invented', empty.diskUsedPercent, undefined);
+  const nulls = summariseStorage([null, undefined]);
+  eq('unreadable databases are skipped', nulls.storage.storageSize, 0);
 }
 
 // ---------------------------------------------------------------------------

@@ -154,6 +154,29 @@ const mongoRules = ({ latest }: AdvisorInput, out: Advisory[]) => {
     });
   }
 
+  if (has(m.diskUsedPercent)) {
+    if (m.diskUsedPercent >= 90) {
+      out.push({
+        id: 'mongo-disk-critical',
+        severity: 'critical',
+        title: 'Data volume is nearly full',
+        detail: `${pct(m.diskUsedPercent)} of the filesystem holding this database is in use` +
+          (has(m.diskUsedMb) && has(m.diskTotalMb)
+            ? ` (${num(m.diskUsedMb / 1024)} GB of ${num(m.diskTotalMb / 1024)} GB).`
+            : '.'),
+        remediation: 'MongoDB stops accepting writes when the volume fills. Expand the disk, or reclaim space — note that dropping data does not return it to the filesystem without a compaction.',
+      });
+    } else if (m.diskUsedPercent >= 80) {
+      out.push({
+        id: 'mongo-disk-pressure',
+        severity: 'warning',
+        title: 'Data volume is filling up',
+        detail: `${pct(m.diskUsedPercent)} of the filesystem holding this database is in use.`,
+        remediation: 'Plan capacity now. WiredTiger needs free space for compaction and checkpoints, so the usable ceiling is below 100%.',
+      });
+    }
+  }
+
   if (has(m.replicationLagMs) && m.replicationLagMs > 10_000) {
     out.push({
       id: 'mongo-replication-lag',

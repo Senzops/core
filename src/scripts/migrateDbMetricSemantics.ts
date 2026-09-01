@@ -14,10 +14,14 @@
 //          mislabelled — `collectionScans` actually held index keys examined).
 //     Now: per-second rates for the interval.
 //
-//   storage.dataSize / storage.storageSize / storage.indexSize
-//     Was: listDatabases.totalSize for the WHOLE CLUSTER reported as both
-//          dataSize and storageSize, with indexSize hardcoded to 0.
-//     Now: real dbStats figures for the database the connection string targets.
+//   storage.indexSize
+//     Was: hardcoded to 0 for every MongoDB sample.
+//     Now: the real index footprint on disk.
+//
+// storage.dataSize and storage.storageSize are deliberately LEFT ALONE.
+// Storage is reported as disk usage, the same basis the original
+// listDatabases.totalSize used, so those series remain continuous across the
+// upgrade and there is nothing to clear.
 //
 // Rather than delete the rows — every other metric in them is still valid —
 // this unsets just the affected fields. Aggregations then skip them and the
@@ -57,9 +61,7 @@ const DRY_RUN = !APPLY;
 const LEGACY_FIELDS = {
   'scans.collectionScans': '',
   'scans.indexScans': '',
-  'storage.dataSize': '',
   'storage.indexSize': '',
-  'storage.storageSize': '',
 } as const;
 
 const run = async () => {

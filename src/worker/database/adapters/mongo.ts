@@ -287,18 +287,77 @@ const probeCapabilities = async (client: MongoClient, uri: string): Promise<Capa
 };
 
 /**
- * Real storage figures, measured over the resolved scope.
+ * Storage measured over the resolved scope, reported as DISK usage.
  *
- * The original implementation reported `listDatabases.totalSize` for BOTH
- * dataSize and storageSize and hardcoded indexSize to zero, so the chart drew
- * two identical lines and a flat zero. dbStats separates all three — but read
- * through the driver default it measures an empty `test` database whenever the
- * connection string names none, which reports zero for a cluster that is
- * plainly not empty. Summing dbStats across the scope keeps the separation
- * without narrowing what is measured.
+ * dbStats.dataSize is the uncompressed LOGICAL size of the documents, not
+ * what they occupy. Under WiredTiger compression it runs several times the
+ * real footprint — on one production cluster 1331 GB logical against 326 GB
+ * on disk, a 4.4x ratio. Reporting it as "storage used" produced a database
+ * apparently larger than the volume holding it.
+ *
+ * The disk figures are storageSize (collections) and indexSize (indexes);
+ * their sum is what the host actually gives up, and it reconciles with
+ * listDatabases.totalSize and with the filesystem. The logical size is still
+ * useful and is carried separately, with the compression ratio it implies.
  */
-const readStorage = async (client: MongoClient, uri: string) => {
-  const totals = { dataSize: 0, indexSize: 0, storageSize: 0, objects: 0 };
+interface MongoStorage {
+  /** Contract-conforming disk figures — see IDbMetricFields.storage. */
+  storage: { dataSize: number; indexSize: number; storageSize: number; objects: number };
+  logicalDataSizeMb: number;
+  compressionRatio?: number;
+  diskUsedMb?: number;
+  diskTotalMb?: number;
+  diskUsedPercent?: number;
+}
+
+/**
+ * Folds raw dbStats documents into the storage contract.
+ *
+ * Pure and exported so the mapping that has historically been the source of
+ * wrong storage figures can be pinned by tests against real dbStats output,
+ * without needing a live cluster.
+ */
+export const summariseStorage = (statsDocs: any[]): MongoStorage => {
+  // Disk components, kept separate so the contract stays additive.
+  let collectionsOnDisk = 0;
+  let indexesOnDisk = 0;
+  let logicalDataSize = 0;
+  let objects = 0;
+  // Filesystem figures are per-host, not per-database: take the largest seen
+  // rather than summing, or a multi-database scope would report the same
+  // volume several times over.
+  let fsUsed = 0;
+  let fsTotal = 0;
+
+  for (const s of statsDocs) {
+    if (!s) continue;
+    collectionsOnDisk += toMb(s.storageSize);
+    indexesOnDisk += toMb(s.indexSize);
+    logicalDataSize += toMb(s.dataSize);
+    objects += safeNum(s.objects);
+    fsUsed = Math.max(fsUsed, toMb(s.fsUsedSize));
+    fsTotal = Math.max(fsTotal, toMb(s.fsTotalSize));
+  }
+
+  const onDisk = collectionsOnDisk + indexesOnDisk;
+
+  return {
+    storage: {
+      dataSize: collectionsOnDisk,
+      indexSize: indexesOnDisk,
+      storageSize: onDisk,
+      objects,
+    },
+    logicalDataSizeMb: logicalDataSize,
+    compressionRatio: collectionsOnDisk > 0 ? logicalDataSize / collectionsOnDisk : undefined,
+    diskUsedMb: fsUsed > 0 ? fsUsed : undefined,
+    diskTotalMb: fsTotal > 0 ? fsTotal : undefined,
+    diskUsedPercent: fsTotal > 0 ? (fsUsed / fsTotal) * 100 : undefined,
+  };
+};
+
+const readStorage = async (client: MongoClient, uri: string): Promise<MongoStorage> => {
+  const collected: any[] = [];
 
   try {
     const scope = await resolveScope(client, uri);
@@ -319,19 +378,13 @@ const readStorage = async (client: MongoClient, uri: string) => {
         }
       });
 
-      for (const stats of await Promise.all(batch)) {
-        if (!stats) continue;
-        totals.dataSize += toMb((stats as any).dataSize);
-        totals.indexSize += toMb((stats as any).indexSize);
-        totals.storageSize += toMb((stats as any).storageSize);
-        totals.objects += safeNum((stats as any).objects);
-      }
+      collected.push(...(await Promise.all(batch)));
     }
   } catch {
     // Fall through with zeros — the capability probe explains why.
   }
 
-  return totals;
+  return summariseStorage(collected);
 };
 
 /** Seconds of history the oplog retains — a replica's recovery budget. */
@@ -393,14 +446,22 @@ const runCensus = async (client: MongoClient, uri: string): Promise<CollectionSt
         const batch = subset.slice(i, i + CENSUS_BATCH).map(async (name) => {
           try {
             const stats: any = await target.command({ collStats: name, scale: 1048576 });
+            // Same contract as the instance-level figures: disk throughout,
+            // with size + indexSize === storageSize. collStats.size is the
+            // UNCOMPRESSED logical size, so reporting it here would put a
+            // terabyte-scale collection next to a header measured in hundreds
+            // of gigabytes — the discrepancy that made this wrong in the first
+            // place, just one level down.
+            const dataOnDisk = safeNum(stats.storageSize);
+            const indexOnDisk = safeNum(stats.totalIndexSize);
             return {
               // Qualified only when the scope spans databases, so a
               // single-database connection keeps the names users know.
               name: qualify ? `${dbName}.${name}` : name,
               count: safeNum(stats.count),
-              size: safeNum(stats.size),
-              storageSize: safeNum(stats.storageSize),
-              indexSize: safeNum(stats.totalIndexSize),
+              size: dataOnDisk,
+              storageSize: dataOnDisk + indexOnDisk,
+              indexSize: indexOnDisk,
             };
           } catch {
             return null;
@@ -519,7 +580,7 @@ export const mongoAdapter: DbAdapter = {
         // Rates, not the raw cumulative counters the previous implementation
         // stored — those only ever produced a line that climbed forever.
         scans: { collectionScans: docsExaminedRate, indexScans: keysExaminedRate },
-        storage,
+        storage: storage.storage,
         locks: {
           activeReaders: safeNum(status.globalLock?.activeClients?.readers),
           activeWriters: safeNum(status.globalLock?.activeClients?.writers),
@@ -546,6 +607,11 @@ export const mongoAdapter: DbAdapter = {
           scanAndOrderRate: rate(counters.scanAndOrder, 'scanAndOrder'),
           oplogWindowSeconds,
           replicationLagMs,
+          logicalDataSizeMb: storage.logicalDataSizeMb,
+          compressionRatio: storage.compressionRatio,
+          diskUsedMb: storage.diskUsedMb,
+          diskTotalMb: storage.diskTotalMb,
+          diskUsedPercent: storage.diskUsedPercent,
         },
       },
       topology,
